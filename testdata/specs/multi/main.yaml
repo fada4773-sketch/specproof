@@ -1,0 +1,14 @@
+openapi: 3.0.3
+info: { title: multi, version: "1.0" }
+paths:
+  /books/{id}:
+    get:
+      operationId: getBook
+      parameters:
+        - { $ref: 'params.yaml#/BookID' }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: 'schemas.yaml#/Book' }

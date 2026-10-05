@@ -1,0 +1,65 @@
+openapi: 3.0.3
+info: { title: Review, version: "1" }
+components:
+  securitySchemes:
+    bearer: { type: http, scheme: bearer }
+  schemas:
+    Dock:
+      type: object
+      required: [DockCode]
+      properties:
+        DockCode: { type: string, example: 17 }
+        Sealed: { type: object, minProperties: 1, additionalProperties: false }
+security:
+  - bearer: []
+paths:
+  /docks:
+    post:
+      operationId: createDock
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Dock" }
+      responses:
+        "201":
+          description: created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Dock" }
+          links:
+            broken: { operationId: getDok, parameters: { dockCode: "$response.body#/DockCode" } }
+        "401": { description: no token }
+    get:
+      operationId: listDocks
+      parameters:
+        - { name: zone, in: query, required: true, schema: { type: string, pattern: "^(?=a)b$" } }
+      responses:
+        "200":
+          description: docks
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/Dock" } }
+              examples:
+                broken: { value: [{ DockCode: 5 }] }
+        "401": { description: no token }
+  /docks/{dockCode}:
+    get:
+      operationId: getDock
+      x-apitest-forbidden: true
+      parameters:
+        - { name: dockCode, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: dock
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Dock" }
+              example: { DockCode: 9 }
+        "401": { description: no token }
+  /pilots/{id}:
+    get:
+      operationId: getPilot
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: pilot }

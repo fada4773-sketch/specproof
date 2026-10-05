@@ -1,0 +1,59 @@
+openapi: 3.0.3
+info: { title: Nested, version: "1" }
+paths:
+  /ships:
+    post:
+      operationId: createShip
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Ship" }
+      responses:
+        "201":
+          description: created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Ship" }
+  /ships/{id}:
+    put:
+      operationId: updateShip
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Ship" }
+            example:
+              Name: Old
+              Pilot: { Name: Kim, Rank: 2 }
+      responses:
+        "204": { description: updated }
+components:
+  schemas:
+    Ship:
+      type: object
+      required: [Name, Pilot]
+      properties:
+        Id: { type: integer, readOnly: true }
+        Name: { type: string }
+        Pilot: { $ref: "#/components/schemas/Pilot" }
+        Crew:
+          type: array
+          items: { $ref: "#/components/schemas/Pilot" }
+        Tags:
+          type: array
+          items: { type: string }
+        Settings: { type: object }
+        Owner: { $ref: "#/components/schemas/Person" }
+        Guest: { $ref: "#/components/schemas/Person" }
+    Person:
+      type: object
+      additionalProperties: true
+      example: {}
+    Pilot:
+      type: object
+      required: [Name]
+      properties:
+        Id: { type: integer, readOnly: true }
+        Name: { type: string, maxLength: 12 }
+        Rank: { type: integer, minimum: 1, maximum: 5 }

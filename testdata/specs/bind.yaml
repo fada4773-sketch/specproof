@@ -1,0 +1,121 @@
+openapi: 3.0.3
+info: { title: bind, version: "1" }
+paths:
+  /authors:
+    post:
+      tags: [Author]
+      operationId: createAuthor
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Author' }
+            example: { name: "Ada" }
+      responses:
+        '201':
+          description: created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Author' }
+  /authors/{authorId}:
+    parameters:
+      - { name: authorId, in: path, required: true, schema: { type: integer } }
+    get:
+      tags: [Author]
+      operationId: getAuthor
+      responses: { '200': { description: ok } }
+  /authors/{authorId}/books:
+    post:
+      tags: [Book]
+      operationId: createBook
+      parameters:
+        - name: authorId
+          in: path
+          required: true
+          schema: { type: integer }
+          x-apitest-bind: { from: createAuthor, pointer: /id }
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, properties: { title: { type: string, example: "Go" } } }
+      responses:
+        '201':
+          description: created, only Location
+          headers:
+            Location: { schema: { type: string } }
+          links:
+            GetBook:
+              operationId: getBook
+              parameters: { bookId: '$response.header.Location' }
+            CreateReview:
+              operationId: createReview
+              parameters:
+                path.bookId: '$response.header.Location'
+                lang: de
+                broken: '$response.body#/x'
+                sort: '$url'
+            Nowhere:
+              operationId: doesNotExist
+  /books/{bookId}:
+    get:
+      tags: [Book]
+      operationId: getBook
+      parameters:
+        - { name: bookId, in: path, required: true, schema: { type: integer } }
+      responses: { '200': { description: ok } }
+  /books/{bookId}/reviews:
+    post:
+      tags: [Review]
+      operationId: createReview
+      parameters:
+        - { name: bookId, in: path, required: true, schema: { type: integer } }
+        - { name: lang, in: query, schema: { type: string } }
+        - { name: sort, in: query, schema: { type: string } }
+      responses:
+        '201':
+          description: created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: { review: { type: object, properties: { id: { type: integer } } } }
+          links:
+            GetReview:
+              operationId: getReview
+              parameters: { reviewId: '$response.body#/review/id' }
+  /reviews/{reviewId}:
+    get:
+      tags: [Review]
+      operationId: getReview
+      parameters:
+        - { name: reviewId, in: path, required: true, schema: { type: integer } }
+      responses: { '200': { description: ok } }
+  /users:
+    post:
+      tags: [User]
+      operationId: createUser
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, properties: { username: { type: string } } }
+      responses: { '200': { description: ok, content: { application/json: { schema: { type: object, properties: { ok: { type: boolean } } } } } } }
+  /users/{username}:
+    get:
+      tags: [User]
+      operationId: getUser
+      parameters:
+        - { name: username, in: path, required: true, schema: { type: string } }
+      responses: { '200': { description: ok } }
+  /orphans/{orphanId}:
+    get:
+      tags: [Orphan]
+      operationId: getOrphan
+      parameters:
+        - { name: orphanId, in: path, required: true, schema: { type: integer } }
+      responses: { '200': { description: ok } }
+components:
+  schemas:
+    Author:
+      type: object
+      properties:
+        id: { type: integer, readOnly: true }
+        name: { type: string }

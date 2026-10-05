@@ -1,0 +1,15 @@
+openapi: 3.0.3
+info: { title: cycle, version: "1" }
+paths:
+  /a/{b}:
+    post:
+      tags: [A]
+      operationId: createA
+      parameters: [{ name: b, in: path, required: true, schema: { type: string }, x-apitest-bind: { from: "POST /b/{a}", pointer: /id } }]
+      responses: { '201': { description: ok } }
+  /b/{a}:
+    post:
+      tags: [B]
+      operationId: createB
+      parameters: [{ name: a, in: path, required: true, schema: { type: string }, x-apitest-bind: { from: createA, pointer: /id } }]
+      responses: { '201': { description: ok } }

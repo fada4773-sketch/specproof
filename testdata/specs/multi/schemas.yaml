@@ -1,0 +1,10 @@
+Book:
+  type: object
+  required: [id]
+  properties:
+    id: { type: integer }
+    author: { $ref: '#/Author' }
+Author:
+  type: object
+  properties:
+    name: { type: string }

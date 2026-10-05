@@ -1,0 +1,145 @@
+openapi: 3.0.3
+info: { title: cases, version: "1" }
+paths:
+  /planets:
+    post:
+      tags: [Planet]
+      operationId: createPlanet
+      requestBody:
+        required: true
+        content:
+          application/xml:
+            schema: { $ref: '#/components/schemas/PlanetCreate' }
+          application/json:
+            schema: { $ref: '#/components/schemas/PlanetCreate' }
+            examples:
+              valid-planet:
+                value: { code: "l", name: "Logistik" }
+              missing-name:
+                value: { code: "x" }
+              second:
+                value: { code: "s", name: "Second" }
+      responses:
+        '201':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Planet' }
+              examples:
+                valid-planet:
+                  value: { id: 1, code: "l", name: "Logistik" }
+        '400':
+          description: bad
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              examples:
+                missing-name:
+                  value: { error: "name is required" }
+      x-apitest-ignore: [/id]
+    get:
+      tags: [Planet]
+      operationId: listPlanets
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer }
+          examples:
+            small: { value: 1 }
+            large: { value: 100 }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/Planet' } }
+              example: [{ id: 1, code: "l", name: "Logistik" }]
+  /planets/{code}:
+    parameters:
+      - { name: code, in: path, required: true, schema: { type: string }, example: "l" }
+    get:
+      tags: [Planet]
+      operationId: getPlanet
+      responses:
+        '200': { description: ok }
+    put:
+      tags: [Planet]
+      operationId: updatePlanet
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PlanetCreate' }
+      responses:
+        '2XX': { description: ok }
+    delete:
+      tags: [Planet]
+      operationId: deletePlanet
+      x-apitest-skip: "deletion not until phase 2"
+      responses:
+        '204': { description: ok }
+  /moons:
+    post:
+      tags: [Moon Code]
+      operationId: createCountry
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [iso, name, region, aliases]
+              properties:
+                id: { type: integer, readOnly: true, example: 9 }
+                iso: { type: string, example: "DE" }
+                name: { type: string, example: "Deutschland" }
+                region: { type: string, enum: [eu, us] }
+                note: { type: string }
+                tags: { type: array, items: { type: string, example: "x" } }
+                aliases: { type: array, items: { type: string } }
+      responses:
+        '201': { description: ok }
+  /uploads:
+    post:
+      operationId: upload
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: { type: string, format: binary }
+      responses:
+        '201': { description: ok }
+  /required-body:
+    post:
+      tags: [Moon Code]
+      operationId: needsBody
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [missing, many]
+              properties:
+                missing: { type: string }
+                many: { type: array, minItems: 1, items: { type: string } }
+      responses:
+        default: { description: ok }
+components:
+  schemas:
+    PlanetCreate:
+      type: object
+      required: [code, name]
+      properties:
+        code: { type: string, example: "p" }
+        name: { type: string, example: "Personal" }
+    Planet:
+      allOf:
+        - $ref: '#/components/schemas/PlanetCreate'
+        - type: object
+          properties:
+            id: { type: integer }
+    Error:
+      type: object
+      properties:
+        error: { type: string }

@@ -1,0 +1,8 @@
+{
+  "updateBookClass.x-apitest-compare": "schema",
+  "updateBookClass.x-apitest-verify": false,
+  "updateStudentClass.x-apitest-compare": "schema",
+  "updateStudentClass.x-apitest-verify": false,
+  "deleteBookClass.x-apitest-order": 10,
+  "deleteStudentClass.x-apitest-order": 10
+}

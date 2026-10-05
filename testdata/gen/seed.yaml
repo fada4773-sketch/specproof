@@ -1,0 +1,98 @@
+openapi: 3.0.3
+info: { title: Starport seeds, version: "1" }
+paths:
+  /Moon:
+    get:
+      operationId: GetMoons
+      tags: [Moon]
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/MoonRead" }
+  /Moon/{Id}:
+    parameters:
+      - { name: Id, in: path, required: true, schema: { type: integer } }
+    get:
+      operationId: GetMoon
+      tags: [Moon]
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MoonRead" }
+  /Garden:
+    get:
+      operationId: GetGardens
+      tags: [Garden]
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/GardenRead" }
+  /Garden/{Code}:
+    parameters:
+      - { name: Code, in: path, required: true, schema: { type: string } }
+    get:
+      operationId: GetGarden
+      tags: [Garden]
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GardenRead" }
+  /DockPreset/Tier/{tier}:
+    parameters:
+      - { name: tier, in: path, required: true, schema: { type: string } }
+      - { name: dockCode, in: query, required: false, schema: { type: string } }
+    get:
+      operationId: GetDockPresets
+      tags: [Dock]
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/DockRead" }
+  /Dock/{Code}:
+    parameters:
+      - { name: Code, in: path, required: true, schema: { type: string } }
+    get:
+      operationId: GetDock
+      tags: [Dock]
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DockRead" }
+components:
+  schemas:
+    MoonRead:
+      type: object
+      required: [Id]
+      properties:
+        Id: { type: integer }
+        Code: { type: string }
+    GardenRead:
+      type: object
+      required: [Code]
+      properties:
+        Code: { type: string }
+        Tier: { type: string, nullable: true }
+    DockRead:
+      type: object
+      required: [Code, Name]
+      properties:
+        Code: { type: string }
+        Name: { type: string }

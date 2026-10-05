@@ -1,0 +1,156 @@
+openapi: 3.0.3
+info: { title: Ticket, version: "1" }
+# PascalCase body fields with camelCase path parameters, collections behind
+# literal segments and producers that are only found by the resource name or
+# a field name.
+paths:
+  /tickets:
+    post:
+      operationId: createTicket
+      tags: [Ticket]
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, properties: { Name: { type: string } } }
+      responses:
+        "201":
+          description: created
+          content:
+            application/json:
+              schema: { type: object, properties: { Id: { type: string }, Name: { type: string } } }
+  /tickets/by-id/{ticketId}:
+    get:
+      operationId: getTicketById
+      tags: [Ticket]
+      parameters:
+        - { name: ticketId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: ok }
+  /bin:
+    post:
+      operationId: createBin
+      tags: [Ticket]
+      responses:
+        "201":
+          description: created
+          content:
+            application/json:
+              schema: { type: object, properties: { BinCode: { type: string } } }
+  /tickets/{ticketId}/bins/{binCode}:
+    get:
+      operationId: getBin
+      tags: [Ticket]
+      parameters:
+        - { name: ticketId, in: path, required: true, schema: { type: string } }
+        - { name: binCode, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: ok }
+  /cargo/receive:
+    post:
+      operationId: receiveGoods
+      tags: [Ticket]
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, properties: { LotNumber: { type: string } } }
+      responses:
+        "202":
+          description: accepted
+          content:
+            application/json:
+              schema: { type: object, properties: { Status: { type: string } } }
+  /lots/{lotNumber}:
+    get:
+      operationId: getLot
+      tags: [Ticket]
+      parameters:
+        - { name: lotNumber, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: ok }
+  # createPallet depends on createCrate explicitly; binding createCrate's
+  # palletId to createPallet heuristically would close a cycle.
+  /pallets/{crateId}:
+    post:
+      operationId: createPallet
+      tags: [Shipping]
+      parameters:
+        - name: crateId
+          in: path
+          required: true
+          schema: { type: string }
+          x-apitest-bind: { from: createCrate, pointer: /Id }
+      responses:
+        "201":
+          description: created
+          content:
+            application/json:
+              schema: { type: object, properties: { Id: { type: string } } }
+  /crates/{palletId}:
+    post:
+      operationId: createCrate
+      tags: [Shipping]
+      parameters:
+        - { name: palletId, in: path, required: true, schema: { type: string } }
+      responses:
+        "201":
+          description: created
+          content:
+            application/json:
+              schema: { type: object, properties: { Id: { type: string } } }
+  # The carrier resource is created under another tag; assigning it to a
+  # route is tagged Route.
+  /carriers:
+    post:
+      operationId: createCarrier
+      tags: [Carrier]
+      responses:
+        "201":
+          description: created
+          content:
+            application/json:
+              schema: { type: object, properties: { Id: { type: string } } }
+  /routes/{routeId}/carriers/{carrierId}/assign:
+    put:
+      operationId: assignCarrier
+      tags: [Route]
+      parameters:
+        - { name: routeId, in: path, required: true, schema: { type: string } }
+        - { name: carrierId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: ok }
+  # Dock depends on Gate explicitly, so Gate must not depend on Dock.
+  /docks/{gateId}:
+    post:
+      operationId: createDock
+      tags: [Dock]
+      parameters:
+        - name: gateId
+          in: path
+          required: true
+          schema: { type: string }
+          x-apitest-bind: { from: createGate, pointer: /Id }
+      responses:
+        "201":
+          description: created
+          content:
+            application/json:
+              schema: { type: object, properties: { Id: { type: string } } }
+  /gates:
+    post:
+      operationId: createGate
+      tags: [Gate]
+      responses:
+        "201":
+          description: created
+          content:
+            application/json:
+              schema: { type: object, properties: { Id: { type: string } } }
+  /gates/{gateId}/docks/{dockId}:
+    get:
+      operationId: getGateDock
+      tags: [Gate]
+      parameters:
+        - { name: gateId, in: path, required: true, schema: { type: string } }
+        - { name: dockId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: ok }

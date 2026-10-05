@@ -1,0 +1,47 @@
+{
+  "openapi": "3.0.3",
+  "info": { "title": "basic", "version": "1.0" },
+  "servers": [{ "url": "http://localhost/api/v1" }],
+  "paths": {
+    "/planets": {
+      "post": {
+        "tags": ["Planet"],
+        "operationId": "createPlanet",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/Planet" },
+              "example": { "code": "l", "name": "Logistik" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "created",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/Planet" } }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": ["Planet"],
+        "operationId": "listPlanets",
+        "responses": { "200": { "description": "ok" } }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Planet": {
+        "type": "object",
+        "required": ["code", "name"],
+        "properties": {
+          "code": { "type": "string" },
+          "name": { "type": "string", "nullable": true }
+        }
+      }
+    }
+  }
+}

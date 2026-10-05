@@ -1,0 +1,19 @@
+openapi: 3.0.3
+info: { title: x, version: "1" }
+security: [{ bearer: [] }]
+paths:
+  /things/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string }, description: path-level }
+    get:
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer }, description: op-level }
+        - { name: q, in: query, schema: { type: string } }
+      responses: { '200': { description: ok } }
+    delete:
+      operationId: deleteThing
+      security: []
+      responses: { '204': { description: ok } }
+components:
+  securitySchemes:
+    bearer: { type: http, scheme: bearer }

@@ -1,0 +1,32 @@
+openapi: 3.0.3
+info: { title: x, version: "1" }
+paths:
+  /books:
+    post:
+      operationId: createBook
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Book' }
+            examples:
+              good: { value: { title: "Go", price: 10 } }
+              wrong-type: { value: { title: "Go", price: "zehn" } }
+              missing-title: { value: { price: 1 } }
+      responses:
+        '201': { description: ok }
+        '400':
+          description: bad
+          content:
+            application/json:
+              schema: { type: object }
+              examples:
+                missing-title: { value: { error: "title is required" } }
+components:
+  schemas:
+    Book:
+      type: object
+      required: [title]
+      properties:
+        title: { type: string }
+        price: { type: number }
+      example: { price: 1 }

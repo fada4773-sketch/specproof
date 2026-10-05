@@ -1,0 +1,44 @@
+# Accepted deviations between the Petstore and its spec (see the README of apitest).
+# Every entry is classified in findings.md. Matching is exact: an entry only
+# applies to its case and to exactly this status code or result status.
+
+- case: pet/updatePetWithForm/default
+  expected: 200
+  actual: 400
+  reason: "API: the server requires the query parameter name, the spec marks it optional (\"No Name provided\")"
+  expires: 2026-12-31
+
+- case: pet/deletePet/default
+  status: SCHEMA_VIOLATION
+  reason: "Spec: DELETE /pet/{petId} returns the text \"Pet deleted\", the spec documents no body"
+  expires: 2026-12-31
+
+- case: user/logoutUser/default
+  status: SCHEMA_VIOLATION
+  reason: "Spec: GET /user/logout returns the text \"User logged out\", the spec documents no body"
+  expires: 2026-12-31
+
+- case: user/updateUser/default
+  status: SCHEMA_VIOLATION
+  reason: "Spec: PUT /user/{username} returns the updated user, the spec documents no body"
+  expires: 2026-12-31
+
+- case: user/createUsersWithListInput/default
+  status: SCHEMA_VIOLATION
+  reason: "Spec: POST /user/createWithList returns an array of users, the spec documents a single User"
+  expires: 2026-12-31
+
+- case: user/loginUser/default
+  status: SCHEMA_VIOLATION
+  reason: "API: X-Expires-After is not a date-time and the body is plain text although the content type is JSON"
+  expires: 2026-12-31
+
+- case: pet/uploadFile/default
+  status: NOT_BUILDABLE
+  reason: "apitest does not send application/octet-stream bodies (known limit, see 'Limits' in the README of apitest)"
+  expires: 2027-06-30
+
+- case: pet/findPetsByTags/default
+  status: NOT_BUILDABLE
+  reason: "Spec: the required query parameter tags has no example"
+  expires: 2026-12-31

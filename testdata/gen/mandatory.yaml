@@ -1,0 +1,51 @@
+openapi: 3.0.3
+info: { title: Starport pilots, version: "1" }
+paths:
+  /Pilot:
+    get:
+      operationId: GetPilots
+      tags: [Pilot]
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/PilotRead" }
+  /Pilot/{Code}:
+    parameters:
+      - { name: Code, in: path, required: true, schema: { type: string } }
+    get:
+      operationId: GetPilot
+      tags: [Pilot]
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PilotRead" }
+components:
+  schemas:
+    PilotRead:
+      type: object
+      required: [Code]
+      properties:
+        Code: { type: string }
+        Rank: { type: integer, nullable: true }
+        Detail: { $ref: "#/components/schemas/PilotDetail" }
+        Ships:
+          type: array
+          items: { $ref: "#/components/schemas/ShipInfo" }
+    PilotDetail:
+      type: object
+      properties:
+        License: { $ref: "#/components/schemas/License" }
+    License:
+      type: object
+      properties:
+        Expires: { type: string, nullable: true }
+    ShipInfo:
+      type: object
+      properties:
+        Callsign: { type: string, nullable: true }

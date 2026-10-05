@@ -1,0 +1,41 @@
+openapi: 3.0.3
+info: { title: plan, version: "1" }
+paths:
+  /authors:
+    post:
+      tags: [Author]
+      operationId: createAuthor
+      requestBody: { content: { application/json: { schema: { type: object }, example: { name: Ada } } } }
+      responses: { '201': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Thing' } } } } }
+  /authors/{authorId}:
+    parameters: [{ name: authorId, in: path, required: true, schema: { type: integer } }]
+    get: { tags: [Author], operationId: getAuthor, responses: { '200': { description: ok } } }
+    delete: { tags: [Author], operationId: deleteAuthor, responses: { '204': { description: ok } } }
+  /authors/{authorId}/books:
+    post:
+      tags: [Book]
+      operationId: createBook
+      parameters: [{ name: authorId, in: path, required: true, schema: { type: integer }, x-apitest-bind: { from: createAuthor, pointer: /id } }]
+      requestBody: { content: { application/json: { schema: { type: object }, example: { title: Go } } } }
+      responses: { '201': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Thing' } } } } }
+  /books/{bookId}:
+    parameters: [{ name: bookId, in: path, required: true, schema: { type: integer }, x-apitest-bind: { from: createBook, pointer: /id } }]
+    get: { tags: [Book], operationId: getBook, responses: { '200': { description: ok } } }
+    delete: { tags: [Book], operationId: deleteBook, responses: { '204': { description: ok } } }
+  /books/{bookId}/reviews:
+    post:
+      tags: [Review]
+      operationId: createReview
+      parameters: [{ name: bookId, in: path, required: true, schema: { type: integer }, x-apitest-bind: { from: createBook, pointer: /id } }]
+      responses: { '201': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/Thing' } } } } }
+  /reviews/{reviewId}:
+    parameters: [{ name: reviewId, in: path, required: true, schema: { type: integer }, x-apitest-bind: { from: createReview, pointer: /id } }]
+    get: { tags: [Review], operationId: getReview, x-apitest-order: 2, responses: { '200': { description: ok } } }
+    delete: { tags: [Review], operationId: deleteReview, responses: { '204': { description: ok } } }
+  /reviews:
+    get: { tags: [Review], operationId: listReviews, responses: { '200': { description: ok } } }
+  /stats:
+    get: { tags: [Stats], operationId: getStats, responses: { '200': { description: ok } } }
+components:
+  schemas:
+    Thing: { type: object, properties: { id: { type: integer } } }

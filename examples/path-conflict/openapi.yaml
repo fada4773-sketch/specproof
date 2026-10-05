@@ -1,0 +1,289 @@
+openapi: 3.0.3
+info:
+  title: School
+  version: "1"
+security:
+  - bearer: []
+paths:
+  /book:
+    post:
+      operationId: createBook
+      tags: [Book]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/Book"}
+            example:
+              Class: K
+              Title: Every Sink
+      responses:
+        "201":
+          description: created
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Book"}
+              example:
+                Class: K
+                Id: 981
+                Title: Every Sink
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+  /book/{id}:
+    parameters:
+      - {name: id, in: path, required: true, schema: {type: integer, minimum: 1}, example: 981}
+    get:
+      operationId: getBookById
+      tags: [Book]
+      responses:
+        "200":
+          description: the book
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Book"}
+              example:
+                Class: K
+                Id: 981
+                Title: Every Sink
+        "404": {$ref: "#/components/responses/NotFound"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+    put:
+      operationId: updateBook
+      tags: [Book]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/Book"}
+            example:
+              Class: K
+              Title: How Troupe
+      responses:
+        "200":
+          description: updated
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Book"}
+              example:
+                Class: K
+                Id: 981
+                Title: How Troupe
+        "404": {$ref: "#/components/responses/NotFound"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+    delete:
+      operationId: deleteBook
+      tags: [Book]
+      responses:
+        "204": {description: deleted}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+  /book/{class}:
+    parameters:
+      - {name: class, in: path, required: true, schema: {type: string, pattern: "^[A-Z]$"}, example: K}
+    get:
+      operationId: getBookByClass
+      tags: [Book]
+      responses:
+        "200":
+          description: the books of the class
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: "#/components/schemas/Book"}}
+              example:
+                - Class: K
+                  Id: 981
+                  Title: Every Sink
+        "401": {$ref: "#/components/responses/Unauthorized"}
+    put:
+      operationId: updateBookClass
+      tags: [Book]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/ClassChange"}
+            example:
+              Class: X
+      responses:
+        "200":
+          description: the books, moved to the new class
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: "#/components/schemas/Book"}}
+              example:
+                - Class: K
+                  Id: 981
+                  Title: Every Sink
+        "401": {$ref: "#/components/responses/Unauthorized"}
+      x-apitest-compare: schema
+      x-apitest-verify: false
+    delete:
+      operationId: deleteBookClass
+      tags: [Book]
+      responses:
+        "204": {description: all books of the class deleted}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+      x-apitest-order: 10
+  /student:
+    post:
+      operationId: createStudent
+      tags: [Student]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/Student"}
+            example:
+              Class: B
+              Name: Any Student
+      responses:
+        "201":
+          description: created
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Student"}
+              example:
+                Class: B
+                Id: 922
+                Name: Any Student
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+  /student/{id}:
+    parameters:
+      - {name: id, in: path, required: true, schema: {type: integer, minimum: 1}, example: 922}
+    get:
+      operationId: getStudentById
+      tags: [Student]
+      responses:
+        "200":
+          description: the student
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Student"}
+              example:
+                Class: B
+                Id: 922
+                Name: Any Student
+        "404": {$ref: "#/components/responses/NotFound"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+    put:
+      operationId: updateStudent
+      tags: [Student]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/Student"}
+            example:
+              Class: B
+              Name: Which Student
+      responses:
+        "200":
+          description: updated
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Student"}
+              example:
+                Class: B
+                Id: 922
+                Name: Which Student
+        "404": {$ref: "#/components/responses/NotFound"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+    delete:
+      operationId: deleteStudent
+      tags: [Student]
+      responses:
+        "204": {description: deleted}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+  /student/{class}:
+    parameters:
+      - {name: class, in: path, required: true, schema: {type: string, pattern: "^[A-Z]$"}, example: B}
+    get:
+      operationId: getStudentByClass
+      tags: [Student]
+      responses:
+        "200":
+          description: the students of the class
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: "#/components/schemas/Student"}}
+              example:
+                - Class: B
+                  Id: 922
+                  Name: Any Student
+        "401": {$ref: "#/components/responses/Unauthorized"}
+    put:
+      operationId: updateStudentClass
+      tags: [Student]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/ClassChange"}
+            example:
+              Class: X
+      responses:
+        "200":
+          description: the students, moved to the new class
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: "#/components/schemas/Student"}}
+              example:
+                - Class: B
+                  Id: 922
+                  Name: Any Student
+        "401": {$ref: "#/components/responses/Unauthorized"}
+      x-apitest-compare: schema
+      x-apitest-verify: false
+    delete:
+      operationId: deleteStudentClass
+      tags: [Student]
+      responses:
+        "204": {description: all students of the class deleted}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+      x-apitest-order: 10
+components:
+  securitySchemes:
+    bearer: {type: http, scheme: bearer}
+  responses:
+    BadRequest:
+      description: invalid input
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Problem"}
+    NotFound:
+      description: not found
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Problem"}
+    Unauthorized:
+      description: no or invalid token
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Problem"}
+  schemas:
+    Book:
+      type: object
+      required: [Title, Class]
+      properties:
+        Id: {type: integer, readOnly: true}
+        Title: {type: string, minLength: 1, maxLength: 60}
+        Class: {type: string, pattern: "^[A-Z]$"}
+    Student:
+      type: object
+      required: [Name, Class]
+      properties:
+        Id: {type: integer, readOnly: true}
+        Name: {type: string, minLength: 1, maxLength: 60}
+        Class: {type: string, pattern: "^[A-Z]$"}
+    ClassChange:
+      type: object
+      required: [Class]
+      properties:
+        Class: {type: string, pattern: "^[A-Z]$"}
+    Problem:
+      type: object
+      required: [Message]
+      properties:
+        Message: {type: string}

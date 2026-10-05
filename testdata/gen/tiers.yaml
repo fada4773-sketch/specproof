@@ -1,0 +1,40 @@
+openapi: 3.0.3
+info: { title: Starport tiers, version: "1" }
+paths:
+  /DockPreset/Tier/{tier}:
+    parameters:
+      - { name: tier, in: path, required: true, schema: { type: string } }
+      - { name: dockCode, in: query, required: false, schema: { type: string } }
+      - { name: sectorCode, in: query, required: false, schema: { type: string } }
+      - { name: pilotNumber, in: query, required: false, schema: { type: string } }
+    get:
+      operationId: GetDockPresets
+      tags: [Dock]
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/DockRead" }
+  /Dock/{Code}:
+    parameters:
+      - { name: Code, in: path, required: true, schema: { type: string, pattern: "^[a-z]+$" } }
+    get:
+      operationId: GetDock
+      tags: [Dock]
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DockRead" }
+components:
+  schemas:
+    DockRead:
+      type: object
+      required: [Code, Name]
+      properties:
+        Code: { type: string }
+        Name: { type: string, maxLength: 40 }

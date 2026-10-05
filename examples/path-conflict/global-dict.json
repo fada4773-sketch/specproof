@@ -1,0 +1,106 @@
+{
+  "version": 1,
+  "schemas": {
+    "Book": {
+      "type": "object",
+      "properties": {
+        "Class": {
+          "type": "string",
+          "pattern": "^[A-Z]$",
+          "required": true,
+          "value": "K"
+        },
+        "Id": {
+          "type": "integer",
+          "readOnly": true,
+          "value": 981
+        },
+        "Title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60,
+          "required": true,
+          "value": "Every Sink"
+        }
+      }
+    },
+    "ClassChange": {
+      "type": "object",
+      "properties": {
+        "Class": {
+          "type": "string",
+          "pattern": "^[A-Z]$",
+          "required": true,
+          "value": "X"
+        }
+      }
+    },
+    "Problem": {
+      "type": "object",
+      "properties": {
+        "Message": {
+          "type": "string",
+          "required": true,
+          "value": "Systematically improve the woman monthly."
+        }
+      }
+    },
+    "Student": {
+      "type": "object",
+      "properties": {
+        "Class": {
+          "type": "string",
+          "pattern": "^[A-Z]$",
+          "required": true,
+          "value": "B"
+        },
+        "Id": {
+          "type": "integer",
+          "readOnly": true,
+          "value": 922
+        },
+        "Name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60,
+          "required": true,
+          "value": "Any Student"
+        }
+      }
+    }
+  },
+  "parameters": {
+    "path.class": {
+      "type": "string",
+      "pattern": "^[A-Z]$",
+      "required": true,
+      "value": "J"
+    },
+    "path.id": {
+      "type": "integer",
+      "minimum": 1,
+      "required": true,
+      "value": 710
+    }
+  },
+  "paths": {
+    "/book/{id}": 404,
+    "/student/{id}": 307
+  },
+  "records": {
+    "Book": [
+      {
+        "Class": "K",
+        "Id": 981,
+        "Title": "Every Sink"
+      }
+    ],
+    "Student": [
+      {
+        "Class": "B",
+        "Id": 922,
+        "Name": "Any Student"
+      }
+    ]
+  }
+}

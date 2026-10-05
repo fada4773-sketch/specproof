@@ -1,0 +1,773 @@
+package record
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/url"
+	"slices"
+	"sort"
+	"strings"
+
+	"github.com/getkin/kin-openapi/openapi3"
+
+	"github.com/fada4773-sketch/specproof/internal/gen/model"
+	"github.com/fada4773-sketch/specproof/internal/spec"
+)
+
+// rec is the one record of a table the run follows.
+type rec struct {
+	table string
+	data  map[string]any // the fields; an item GET adds to those of the list
+	id    any            // local id (json.Number), nil without one
+	newID any            // local id after the record was created again
+	from  string         // where it was selected
+	keys  map[string]bool
+	ops   []string // the GETs whose answers the data holds
+	path  string   // the POST path whose list it was selected from, "" for the first of a table
+}
+
+// known are the values the parameters can take: the fields of the
+// selected records.
+type known struct {
+	scoped map[string]any    // "table.field" (lower case) → value
+	plain  map[string]any    // "field" → value of the first table that has it
+	names  map[string]string // "table.field" → field name as the record writes it
+	tables []string
+}
+
+func newKnown() *known {
+	return &known{scoped: map[string]any{}, plain: map[string]any{}, names: map[string]string{}}
+}
+
+func (k *known) clone() *known {
+	c := newKnown()
+	for x, v := range k.scoped {
+		c.scoped[x] = v
+	}
+	for x, v := range k.plain {
+		c.plain[x] = v
+	}
+	for x, v := range k.names {
+		c.names[x] = v
+	}
+	c.tables = append(c.tables, k.tables...)
+	return c
+}
+
+// add takes the simple fields of a record of table t.
+func (k *known) add(t string, o map[string]any) {
+	if !contains(k.tables, t) {
+		k.tables = append(k.tables, t)
+		// longer names first: "dockgroup" before "dock"
+		sort.SliceStable(k.tables, func(i, j int) bool { return len(k.tables[i]) > len(k.tables[j]) })
+	}
+	for _, f := range sortedKeys(o) {
+		v := o[f]
+		if !scalar(v) {
+			continue
+		}
+		lf := strings.ToLower(f)
+		k.scoped[t+"."+lf] = v
+		k.names[t+"."+lf] = f
+		if _, ok := k.plain[lf]; !ok {
+			k.plain[lf] = v
+		}
+	}
+}
+
+// pval is a resolved parameter and the record field it came from.
+type pval struct {
+	v     any
+	table string // "" for a value of the config or the spec
+	field string
+	// format and parts are set for a value put together from several
+	// fields ("format" in "params")
+	format string
+	parts  []pval
+}
+
+// field finds a field for a parameter: in the table the path segment in
+// front of it names, in a table its name starts with (dockNumber), or
+// by name alone unless the name is generic (id, code).
+func (k *known) field(seg, name string) (pval, bool) {
+	ln := strings.ToLower(name)
+	try := func(t string, names ...string) (pval, bool) {
+		for _, n := range names {
+			if v, ok := k.scoped[t+"."+n]; ok {
+				return pval{v: v, table: t, field: k.names[t+"."+n]}, true
+			}
+		}
+		return pval{}, false
+	}
+	if seg != "" {
+		ls := strings.ToLower(seg)
+		for _, t := range []string{ls, strings.TrimSuffix(ls, "s"), strings.TrimSuffix(ls, "es")} {
+			names := []string{ln}
+			if rest := strings.TrimPrefix(ln, t); rest != ln && rest != "" {
+				names = append(names, rest)
+			}
+			if v, ok := try(t, names...); ok {
+				return v, true
+			}
+		}
+	}
+	for _, t := range k.tables {
+		if rest := strings.TrimPrefix(ln, t); rest != ln && rest != "" {
+			if v, ok := try(t, ln, rest); ok {
+				return v, true
+			}
+		}
+	}
+	if !generic(ln) {
+		if v, ok := k.plain[ln]; ok {
+			for _, t := range k.tables {
+				if x, ok := k.scoped[t+"."+ln]; ok && same(x, v) {
+					return pval{v: v, table: t, field: k.names[t+"."+ln]}, true
+				}
+			}
+		}
+	}
+	return pval{}, false
+}
+
+func generic(name string) bool {
+	return contains([]string{"id", "uuid", "key", "code", "name", "number", "nr", "no"}, name)
+}
+
+// fetched is the answer of one GET of the read phase.
+type fetched struct {
+	op   *spec.Operation
+	url  string
+	resp response
+	vals map[string]pval
+	tag  string // the tag whose step read it
+}
+
+// reader runs the read phase: every GET whose parameters are known, until
+// no further one is.
+type reader struct {
+	n     namer
+	ctx   context.Context
+	cfg   *Config
+	s     *spec.Spec
+	c     *Client
+	res   *Result
+	ops   map[string]bool // the operations of the run
+	cache map[string]response
+	recs  map[string]*rec // table → its first record, the one the paths address
+	// all are the records of each table: the first one, and one more for
+	// every POST below a list of its own (a dock per planet and per moon)
+	all map[string][]*rec
+	// creates are the POSTs that create records: path → table
+	creates map[string]string
+	// forPath is the record a POST of that path creates
+	forPath map[string]*rec
+	k       *known
+	gets    map[string]*fetched // operationId → its answer
+	// failed are the GETs that could not be read: operationId → reason
+	failed map[string]string
+	// down is the error of the first request when the instance did not
+	// answer at all
+	down error
+	// tag is the tag whose step runs now, for the log
+	tag string
+	// volatile are the fields that changed between two reads: field →
+	// operations
+	volatile map[string][]string
+	// order are the records in the order they were selected or loaded
+	order []*rec
+	// stored are the records of the last run; a table whose record is
+	// selected again takes the same one
+	stored map[string][]StoredRecord
+	// reuse leaves out the GETs of unchanged operations whose records
+	// the last run stored
+	reuse bool
+	needs map[string]bool
+}
+
+// get sends a GET once; a second request for the same URL takes the answer
+// of the first.
+func (rd *reader) get(u, why string) (response, error) {
+	if r, ok := rd.cache[u]; ok {
+		return r, nil
+	}
+	r, err := rd.c.do(rd.ctx, http.MethodGet, u, nil, rd.tag, why)
+	if err != nil {
+		return r, err
+	}
+	rd.cache[u] = r
+	return r, nil
+}
+
+// getOps are the GETs of the run in a stable order: fewer path parameters
+// first.
+func (rd *reader) getOps() []*spec.Operation {
+	var out []*spec.Operation
+	for _, op := range rd.s.Ops {
+		if op.Method == http.MethodGet && (rd.ops[op.ID] || rd.isFrom(op)) {
+			out = append(out, op)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		a, b := strings.Count(out[i].Path, "{"), strings.Count(out[j].Path, "{")
+		if a != b {
+			return a < b
+		}
+		return out[i].Path < out[j].Path
+	})
+	return out
+}
+
+// url fills the parameters of an operation; ok is false while a path
+// parameter or a required query parameter has no value.
+func (rd *reader) url(op *spec.Operation, k *known) (string, map[string]pval, bool) {
+	path := op.Path
+	vals := map[string]pval{}
+	q := url.Values{}
+	for _, p := range op.Params {
+		if p.In != openapi3.ParameterInPath && p.In != openapi3.ParameterInQuery {
+			continue
+		}
+		v, ok := rd.value(op, p, k)
+		if !ok {
+			if p.In == openapi3.ParameterInPath || p.Required {
+				return "", nil, false
+			}
+			continue
+		}
+		vals[p.Name] = v
+		if p.In == openapi3.ParameterInPath {
+			path = strings.ReplaceAll(path, "{"+p.Name+"}", url.PathEscape(text(v.v)))
+		} else {
+			q.Set(p.Name, text(v.v))
+		}
+	}
+	if len(q) > 0 {
+		path += "?" + q.Encode()
+	}
+	return path, vals, true
+}
+
+// value resolves one parameter: the config first, then the fields of the
+// selected records, then (query only) the example, default or first enum
+// value of the spec, as apitest would send them.
+func (rd *reader) value(op *spec.Operation, p *openapi3.Parameter, k *known) (pval, bool) {
+	seg := ""
+	if p.In == openapi3.ParameterInPath {
+		seg = model.SegmentBefore(op.Path, p.Name)
+	}
+	if e, ok := rd.cfg.param(op.ID, p.Name); ok {
+		switch {
+		case e.Format != "":
+			return rd.format(e.Format, k)
+		case e.Field != "":
+			return k.field(seg, e.Field)
+		}
+		return pval{v: e.Value}, true
+	}
+	if v, ok := k.field(seg, p.Name); ok {
+		return v, true
+	}
+	if p.In != openapi3.ParameterInQuery {
+		return pval{}, false
+	}
+	switch {
+	case p.Example != nil:
+		return pval{v: spec.Normalize(p.Example)}, true
+	case p.Schema != nil && p.Schema.Value != nil && p.Schema.Value.Default != nil:
+		return pval{v: spec.Normalize(p.Schema.Value.Default)}, true
+	case p.Required && p.Schema != nil && p.Schema.Value != nil && len(p.Schema.Value.Enum) > 0:
+		return pval{v: spec.Normalize(p.Schema.Value.Enum[0])}, true
+	}
+	return pval{}, false
+}
+
+// format puts a value together from fields of the selected records:
+// {Dock.id} is the field id of the record of the DTO Dock, {dockCode} a
+// field found by its name alone. The value belongs to the record of the
+// last placeholder, so "{Planet.id}-{Dock.id}" addresses the dock.
+func (rd *reader) format(format string, k *known) (pval, bool) {
+	var parts []pval
+	out, ok := fill(format, func(name string) (string, bool) {
+		var v pval
+		var ok bool
+		if dto, f, scoped := strings.Cut(name, "."); scoped {
+			t, lf := rd.n.table(dto), strings.ToLower(f)
+			var x any
+			if x, ok = k.scoped[t+"."+lf]; ok {
+				v = pval{v: x, table: t, field: k.names[t+"."+lf]}
+			}
+		} else {
+			v, ok = k.field("", name)
+		}
+		parts = append(parts, v)
+		return text(v.v), ok
+	})
+	if !ok {
+		return pval{}, false
+	}
+	last := parts[len(parts)-1]
+	return pval{v: out, table: last.table, format: format, parts: parts}, true
+}
+
+// fill replaces every {name} of a format by its value; ok is false as soon
+// as one has none.
+func fill(format string, value func(name string) (string, bool)) (string, bool) {
+	var b strings.Builder
+	rest := format
+	for {
+		i := strings.Index(rest, "{")
+		j := strings.Index(rest, "}")
+		if i < 0 || j < i {
+			b.WriteString(rest)
+			return b.String(), true
+		}
+		v, ok := value(strings.TrimSpace(rest[i+1 : j]))
+		if !ok {
+			return "", false
+		}
+		b.WriteString(rest[:i] + v)
+		rest = rest[j+1:]
+	}
+}
+
+// read runs all GETs until no further one has all its parameters.
+func (rd *reader) read() {
+	rd.readOps(rd.getOps())
+	rd.unread(rd.getOps())
+}
+
+// readOps runs these GETs until no further one has all its parameters;
+// each one twice, to find fields that change between two reads.
+func (rd *reader) readOps(ops []*spec.Operation) {
+	for progress := true; progress; {
+		progress = false
+		for _, op := range ops {
+			if rd.gets[op.ID] != nil || rd.failed[op.ID] != "" || rd.covered(op) {
+				continue
+			}
+			u, vals, ok := rd.url(op, rd.k)
+			if !ok {
+				continue
+			}
+			progress = true
+			r, err := rd.get(u, "read "+op.ID)
+			if err != nil && len(rd.cache) == 0 {
+				rd.down = err
+				return
+			}
+			switch {
+			case err != nil:
+				rd.failed[op.ID] = err.Error()
+				rd.res.note(CodeFetch, op.ID, "GET %s: %v", u, err)
+				continue
+			case !r.ok():
+				rd.failed[op.ID] = fmt.Sprintf("status %d (#%d)", r.Status, r.Seq)
+				rd.res.note(CodeFetch, op.ID, "#%d GET %s answers %d%s", r.Seq, u, r.Status, short(r.Body))
+				continue
+			}
+			f := &fetched{op: op, url: u, resp: r, vals: vals, tag: rd.tag}
+			rd.gets[op.ID] = f
+			rd.again(f)
+			rd.used(vals)
+			rd.take(f)
+		}
+	}
+}
+
+// again reads a GET a second time; fields with another value are listed
+// for IgnoreFields.
+func (rd *reader) again(f *fetched) {
+	r, err := rd.c.do(rd.ctx, http.MethodGet, f.url, nil, rd.tag, "read "+f.op.ID+" again: do fields change?")
+	if err != nil || !r.ok() {
+		return
+	}
+	if rd.volatile == nil {
+		rd.volatile = map[string][]string{}
+	}
+	for _, name := range diffFields(sortLists(f.resp.Body), sortLists(r.Body), "") {
+		entry := fmt.Sprintf("%s #%d/#%d", f.op.ID, f.resp.Seq, r.Seq)
+		if !contains(rd.cfg.Run.IgnoreFields, name) && !contains(rd.volatile[name], entry) {
+			rd.volatile[name] = append(rd.volatile[name], entry)
+		}
+	}
+}
+
+// unread reports the GETs that could not be read.
+func (rd *reader) unread(ops []*spec.Operation) {
+	for _, op := range ops {
+		if rd.gets[op.ID] != nil || rd.failed[op.ID] != "" || rd.covered(op) {
+			continue
+		}
+		var missing []string
+		for _, name := range rd.missing(op) {
+			missing = append(missing, "{"+name+"}")
+		}
+		rd.failed[op.ID] = "no value for " + strings.Join(missing, ", ")
+		rd.res.note(CodeParam, op.ID, "GET %s is not read: no record has a field for %s; set it in \"params\" (\"%s.%s\": <value> or {\"field\": \"<field>\"})",
+			op.Path, strings.Join(missing, ", "), op.ID, strings.Trim(missing[0], "{}"))
+	}
+}
+
+// from reports whether the record of t may be taken from the list of op:
+// the one "select" names in "from", else any.
+func (rd *reader) from(t string, op *spec.Operation) bool {
+	f := rd.cfg.selection(t, rd.n).From
+	return f == "" || strings.EqualFold(f, op.ID)
+}
+
+// isFrom reports whether "select" names op in a "from".
+func (rd *reader) isFrom(op *spec.Operation) bool {
+	for _, sel := range rd.cfg.Select {
+		if strings.EqualFold(sel.From, op.ID) {
+			return true
+		}
+	}
+	return false
+}
+
+// used marks the fields of the records the paths address them by.
+func (rd *reader) used(vals map[string]pval) {
+	for _, v := range vals {
+		for _, p := range append([]pval{v}, v.parts...) {
+			if r := rd.recs[p.table]; r != nil && p.field != "" {
+				r.keys[strings.ToLower(p.field)] = true
+			}
+		}
+	}
+}
+
+// take selects the record of a list, or adds an object to its record.
+func (rd *reader) take(f *fetched) {
+	ref := responseSchema(f.op, f.resp.Status)
+	if items, elems, _, ok := listOf(ref, f.resp.Body); ok {
+		t := rd.n.of(items)
+		// a POST at the path of the list creates its own record
+		own := t != "" && rd.creates[f.op.Path] == t && rd.forPath[f.op.Path] == nil
+		if t == "" || len(elems) == 0 || (rd.recs[t] != nil && !own) || (!own && !rd.from(t, f.op)) {
+			return
+		}
+		var free []any
+		for _, e := range elems {
+			if o, ok := e.(map[string]any); ok && rd.taken(t, o) == nil {
+				free = append(free, e)
+			}
+		}
+		free = rd.preferred(t, free)
+		i, reasons := rd.choose(t, free, rd.k, rd.k.tables, 0)
+		if i < 0 {
+			if rd.recs[t] == nil {
+				rd.res.problem(CodeSelectNone, f.op.ID, "no %s of #%d GET %s passes \"select\": %d elements%s", t, f.resp.Seq, f.url, len(elems), list(reasons))
+			}
+			return
+		}
+		o, _ := free[i].(map[string]any)
+		r := rd.selectRec(t, o, f)
+		if own {
+			rd.forPath[f.op.Path] = r
+			r.path = f.op.Path
+		}
+		return
+	}
+	t := rd.n.of(ref)
+	o, ok := f.resp.Body.(map[string]any)
+	if t == "" || !ok {
+		return
+	}
+	if r := rd.recs[t]; r != nil {
+		if rd.sameRecord(r, o, f.vals) {
+			for k, v := range o {
+				r.data[k] = v
+			}
+			if !slices.Contains(r.ops, f.op.ID) {
+				r.ops = append(r.ops, f.op.ID)
+			}
+			rd.k.add(t, o)
+		}
+		return
+	}
+	if rd.cfg.selection(t, rd.n).From != "" {
+		return // the record comes from its list
+	}
+	if reason := rd.check(t, o, rd.k, nil, 0); reason != "" {
+		rd.res.note(CodeSelectNone, f.op.ID, "#%d GET %s: the %s does not pass \"select\": %s", f.resp.Seq, f.url, t, reason)
+		return
+	}
+	rd.selectRec(t, o, f)
+}
+
+// sameRecord reports whether an object is the record: the same id, or
+// read with the values of the record.
+func (rd *reader) sameRecord(r *rec, o map[string]any, vals map[string]pval) bool {
+	if _, id := idOf(o); id != nil && r.id != nil {
+		return same(id, r.id)
+	}
+	for _, v := range vals {
+		if v.table == r.table {
+			return true
+		}
+	}
+	return false
+}
+
+// selectRec makes an element a record of t; the first one of a table is
+// the one the paths address.
+func (rd *reader) selectRec(t string, o map[string]any, f *fetched) *rec {
+	data := map[string]any{}
+	for k, v := range o {
+		data[k] = v
+	}
+	r := &rec{table: t, data: data, from: f.op.ID + " " + f.url, keys: map[string]bool{}, ops: []string{f.op.ID}}
+	if k, id := idOf(o); id != nil {
+		r.id = id
+		r.keys[strings.ToLower(k)] = true
+	}
+	rd.addRec(r)
+	return r
+}
+
+// addRec makes r a record of its table; the first one of a table is the
+// one the paths address.
+func (rd *reader) addRec(r *rec) {
+	t := r.table
+	rd.all[t] = append(rd.all[t], r)
+	rd.order = append(rd.order, r)
+	if rd.recs[t] == nil {
+		rd.recs[t] = r
+		rd.k.add(t, r.data)
+	}
+}
+
+// covered reports a GET the run leaves out: its operation is unchanged and
+// the records it would select were stored by the last run.
+func (rd *reader) covered(op *spec.Operation) bool {
+	if !rd.reuse || rd.needs[op.ID] {
+		return false
+	}
+	ref := responseSchema(op, 0)
+	if items, _, ok := listShape(ref); ok {
+		t := rd.n.of(items)
+		if t != "" && rd.creates[op.Path] == t && rd.forPath[op.Path] == nil {
+			return false // its POST creates a record of its own
+		}
+		return t == "" || rd.recs[t] != nil
+	}
+	t := rd.n.of(ref)
+	return t == "" || rd.recs[t] != nil
+}
+
+// preferred puts the element the last run selected for t first, so a
+// record read again (its DTO changed) stays the same one.
+func (rd *reader) preferred(t string, elems []any) []any {
+	for _, st := range rd.stored[t] {
+		old := st.rec()
+		for i, e := range elems {
+			if o, ok := e.(map[string]any); ok && old.is(o) && (old.id != nil || old.matchKeys(o)) {
+				return append(append([]any{e}, elems[:i]...), elems[i+1:]...)
+			}
+		}
+	}
+	return elems
+}
+
+// taken returns the record of t an element is, or nil.
+func (rd *reader) taken(t string, o map[string]any) *rec {
+	for _, r := range rd.all[t] {
+		if r.is(o) {
+			return r
+		}
+	}
+	return nil
+}
+
+// is reports whether an object is the record: the same id, else the same
+// keys the paths address it by.
+func (r *rec) is(o map[string]any) bool {
+	if _, id := idOf(o); id != nil && r.id != nil {
+		return same(id, r.id) || (r.newID != nil && same(id, r.newID))
+	}
+	n := 0
+	for k := range r.keys {
+		if k != "id" && fieldName(o, k) != "" {
+			n++
+		}
+	}
+	return n == 0 || r.matchKeys(o)
+}
+
+// choose returns the first element that passes, or -1 and the reasons of
+// the elements it rejected.
+func (rd *reader) choose(t string, elems []any, k *known, in []string, depth int) (int, []string) {
+	var reasons []string
+	for i, e := range elems {
+		o, ok := e.(map[string]any)
+		if !ok {
+			continue
+		}
+		reason := rd.check(t, o, k, in, depth)
+		if reason == "" {
+			return i, nil
+		}
+		reasons = append(reasons, fmt.Sprintf("#%d: %s", i+1, reason))
+	}
+	return -1, reasons
+}
+
+// check returns why an element cannot be the record of t, "" if it can:
+// the values of "params", the selected records its fields refer to (in: an
+// element of a list must fit them; a single object read by its path is
+// not compared), the fields of "select", its details, and the records
+// below it that "select" asks for.
+func (rd *reader) check(t string, o map[string]any, k *known, in []string, depth int) string {
+	for name, p := range rd.cfg.Params {
+		if strings.Contains(name, ".") || p.Field != "" || p.Format != "" {
+			continue
+		}
+		if f := fieldName(o, name); f != "" && !same(o[f], p.Value) {
+			return fmt.Sprintf("%s is %s, \"params\" sets %s", f, text(o[f]), text(p.Value))
+		}
+	}
+	for _, f := range sortedKeys(o) {
+		lf := strings.ToLower(f)
+		for _, t2 := range in {
+			if t2 == t || !strings.HasPrefix(lf, t2) || lf == t2 {
+				continue
+			}
+			want, ok := k.scoped[t2+"."+lf]
+			if !ok && lf == t2+"id" {
+				want, ok = k.scoped[t2+".id"]
+			}
+			if ok && scalar(o[f]) && !same(o[f], want) {
+				return fmt.Sprintf("%s is %s, the selected %s has %s", f, text(o[f]), t2, text(want))
+			}
+		}
+	}
+	sel := rd.cfg.selection(t, rd.n)
+	if reason := passes(o, sel.Equal, sel.Mandatory); reason != "" {
+		return reason
+	}
+	k2 := k.clone()
+	k2.add(t, o)
+	for _, path := range sortedKeys(sel.Details) {
+		op := rd.byPath(path)
+		if op == nil {
+			return fmt.Sprintf("details: no GET of the spec has the path %s", path)
+		}
+		u, _, ok := rd.url(op, k2)
+		if !ok {
+			return fmt.Sprintf("details: no value for the parameters of %s", path)
+		}
+		r, err := rd.get(u, fmt.Sprintf("details of a %s for \"select\" (%s)", t, op.ID))
+		switch {
+		case err != nil:
+			return fmt.Sprintf("GET %s: %v", u, err)
+		case !r.ok():
+			return fmt.Sprintf("#%d GET %s answers %d", r.Seq, u, r.Status)
+		case !filled(r.Body):
+			return fmt.Sprintf("#%d GET %s answers without data", r.Seq, u)
+		}
+		c := sel.Details[path]
+		if reason := passes(r.Body, c.Equal, c.Mandatory); reason != "" {
+			return fmt.Sprintf("#%d GET %s: %s", r.Seq, u, reason)
+		}
+	}
+	if depth < 8 {
+		if reason := rd.below(t, k, k2, depth); reason != "" {
+			return reason
+		}
+	}
+	return ""
+}
+
+// below checks the records "select" asks for that only this element makes
+// readable: if a planet has no dock that passes, the next planet is
+// taken.
+func (rd *reader) below(t string, k, k2 *known, depth int) string {
+	seen := map[string]bool{}
+	for _, op := range rd.getOps() {
+		if rd.gets[op.ID] != nil {
+			continue
+		}
+		items, _, isList := listShape(responseSchema(op, 0))
+		if !isList {
+			continue
+		}
+		s := rd.n.of(items)
+		sel := rd.cfg.selection(s, rd.n)
+		if s == "" || s == t || seen[s] || rd.recs[s] != nil || !rd.from(s, op) || (len(sel.Equal) == 0 && len(sel.Mandatory) == 0 && len(sel.Details) == 0) {
+			continue
+		}
+		if _, _, before := rd.url(op, k); before {
+			continue
+		}
+		u, _, ok := rd.url(op, k2)
+		if !ok {
+			continue
+		}
+		seen[s] = true
+		r, err := rd.get(u, fmt.Sprintf("does a %s below this %s pass \"select\"? (%s)", s, t, op.ID))
+		if err != nil || !r.ok() {
+			return fmt.Sprintf("#%d GET %s fails, so no %s can be selected", r.Seq, u, s)
+		}
+		_, elems, _, _ := listOf(responseSchema(op, r.Status), r.Body)
+		if i, reasons := rd.choose(s, elems, k2, k2.tables, depth+1); i < 0 {
+			return fmt.Sprintf("no %s below it passes (#%d GET %s, %d elements%s)", s, r.Seq, u, len(elems), list(reasons))
+		}
+	}
+	return ""
+}
+
+func (rd *reader) byPath(path string) *spec.Operation {
+	for _, op := range rd.s.Ops {
+		if op.Method == http.MethodGet && strings.EqualFold(op.Path, path) {
+			return op
+		}
+	}
+	return nil
+}
+
+// responseSchema is the JSON schema of the response with this status, else
+// of the first 2xx response.
+func responseSchema(op *spec.Operation, status int) *openapi3.SchemaRef {
+	if op.Op.Responses == nil {
+		return nil
+	}
+	m := op.Op.Responses.Map()
+	pick := func(code string) *openapi3.SchemaRef {
+		r := m[code]
+		if r == nil || r.Value == nil {
+			return nil
+		}
+		for _, mt := range sortedKeys(r.Value.Content) {
+			if c := r.Value.Content[mt]; spec.IsJSON(mt) && c != nil && c.Schema != nil {
+				return c.Schema
+			}
+		}
+		return nil
+	}
+	if status != 0 {
+		if s := pick(fmt.Sprint(status)); s != nil {
+			return s
+		}
+	}
+	for _, code := range sortedKeys(m) {
+		if strings.HasPrefix(code, "2") {
+			if s := pick(code); s != nil {
+				return s
+			}
+		}
+	}
+	return nil
+}
+
+// list formats the first reasons of a rejection.
+func list(reasons []string) string {
+	if len(reasons) == 0 {
+		return ""
+	}
+	if len(reasons) > 5 {
+		reasons = append(reasons[:5:5], fmt.Sprintf("… %d more", len(reasons)-5))
+	}
+	return "\n" + strings.Join(reasons, "\n")
+}

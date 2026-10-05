@@ -1,0 +1,324 @@
+openapi: 3.0.3
+info: { title: Starport model, version: "1" }
+# Cases the model must tell apart: a Detail DTO with its own path, Upsert
+# bodies, a list filter, chains of keys, a resource created at two places,
+# a read that names another record, a read of a record for a second one,
+# updates without a body of the resource, keys found by name, references
+# and writes of no resource.
+paths:
+  /Planet:
+    get:
+      operationId: GetPlanets
+      tags: [Planet]
+      responses:
+        "200": { description: ok, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/PlanetRead" } } } } }
+  /Planet/{planetCode}:
+    parameters: [{ $ref: "#/components/parameters/planetCode" }]
+    get:
+      operationId: GetPlanet
+      tags: [Planet]
+      responses:
+        "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/PlanetRead" } } } }
+  /Planet/{planetCode}/Moon:
+    parameters: [{ $ref: "#/components/parameters/planetCode" }]
+    get:
+      operationId: GetMoons
+      tags: [Moon]
+      responses:
+        "200": { description: ok, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/MoonRead" } } } } }
+  /Planet/{planetCode}/Moon/{moonCode}:
+    parameters: [{ $ref: "#/components/parameters/planetCode" }, { $ref: "#/components/parameters/moonCode" }]
+    get:
+      operationId: GetMoon
+      tags: [Moon]
+      responses:
+        "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/MoonRead" } } } }
+  /Planet/{planetCode}/Garden:
+    parameters: [{ $ref: "#/components/parameters/planetCode" }]
+    get:
+      operationId: GetGardensOfPlanet
+      tags: [Garden]
+      responses:
+        "200": { description: ok, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/GardenRead" } } } } }
+  /Planet/{planetCode}/Moon/{moonCode}/Garden:
+    parameters: [{ $ref: "#/components/parameters/planetCode" }, { $ref: "#/components/parameters/moonCode" }]
+    get:
+      operationId: GetGardensOfMoon
+      tags: [Garden]
+      responses:
+        "200": { description: ok, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/GardenRead" } } } } }
+  /Planet/{planetCode}/Report:
+    parameters: [{ $ref: "#/components/parameters/planetCode" }]
+    get:
+      operationId: GetReport
+      tags: [Report]
+      responses:
+        "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/PlanetReportRead" } } } }
+  /Planet/{planetCode}/Report/booking/{bookingCode}:
+    parameters: [{ $ref: "#/components/parameters/planetCode" }, { $ref: "#/components/parameters/bookingCode" }]
+    get:
+      operationId: GetReportOfBooking
+      tags: [Report]
+      responses:
+        "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/PlanetReportRead" } } } }
+    put:
+      operationId: UpdateReportOfBooking
+      tags: [Report]
+      requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/ReportChange" } } } }
+      responses:
+        "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/Response" } } } }
+  /Booking:
+    get:
+      operationId: GetBookings
+      tags: [Booking]
+      responses:
+        "200": { description: ok, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/BookingRead" } } } } }
+    post:
+      operationId: CreateBooking
+      tags: [Booking]
+      requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/BookingUpsert" } } } }
+      responses:
+        "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/Response" } } } }
+  /Booking/{bookingCode}:
+    parameters: [{ $ref: "#/components/parameters/bookingCode" }]
+    get:
+      operationId: GetBooking
+      tags: [Booking]
+      responses:
+        "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/BookingRead" } } } }
+  /view/{planetCode}/{moonCode}:
+    parameters: [{ $ref: "#/components/parameters/planetCode" }, { $ref: "#/components/parameters/moonCode" }]
+    get:
+      operationId: GetView
+      tags: [View]
+      responses:
+        "200": { description: ok, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/SkyView" } } } } }
+  /Dock:
+    get:
+      operationId: GetDocks
+      tags: [Dock]
+      responses:
+        "200": { description: ok, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/DockRead" } } } } }
+    post:
+      operationId: CreateDock
+      tags: [Dock]
+      requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/DockUpsert" } } } }
+      responses:
+        "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/Response" } } } }
+  /Dock/Phase/{phase}:
+    parameters: [{ name: phase, in: path, required: true, schema: { $ref: "#/components/schemas/DockPhase" } }]
+    get:
+      operationId: GetDocksByPhase
+      tags: [Dock]
+      responses:
+        "200": { description: ok, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/DockRead" } } } } }
+  /Dock/{dockCode}:
+    parameters: [{ $ref: "#/components/parameters/dockCode" }]
+    get:
+      operationId: GetDock
+      tags: [Dock]
+      responses:
+        "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/DockRead" } } } }
+    put:
+      operationId: UpdateDock
+      tags: [Dock]
+      requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/DockUpsert" } } } }
+      responses:
+        "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/Response" } } } }
+  /Dock/{dockCode}/DockDetail:
+    parameters: [{ $ref: "#/components/parameters/dockCode" }]
+    get:
+      operationId: GetDockDetails
+      tags: [DockDetail]
+      responses:
+        "200": { description: ok, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/DockDetailRead" } } } } }
+  /DockDetail/{dockDetailId}:
+    parameters: [{ name: dockDetailId, in: path, required: true, schema: { type: integer, minimum: 1 } }]
+    get:
+      operationId: GetDockDetail
+      tags: [DockDetail]
+      responses:
+        "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/DockDetailRead" } } } }
+  /Dock/Planet/{planetCode}/Ship/{shipCode}:
+    parameters: [{ $ref: "#/components/parameters/planetCode" }, { $ref: "#/components/parameters/shipCode" }]
+    get:
+      operationId: GetDockOfShip
+      tags: [Dock]
+      responses:
+        "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/DockRead" } } } }
+  /Dock/{dockCode}/Ship/{shipCode}/link:
+    parameters: [{ $ref: "#/components/parameters/dockCode" }, { $ref: "#/components/parameters/shipCode" }]
+    put:
+      operationId: LinkShipToDock
+      tags: [Dock]
+      responses:
+        "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/Response" } } } }
+  /Ship:
+    get:
+      operationId: GetShips
+      tags: [Ship]
+      responses:
+        "200": { description: ok, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/ShipRead" } } } } }
+  /Ship/{shipCode}:
+    parameters: [{ $ref: "#/components/parameters/shipCode" }]
+    get:
+      operationId: GetShip
+      tags: [Ship]
+      responses:
+        "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/ShipRead" } } } }
+  /Ship/registry/{registry}:
+    parameters: [{ $ref: "#/components/parameters/registry" }]
+    get:
+      operationId: GetShipByRegistry
+      tags: [Ship]
+      responses:
+        "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/ShipRead" } } } }
+  /Ship/{shipCode}/close:
+    parameters: [{ $ref: "#/components/parameters/shipCode" }]
+    put:
+      operationId: CloseShip
+      tags: [Ship]
+      responses:
+        "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/Response" } } } }
+  /ship/details:
+    get:
+      operationId: GetShipsWithDetails
+      tags: [Ship]
+      responses:
+        "200": { description: ok, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/ShipsWithDetailsRead" } } } } }
+  /Pilot/archive/{pilotCode}:
+    parameters: [{ $ref: "#/components/parameters/pilotCode" }]
+    get:
+      operationId: GetArchivedPilot
+      tags: [Pilot]
+      responses:
+        "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/PilotRead" } } } }
+  /Pilots:
+    get:
+      operationId: GetPilots
+      tags: [Pilot]
+      responses:
+        "200": { description: ok, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/PilotRead" } } } } }
+  /PilotCard:
+    get:
+      operationId: GetPilotCards
+      tags: [Pilot]
+      responses:
+        "200": { description: ok, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/PilotCardRead" } } } } }
+  /Pilot/{pilotCode}:
+    parameters: [{ $ref: "#/components/parameters/pilotCode" }]
+    get:
+      operationId: GetPilotCard
+      tags: [Pilot]
+      responses:
+        "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/PilotCardRead" } } } }
+  /Person/Planet/{planetCode}:
+    parameters: [{ $ref: "#/components/parameters/planetCode" }]
+    get:
+      operationId: GetPersonsOfPlanet
+      tags: [Person]
+      responses:
+        "200": { description: ok, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/Person" } } } } }
+    post:
+      operationId: CreatePersonOfPlanet
+      tags: [Person]
+      requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/Person" } } } }
+      responses:
+        "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/Response" } } } }
+  /Person/Planet/{planetCode}/name/{name}:
+    parameters: [{ $ref: "#/components/parameters/planetCode" }, { $ref: "#/components/parameters/name" }]
+    patch:
+      operationId: UpdatePersonOfPlanet
+      tags: [Person]
+      requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/Person" } } } }
+      responses:
+        "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/Response" } } } }
+    delete:
+      operationId: DeletePersonOfPlanet
+      tags: [Person]
+      responses:
+        "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/Response" } } } }
+  /Person/Planet/{planetCode}/Moon/{moonCode}:
+    parameters: [{ $ref: "#/components/parameters/planetCode" }, { $ref: "#/components/parameters/moonCode" }]
+    get:
+      operationId: GetPersonsOfMoon
+      tags: [Person]
+      responses:
+        "200": { description: ok, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/Person" } } } } }
+    post:
+      operationId: CreatePersonOfMoon
+      tags: [Person]
+      requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/Person" } } } }
+      responses:
+        "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/Response" } } } }
+components:
+  parameters:
+    planetCode: { name: planetCode, in: path, required: true, schema: { type: string, pattern: "^[a-z]{3}$" } }
+    moonCode: { name: moonCode, in: path, required: true, schema: { type: string, pattern: "^[a-z]{4}$" } }
+    bookingCode: { name: bookingCode, in: path, required: true, schema: { type: string, pattern: "^B[0-9]{3}$" } }
+    dockCode: { name: dockCode, in: path, required: true, schema: { type: string, pattern: "^D[0-9]{2}$" } }
+    shipCode: { name: shipCode, in: path, required: true, schema: { type: string, pattern: "^S[0-9]{2}$" } }
+    registry: { name: registry, in: path, required: true, schema: { type: string, pattern: "^S[0-9]{2}$" } }
+    pilotCode: { name: pilotCode, in: path, required: true, schema: { type: string, pattern: "^P[0-9]{2}$" } }
+    name: { name: name, in: path, required: true, schema: { type: string, pattern: "^[a-z]{5}$" } }
+  schemas:
+    Response:
+      type: object
+      properties: { Id: { type: integer, minimum: 1 }, Message: { type: string } }
+    PlanetRead:
+      type: object
+      properties: { Id: { type: integer, minimum: 1 }, PlanetCode: { type: string, pattern: "^[a-z]{3}$" }, Name: { type: string } }
+    MoonRead:
+      type: object
+      properties: { Id: { type: integer, minimum: 1 }, MoonCode: { type: string, pattern: "^[a-z]{4}$" }, PlanetCode: { type: string, pattern: "^[a-z]{3}$" }, Name: { type: string } }
+    GardenRead:
+      type: object
+      properties: { GardenCode: { type: string }, MoonCode: { type: string, pattern: "^[a-z]{4}$" }, PlanetCode: { type: string, pattern: "^[a-z]{3}$" }, MoonId: { type: integer, minimum: 1 }, Size: { type: integer } }
+    PlanetReportRead:
+      type: object
+      properties: { PlanetCode: { type: string, pattern: "^[a-z]{3}$" }, Note: { type: string }, Settings: { type: object } }
+    ReportChange:
+      type: object
+      properties: { Settings: { type: object } }
+    BookingRead:
+      type: object
+      properties: { BookingCode: { type: string, pattern: "^B[0-9]{3}$" }, Seats: { type: integer } }
+    BookingUpsert:
+      type: object
+      properties: { Seats: { type: integer } }
+    SkyView:
+      type: object
+      properties: { caption: { type: string } }
+    DockPhase: { type: string, enum: [Open, Closed] }
+    DockUpsert:
+      type: object
+      required: [DockCode]
+      properties:
+        DockCode: { type: string, pattern: "^D[0-9]{2}$" }
+        Phase: { $ref: "#/components/schemas/DockPhase" }
+        PilotId: { type: integer, minimum: 1 }
+        ShipCode: { type: string, pattern: "^S[0-9]{2}$" }
+        Ships: { type: array, items: { type: string } }
+    DockRead:
+      allOf:
+        - $ref: "#/components/schemas/DockUpsert"
+        - type: object
+          properties: { Id: { type: integer, minimum: 1 } }
+    DockDetailRead:
+      type: object
+      properties: { Id: { type: integer, minimum: 1 }, DockId: { type: integer, minimum: 1 }, Revision: { type: string }, Phase: { type: string, enum: [Draft, Live] } }
+    ShipRead:
+      type: object
+      properties: { ShipCode: { type: string, pattern: "^S[0-9]{2}$" }, Mode: { type: string, enum: [Flying, Closed] }, DockCode: { type: string, pattern: "^D[0-9]{2}$" } }
+    ShipsWithDetailsRead:
+      type: object
+      properties: { Ship: { $ref: "#/components/schemas/ShipRead" }, Details: { type: array, items: { type: string } } }
+    PilotRead:
+      type: object
+      properties: { Id: { type: integer, minimum: 1 }, PilotCode: { type: string, pattern: "^P[0-9]{2}$" }, Rank: { type: string } }
+    PilotCardRead:
+      type: object
+      properties: { PilotCode: { type: string, pattern: "^P[0-9]{2}$" }, Name: { type: string } }
+    Person:
+      type: object
+      properties: { name: { type: string }, Title: { type: string } }

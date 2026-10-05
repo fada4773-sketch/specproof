@@ -1,0 +1,165 @@
+openapi: 3.0.3
+info: { title: Starport, version: "1" }
+paths:
+  /Dock:
+    get:
+      operationId: GetDocks
+      tags: [Dock]
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/DockRead" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /Dock/id/{id}:
+    parameters:
+      - $ref: "#/components/parameters/id"
+    get:
+      operationId: GetDockById
+      tags: [Dock]
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DockRead" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      operationId: UpdateDockById
+      tags: [Dock]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DockUpdate" }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Response" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /Dock/{Code}:
+    parameters:
+      - $ref: "#/components/parameters/Code"
+    get:
+      operationId: GetDock
+      tags: [Dock]
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DockRead" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      operationId: UpdateDock
+      tags: [Dock]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DockUpdate" }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Response" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /Dock/{Code}/Ship:
+    parameters:
+      - $ref: "#/components/parameters/Code"
+    get:
+      operationId: GetShips
+      tags: [Ship]
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ShipRead" }
+  /Ship/id/{id}:
+    parameters:
+      - $ref: "#/components/parameters/id"
+    get:
+      operationId: GetShipById
+      tags: [Ship]
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ShipRead" }
+    put:
+      operationId: UpdateShipById
+      tags: [Ship]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ShipUpdate" }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Response" }
+components:
+  parameters:
+    id:
+      name: id
+      in: path
+      required: true
+      schema: { type: integer, minimum: 1 }
+    Code:
+      name: Code
+      in: path
+      required: true
+      schema: { type: string, pattern: "^[a-z]+$" }
+  responses:
+    NotFound:
+      description: not found
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { Code: NF, Message: gone }
+  schemas:
+    DockUpdate:
+      type: object
+      required: [Name, Code]
+      properties:
+        Name: { type: string, maxLength: 40 }
+        Code: { type: string }
+    DockRead:
+      allOf:
+        - $ref: "#/components/schemas/DockUpdate"
+        - type: object
+          properties:
+            Id: { type: integer, minimum: 1 }
+    ShipUpdate:
+      type: object
+      required: [Name]
+      properties:
+        Name: { type: string, maxLength: 40 }
+        DockId: { type: integer, minimum: 1 }
+    ShipRead:
+      allOf:
+        - $ref: "#/components/schemas/ShipUpdate"
+        - type: object
+          properties:
+            Id: { type: integer, minimum: 1 }
+    Response:
+      type: object
+      required: [Id, Message]
+      properties:
+        Id: { type: integer, minimum: 1 }
+        Message: { type: string }
+    Error:
+      type: object
+      required: [Code, Message]
+      properties:
+        Code: { type: string }
+        Message: { type: string }

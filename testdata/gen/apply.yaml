@@ -1,0 +1,95 @@
+openapi: 3.0.3
+info: { title: Pilots, version: "1" }
+paths:
+  /pilots:
+    post:
+      operationId: createPilot
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Pilot" }
+            examples:
+              curated:
+                value: { PilotCode: old, Name: Curated }
+              wrongPilot:
+                x-example-defaults: false
+                value: { PilotCode: missing, Name: Negative }
+      responses:
+        "201":
+          description: created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Pilot" }
+  # comment that must survive
+  /pilots/{id}:
+    get:
+      operationId: getPilot
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Pilot" }
+              example: { Id: 5, PilotCode: kept, Name: Kept pilot }
+        "400":
+          description: bad request
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Problem" }
+              example: { Code: 400 }
+        "404":
+          description: not found
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Problem" }
+    put:
+      operationId: updatePilot
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+        - $ref: "#/components/parameters/PilotId"
+      requestBody:
+        $ref: "#/components/requestBodies/PilotBody"
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Pilot" }
+              example: { Id: "not a number" }
+  /users/{key}:
+    parameters:
+      - { name: key, in: path, required: true, schema: { type: string } }
+    delete:
+      operationId: deleteUser
+      parameters:
+        - $ref: "#/components/parameters/PilotId"
+      responses:
+        "204": { description: deleted }
+components:
+  parameters:
+    PilotId:
+      name: pilotId
+      in: query
+      schema: { type: integer, minimum: 1 }
+  requestBodies:
+    PilotBody:
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Pilot" }
+  schemas:
+    Problem:
+      type: object
+      required: [Message]
+      properties:
+        Message: { type: string }
+    Pilot:
+      type: object
+      example: { Id: "not a number", PilotCode: x, Name: y }
+      required: [PilotCode, Name]
+      properties:
+        Id: { type: integer, readOnly: true }
+        PilotCode: { type: string, maxLength: 10 }
+        Name: { type: string }
+        Secret: { type: string, writeOnly: true }

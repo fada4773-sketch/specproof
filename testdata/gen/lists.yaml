@@ -1,0 +1,80 @@
+openapi: 3.0.3
+info: { title: Lists, version: "1" }
+paths:
+  /Planet:
+    get:
+      operationId: listPlanets
+      responses:
+        "200":
+          description: all planets
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/PlanetRead" } }
+  /Planet/id/{id}:
+    get:
+      operationId: getPlanetById
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer, minimum: 1 } }
+      responses:
+        "200":
+          description: the planet
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PlanetRead" }
+  /Planet/{Code}:
+    parameters:
+      - $ref: "#/components/parameters/Code"
+    get:
+      operationId: getPlanet
+      responses:
+        "200":
+          description: the planet
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PlanetRead" }
+  /Planet/id/{id}/Moon:
+    get:
+      operationId: listMoonsOfPlanet
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer, minimum: 1 } }
+      responses:
+        "200":
+          description: the moons of the planet
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/MoonRead" } }
+  /Planet/{Code}/Moon/id/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Code"
+    get:
+      operationId: getMoon
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer, minimum: 1 } }
+      responses:
+        "200":
+          description: the moon
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MoonRead" }
+components:
+  parameters:
+    Code:
+      name: Code
+      in: path
+      required: true
+      schema: { type: string, pattern: "^[a-z]+$" }
+  schemas:
+    PlanetRead:
+      type: object
+      required: [Code, Id]
+      properties:
+        Code: { type: string, pattern: "^[a-z]+$" }
+        Id: { type: integer, minimum: 1 }
+        Name: { type: string }
+    MoonRead:
+      type: object
+      required: [Id, PlanetId]
+      properties:
+        Id: { type: integer, minimum: 1 }
+        PlanetId: { type: integer, minimum: 1 }
+        Name: { type: string }

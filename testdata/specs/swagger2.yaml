@@ -1,0 +1,35 @@
+swagger: "2.0"
+info: { title: legacy, version: "1.0" }
+basePath: /api
+consumes: [application/json]
+produces: [application/json]
+securityDefinitions:
+  key: { type: apiKey, in: header, name: X-Key }
+paths:
+  /pets:
+    post:
+      tags: [Pet]
+      operationId: createPet
+      security: [{ key: [] }]
+      parameters:
+        - in: body
+          name: body
+          required: true
+          schema: { $ref: '#/definitions/Pet' }
+      responses:
+        '201': { description: created, schema: { $ref: '#/definitions/Pet' } }
+  /pets/{petId}:
+    get:
+      tags: [Pet]
+      operationId: getPet
+      parameters:
+        - { name: petId, in: path, required: true, type: integer }
+      responses:
+        '200': { description: ok, schema: { $ref: '#/definitions/Pet' } }
+definitions:
+  Pet:
+    type: object
+    required: [name]
+    properties:
+      id: { type: integer, readOnly: true }
+      name: { type: string, example: Rex }

@@ -1,0 +1,422 @@
+openapi: 3.0.3
+info:
+  title: Bookstore
+  version: "3.0"
+  description: |
+    Test API for the component tests of apitest.
+    Author -> Book -> Review use all three kinds of bindings: the heuristic
+    (authorId within Author), x-apitest-bind (Book), and OpenAPI links
+    (Review). Shelf is keyed by a code that a PUT can change. Operations
+    with x-apitest-forbidden reject the reader token with 403.
+servers:
+  - url: /v1
+security:
+  - bearer: []
+paths:
+  /health:
+    get:
+      tags: [System]
+      operationId: getHealth
+      security: []
+      responses:
+        '200':
+          description: API is ready
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { type: string }
+              example: { status: ok }
+  /stats:
+    get:
+      tags: [System]
+      operationId: getStats
+      security:
+        - apiKey: []
+      responses:
+        '200':
+          description: counters
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [authors]
+                properties:
+                  authors: { type: integer, minimum: 0 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /authors:
+    post:
+      tags: [Author]
+      operationId: createAuthor
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthorWrite' }
+            examples:
+              valid-author:
+                value: { name: "Ada Lovelace", born: 1815 }
+              missing-name:
+                value: { born: 1900 }
+      responses:
+        '201':
+          description: created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Author' }
+              examples:
+                valid-author:
+                  value: { id: 2, name: "Ada Lovelace", born: 1815 }
+        '400':
+          description: invalid
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              examples:
+                missing-name:
+                  value: { error: "name is required" }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    get:
+      tags: [Author]
+      operationId: listAuthors
+      responses:
+        '200':
+          description: all authors, the seed author first
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Author' }
+              example:
+                - { id: 1, name: "Grace Hopper", born: 1906 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /authors/{authorId}:
+    # No binding declared: the heuristic resolves authorId from createAuthor.
+    parameters:
+      - name: authorId
+        in: path
+        required: true
+        schema: { type: integer }
+    get:
+      tags: [Author]
+      operationId: getAuthor
+      responses:
+        '200':
+          description: one author
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Author' }
+              example: { id: 2, name: "Ada Lovelace", born: 1815 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [Author]
+      operationId: updateAuthor
+      x-apitest-forbidden: true
+      # The update may become visible with a delay (FR-VERIFY-06).
+      x-apitest-verify: { poll: true, timeout: 1s }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthorWrite' }
+            example: { name: "Ada King", born: 1815 }
+      responses:
+        '200':
+          description: updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Author' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Author]
+      operationId: deleteAuthor
+      responses:
+        '204': { description: deleted }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /authors/{authorId}/books:
+    post:
+      tags: [Book]
+      operationId: createBook
+      parameters:
+        - name: authorId
+          in: path
+          required: true
+          schema: { type: integer }
+          x-apitest-bind: { from: createAuthor, pointer: /id }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BookWrite' }
+            example: { title: "Go", price: 29.9 }
+      responses:
+        '201':
+          description: created; the new book is only named in the Location header
+          headers:
+            Location:
+              required: true
+              schema: { type: string }
+          links:
+            CreateReview:
+              operationId: createReview
+              parameters:
+                bookId: '$response.header.Location'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /books/{bookId}:
+    parameters:
+      - name: bookId
+        in: path
+        required: true
+        schema: { type: integer }
+        x-apitest-bind: { from: createBook, header: Location }
+    get:
+      tags: [Book]
+      operationId: getBook
+      responses:
+        '200':
+          description: one book
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Book' }
+              example: { id: 1, title: "Go", price: 29.9, authorId: 2 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [Book]
+      operationId: updateBook
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BookWrite' }
+            example: { title: "Go 2", price: 35 }
+      responses:
+        '200':
+          description: updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Book' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Book]
+      operationId: deleteBook
+      responses:
+        '204': { description: deleted }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /books/{bookId}/reviews:
+    post:
+      tags: [Review]
+      operationId: createReview
+      parameters:
+        - name: bookId
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReviewWrite' }
+            example: { stars: 5, text: "Great" }
+      responses:
+        '201':
+          description: created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Review' }
+          links:
+            GetReview:
+              operationId: getReview
+              parameters: { reviewId: '$response.body#/id' }
+            DeleteReview:
+              operationId: deleteReview
+              parameters: { reviewId: '$response.body#/id' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /reviews/{reviewId}:
+    parameters:
+      - name: reviewId
+        in: path
+        required: true
+        schema: { type: integer }
+    get:
+      tags: [Review]
+      operationId: getReview
+      responses:
+        '200':
+          description: one review
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Review' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Review]
+      operationId: deleteReview
+      x-apitest-forbidden: true
+      responses:
+        '204': { description: deleted }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /shelves:
+    post:
+      tags: [Shelf]
+      operationId: createShelf
+      x-apitest-forbidden: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Shelf' }
+            example: { code: "l", name: "Logistics" }
+      responses:
+        '201':
+          description: created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Shelf' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /shelves/{code}:
+    parameters:
+      - name: code
+        in: path
+        required: true
+        schema: { type: string }
+        x-apitest-bind: { from: createShelf, pointer: /code }
+    get:
+      tags: [Shelf]
+      operationId: getShelf
+      responses:
+        '200':
+          description: one shelf
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Shelf' }
+              example: { code: "l", name: "Logistics" }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [Shelf]
+      operationId: updateShelf
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Shelf' }
+            examples:
+              rename:
+                value: { code: "c", name: "Controlling" }
+      responses:
+        '200':
+          description: updated; the code may change
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Shelf' }
+              examples:
+                rename:
+                  value: { code: "c", name: "Controlling" }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Shelf]
+      operationId: deleteShelf
+      responses:
+        '204': { description: deleted }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+components:
+  securitySchemes:
+    bearer: { type: http, scheme: bearer }
+    apiKey: { type: apiKey, in: query, name: api_key }
+  responses:
+    Unauthorized:
+      description: not authenticated
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Forbidden:
+      description: authenticated, but not allowed
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: not found
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+  schemas:
+    AuthorWrite:
+      type: object
+      required: [name]
+      additionalProperties: false
+      properties:
+        name: { type: string, minLength: 1 }
+        born: { type: integer }
+    Author:
+      type: object
+      required: [id, name]
+      additionalProperties: false
+      properties:
+        id: { type: integer, readOnly: true }
+        name: { type: string, minLength: 1 }
+        born: { type: integer }
+    BookWrite:
+      type: object
+      required: [title, price]
+      additionalProperties: false
+      properties:
+        title: { type: string }
+        price: { type: number, minimum: 0 }
+    Book:
+      type: object
+      required: [id, title, price, authorId]
+      additionalProperties: false
+      properties:
+        id: { type: integer, readOnly: true }
+        title: { type: string }
+        price: { type: number, minimum: 0 }
+        authorId: { type: integer, readOnly: true }
+    ReviewWrite:
+      type: object
+      required: [stars]
+      additionalProperties: false
+      properties:
+        stars: { type: integer, minimum: 1, maximum: 5 }
+        text: { type: string }
+    Review:
+      type: object
+      required: [id, bookId, stars]
+      additionalProperties: false
+      properties:
+        id: { type: integer, readOnly: true }
+        bookId: { type: integer, readOnly: true }
+        stars: { type: integer, minimum: 1, maximum: 5 }
+        text: { type: string }
+    Shelf:
+      type: object
+      required: [code, name]
+      additionalProperties: false
+      properties:
+        code: { type: string, minLength: 1 }
+        name: { type: string }
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }

@@ -1,0 +1,77 @@
+openapi: 3.0.3
+info: { title: Shop, version: "1" }
+paths:
+  /gardens/{gardenCode}:
+    get:
+      operationId: getGarden
+      parameters:
+        - { name: gardenCode, in: path, required: true, schema: { type: string, maxLength: 8 } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 50 } }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Garden" }
+  /gardens/{gardenCode}/orders:
+    post:
+      operationId: createOrder
+      parameters:
+        - { name: gardenCode, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Order" }
+      responses:
+        "201": { description: created }
+components:
+  schemas:
+    Garden:
+      type: object
+      required: [GardenCode, Name]
+      properties:
+        GardenCode: { type: string, maxLength: 8 }
+        Name: { type: string, minLength: 3, maxLength: 20 }
+        Email: { type: string, format: email }
+        Opened: { type: string, format: date }
+        Rating: { type: number, minimum: 1, maximum: 5 }
+        Tags: { type: array, minItems: 2, uniqueItems: true, items: { type: string, enum: [a, b, c] } }
+        Manager:
+          allOf:
+            - $ref: "#/components/schemas/Person"
+            - x-go-type: Person
+        Address:
+          type: object
+          properties:
+            City: { type: string }
+            Zip: { type: string, pattern: '^\d{5}$' }
+            Impossible: { type: string, pattern: '^(?=a)b$' }
+        Settings: { type: object }
+        Labels: { type: object, additionalProperties: { type: integer, minimum: 1 } }
+        Sealed: { type: object, minProperties: 1, additionalProperties: false }
+        Kind:
+          type: object
+          allOf:
+            - $ref: "#/components/schemas/GardenKind"
+    Person:
+      type: object
+      properties:
+        Id: { type: string, format: uuid, readOnly: true }
+        Name: { type: string }
+    GardenKind:
+      type: string
+      enum: [outlet, flagship]
+    Order:
+      type: object
+      properties:
+        GardenCode: { type: string, maxLength: 8 }
+        Items:
+          type: array
+          items: { $ref: "#/components/schemas/OrderItem" }
+        Quantity: { type: integer, minimum: 10, exclusiveMinimum: true, multipleOf: 5 }
+    OrderItem:
+      type: object
+      properties:
+        Sku: { type: string, minLength: 6 }
+    GardenAlias:
+      $ref: "#/components/schemas/Garden"

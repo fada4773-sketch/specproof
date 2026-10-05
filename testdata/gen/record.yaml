@@ -1,0 +1,267 @@
+openapi: 3.0.3
+info:
+  title: Starport
+  version: "1.0"
+paths:
+  /Planet:
+    get:
+      operationId: GetPlanets
+      tags: [Planet]
+      responses:
+        "200":
+          description: planets
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PlanetRead"
+  /Planet/{planetCode}:
+    get:
+      operationId: GetPlanet
+      tags: [Planet]
+      parameters:
+        - $ref: "#/components/parameters/PlanetCode"
+      responses:
+        "200":
+          description: the planet
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlanetRead"
+  /Planet/{planetCode}/Dock:
+    get:
+      operationId: GetDocks
+      tags: [Dock]
+      parameters:
+        - $ref: "#/components/parameters/PlanetCode"
+      responses:
+        "200":
+          description: docks
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/DockRead"
+  /Planet/{planetCode}/Dock/{dockCode}/Config:
+    get:
+      operationId: GetDockConfig
+      tags: [Dock]
+      parameters:
+        - $ref: "#/components/parameters/PlanetCode"
+        - name: dockCode
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: the config
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DockConfig"
+    put:
+      operationId: UpdateDockConfig
+      tags: [Dock]
+      parameters:
+        - $ref: "#/components/parameters/PlanetCode"
+        - name: dockCode
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DockConfig"
+      responses:
+        "200":
+          description: the config
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DockConfig"
+  /Planet/{planetCode}/Ship:
+    get:
+      operationId: GetShips
+      tags: [Ship]
+      parameters:
+        - $ref: "#/components/parameters/PlanetCode"
+      responses:
+        "200":
+          description: ships
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ShipRead"
+    post:
+      operationId: CreateShip
+      tags: [Ship]
+      parameters:
+        - $ref: "#/components/parameters/PlanetCode"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ShipCreate"
+      responses:
+        "201":
+          description: created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ShipRead"
+  /Planet/{planetCode}/Dock/{dockCode}/Ship:
+    parameters:
+      - $ref: "#/components/parameters/PlanetCode"
+      - name: dockCode
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: GetDockShips
+      tags: [Ship]
+      responses:
+        "200":
+          description: the ships of a dock
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ShipRead"
+    post:
+      operationId: CreateDockShip
+      tags: [Ship]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ShipCreate"
+      responses:
+        "201":
+          description: created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ShipRead"
+  /Ship/search:
+    post:
+      operationId: SearchShips
+      tags: [Ship]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: {type: string}
+      responses:
+        "200":
+          description: the ships found
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ShipRead"
+  /Ship/id/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+    get:
+      operationId: GetShip
+      tags: [Ship]
+      responses:
+        "200":
+          description: the ship
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ShipRead"
+    put:
+      operationId: UpdateShip
+      tags: [Ship]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ShipUpdate"
+      responses:
+        "200":
+          description: updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ShipRead"
+    delete:
+      operationId: DeleteShip
+      tags: [Ship]
+      responses:
+        "204":
+          description: deleted
+components:
+  parameters:
+    PlanetCode:
+      name: planetCode
+      in: path
+      required: true
+      schema:
+        type: string
+  schemas:
+    PlanetRead:
+      type: object
+      required: [id, planetCode]
+      properties:
+        id: {type: integer}
+        planetCode: {type: string}
+        name: {type: string}
+    DockRead:
+      type: object
+      required: [id, dockCode]
+      properties:
+        id: {type: integer}
+        dockCode: {type: string}
+        planetId: {type: integer}
+        name: {type: string}
+    DockConfig:
+      type: object
+      properties:
+        settings:
+          type: object
+          properties:
+            mode: {type: string}
+    ShipRead:
+      type: object
+      required: [id, shipCode]
+      properties:
+        id: {type: integer}
+        shipCode: {type: string}
+        dockId: {type: integer}
+        name: {type: string}
+        updatedAt: {type: string}
+    ShipCreate:
+      type: object
+      required: [shipCode, dockId]
+      properties:
+        shipCode: {type: string}
+        dockId: {type: integer}
+        name: {type: string}
+    ShipUpdate:
+      type: object
+      properties:
+        dockId: {type: integer}
+        name: {type: string}

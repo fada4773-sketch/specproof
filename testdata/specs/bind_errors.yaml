@@ -1,0 +1,21 @@
+openapi: 3.0.3
+info: { title: bind errors, version: "1" }
+paths:
+  /a/{x}:
+    get:
+      operationId: getA
+      parameters:
+        - { name: x, in: path, required: true, schema: { type: string }, x-apitest-bind: { from: nope, pointer: /id } }
+      responses: { '200': { description: ok } }
+  /b/{y}:
+    get:
+      operationId: getB
+      parameters:
+        - { name: y, in: path, required: true, schema: { type: string }, x-apitest-bind: { from: getA } }
+      responses: { '200': { description: ok } }
+  /c/{z}:
+    get:
+      operationId: getC
+      parameters:
+        - { name: z, in: path, required: true, schema: { type: string }, x-apitest-bind: { from: getA, pointer: id } }
+      responses: { '200': { description: ok } }

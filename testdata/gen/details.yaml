@@ -1,0 +1,88 @@
+openapi: 3.0.3
+info: { title: Starport details, version: "1" }
+paths:
+  /Ship:
+    get:
+      operationId: GetShips
+      tags: [Ship]
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ShipRead" }
+  /Ship/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: integer, minimum: 1 } }
+    get:
+      operationId: GetShip
+      tags: [Ship]
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ShipRead" }
+  /Ship/{id}/details:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: integer, minimum: 1 } }
+    get:
+      operationId: GetShipDetails
+      tags: [Ship]
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ShipDetail" }
+  /Ship/{id}/crew:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: integer, minimum: 1 } }
+    get:
+      operationId: GetShipCrew
+      tags: [Ship]
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CrewInfo" }
+  /Ship/{code}/price:
+    parameters:
+      - { name: code, in: path, required: true, schema: { type: string } }
+    get:
+      operationId: GetShipPrice
+      tags: [Ship]
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [Amount]
+                properties:
+                  Amount: { type: number }
+                  Currency: { type: string }
+components:
+  schemas:
+    ShipRead:
+      type: object
+      required: [Id, Code]
+      properties:
+        Id: { type: integer, minimum: 1 }
+        Code: { type: string }
+        Pilot: { type: string, nullable: true }
+    CrewInfo:
+      type: object
+      required: [Captain]
+      properties:
+        Captain: { type: string }
+    ShipDetail:
+      type: object
+      required: [Engine]
+      properties:
+        Engine: { type: string }
+        Decks: { type: integer }

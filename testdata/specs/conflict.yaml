@@ -1,0 +1,7 @@
+openapi: 3.0.3
+info: { title: conflict, version: "1" }
+paths:
+  /a/{x}:
+    get: { operationId: getX, parameters: [{ name: x, in: path, required: true, schema: { type: string } }], responses: { '200': { description: ok } } }
+  /a/{y}:
+    get: { operationId: getY, parameters: [{ name: y, in: path, required: true, schema: { type: string } }], responses: { '200': { description: ok } } }

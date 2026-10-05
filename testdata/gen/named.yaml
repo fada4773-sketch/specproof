@@ -1,0 +1,33 @@
+openapi: 3.0.3
+info: { title: Named, version: "1" }
+paths:
+  /moons:
+    post:
+      operationId: createMoon
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Moon" }
+            examples:
+              too-long: { value: { Name: "far too long for the limit" } }
+      responses:
+        "201":
+          description: created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Moon" }
+              examples:
+                broken: { value: { Name: 7 } }
+        "400":
+          description: rejected
+          content:
+            application/json:
+              schema: { type: object, properties: { error: { type: string } } }
+              examples:
+                too-long: { value: { error: name too long } }
+components:
+  schemas:
+    Moon:
+      type: object
+      properties:
+        Name: { type: string, maxLength: 10 }
