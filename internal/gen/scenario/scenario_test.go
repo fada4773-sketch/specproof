@@ -910,3 +910,47 @@ func TestRunCreatedKeyFitsParameter(t *testing.T) {
 		t.Errorf("UpdatePersonOfPlanet {name} = %v", got)
 	}
 }
+
+// DTOs written as allOf of several $refs with x-go-type and fields of their
+// own: the inline body of a POST and the inline list items belong to their
+// resource, a field only they declare belongs to the record, a request
+// leaves out the readOnly fields of a nested DTO, and the record keeps
+// them after the update.
+func TestRunComposedDTOs(t *testing.T) {
+	o := newPipelineFile(t, "composed.yaml", order).run()
+	if len(o.res.Problems) > 0 || len(o.problems) > 0 {
+		t.Fatalf("problems %v %v\n%s", o.res.Problems, o.problems, notes(o.res))
+	}
+	s := o.written
+	body, created := example(t, s, "CreateShip", ""), example(t, s, "CreateShip", "201")
+	for _, k := range []string{"ShipCode", "Name", "Crew", "Captain"} { // Registry: the response DTO has none
+		if field(body, k) == nil || fmt.Sprint(field(body, k)) != fmt.Sprint(field(created, k)) {
+			t.Errorf("CreateShip %s: body %v, response %v", k, field(body, k), field(created, k))
+		}
+	}
+	id := field(created, "Id")
+	if param(t, s, "GetShip", "id") != id {
+		t.Errorf("GetShip {id} = %v, created %v", param(t, s, "GetShip", "id"), id)
+	}
+	list, _ := example(t, s, "ListShips", "200").([]any)
+	if field(list, len(list)-1, "Id") != id || field(list, len(list)-1, "Registry") != field(body, "Registry") {
+		t.Errorf("ListShips %v lacks the created ship %v with the Registry it sent", list, id)
+	}
+	if field(body, "Captain", "License") == nil {
+		t.Errorf("CreateShip Captain %v: a part that declares it again keeps the DTO", field(body, "Captain"))
+	}
+	for _, opID := range []string{"UpdateShip", "PatchShip", "UpdateDock"} {
+		b := example(t, s, opID, "")
+		nested := "Captain"
+		if opID == "UpdateDock" {
+			nested = "Manager"
+		}
+		if field(b, nested, "License") == nil || field(b, nested, "PersonId") != nil {
+			t.Errorf("%s sends %s %v", opID, nested, field(b, nested))
+		}
+	}
+	read, updated := example(t, s, "GetDock", "200"), example(t, s, "UpdateDock", "200")
+	if field(read, "Manager", "PersonId") == nil || field(updated, "Manager", "PersonId") != field(read, "Manager", "PersonId") {
+		t.Errorf("Manager: read %v, after the update %v", field(read, "Manager"), field(updated, "Manager"))
+	}
+}

@@ -16,6 +16,13 @@ contain breaking changes, which are listed here.
 
 ### Features
 
+- `apitest-gen record` prints its output in parts: the requests below a
+  heading per tag with colored status, a summary, the findings as a table
+  (`FATAL`, `PROBLEM`, `WARN`, `INFO`, the most serious first), one line
+  per code that occurred with what it means and what to do, and the files
+  written. Colors only on a terminal; `NO_COLOR` turns them off, `COLUMNS`
+  sets the width. Problems that do not stop the run (`DATA_CHANGED`,
+  `FETCH_FAILED`) are no longer labelled `FATAL`.
 - `apitest-gen record` writes `"$suggestions"` into the defaults file: for
   every `NO_DATA` and `NOT_IN_CONTAINER` the entry to merge into `params`
   (a field for a parameter without a value), `select` (`details` with the
@@ -282,6 +289,40 @@ contain breaking changes, which are listed here.
   reported as `BUILT`, not `NOT_EXECUTED`; `NOT_EXECUTED` is left for
   writes that can neither be sent nor built. DELETEs and POSTs whose
   parameters need a record of a later tag wait for the late reads.
+- `apitest-gen`: a request body or list item written inline as `allOf` of
+  several `$ref`s (as code generators write a type with `x-go-type`, e.g.
+  `[{$ref: ShipBase}, {$ref: ShipExtra}, {x-go-type: ShipCreate}]`)
+  belongs to the resource its path names. Before, such a POST was no
+  create and such a GET no list: the POST body did not become the record,
+  and the examples of POST response, GET and list did not show it. `record`
+  finds the table of such a body the same way.
+- `apitest-gen`: an inline `allOf` of several `$ref`s with fields of its
+  own (`[{$ref: ShipBase}, {$ref: ShipExtra}, {properties: {Registry: …}}]`)
+  is recognized as well; a field only such a body or list element declares
+  belongs to the record, so the list after the POST shows the value it sent.
+  A property declared again in another part of an `allOf` (to add a
+  description or readOnly) keeps its first declaration instead of
+  replacing it, which made apply stop with `EXAMPLE_INCOMPLETE`.
+- `apitest-gen record`: a suggestion never repeats what the defaults set
+  already. A DTO in the seed whose GET reads another record than the
+  selected one gets `"select": {"<DTO>": {"equal": {"id": …}}}`; a
+  `MethodOrder` or `DeleteLast` that is set already gets a hint at the real
+  cause (the write belongs to a later tag, was not sent, or wrote another
+  record). A parameter without value gets the field of a selected record
+  that may hold it (`{"field": "ShipRead.id"}`) instead of a placeholder,
+  and the other candidates in the hint.
+- `apitest-gen record`: `{"field": "<DTO>.<field>"}` in `params` takes the
+  field of that DTO's record; before, a generic name such as `id` was not
+  found where the path segment names no DTO, so `NO_DATA` stayed.
+- `apitest-gen record`: `VOLATILE` and `DATA_CHANGED` compare also fields
+  only the second answer has, honor JSON pointers in `IgnoreFields`, and
+  write suggestions: the fields for `"$apitest".IgnoreFields`, and for
+  `DATA_CHANGED` the fields no body of the run can set or a hint that the
+  writes lost records.
+- `apitest-gen`: the body of an update no longer contains the readOnly
+  fields of a nested DTO (the `Id` of a nested `Person`), which made apply
+  stop with `EXAMPLE_INVALID`; the record keeps them after the update, so
+  the following GET examples still show them.
 
 ## v0.1.10
 

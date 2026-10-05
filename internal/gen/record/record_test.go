@@ -35,6 +35,7 @@ type starport struct {
 	clock    int
 	sent     []string
 	gone     map[string]bool // GET paths that answer 404
+	revision bool            // a PUT of a dock config sets its "revision"
 }
 
 func newStarport() *starport {
@@ -119,6 +120,9 @@ func (sp *starport) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		reply(200, out)
 	case len(seg) == 5 && seg[4] == "Config":
 		if r.Method == http.MethodPut {
+			if sp.revision {
+				body["revision"] = json.Number("2")
+			}
 			sp.configs[seg[3]] = body
 		}
 		if c, ok := sp.configs[seg[3]]; ok {
@@ -1100,7 +1104,7 @@ func TestRecordSuggestions(t *testing.T) {
 	}
 	for key, want := range map[string]string{
 		"GetShip NO_DATA":                `{"select":{"ShipRead":{"details":{"/Ship/id/{id}":{}}}}}`,
-		"UpdateShip NO_DATA":             `{"params":{"UpdateShip.id":{"field":"\u003cfield of a selected record that holds it\u003e"}}}`,
+		"UpdateShip NO_DATA":             `{"params":{"UpdateShip.id":{"field":"ShipRead.id"}}}`,
 		"GetDockConfig NOT_IN_CONTAINER": `{"$apitest":{"MethodOrder":["POST","PUT","PATCH","GET"]}}`,
 	} {
 		if got[key] != want {
@@ -1117,7 +1121,7 @@ func TestRecordSuggestions(t *testing.T) {
 		t.Fatal(err)
 	}
 	b, _ = os.ReadFile(path)
-	if _, err := Parse(b); err != nil || !strings.Contains(string(b), `"$suggestions": {`) || !strings.Contains(string(b), `"field": "<field of a selected record that holds it>"`) {
+	if _, err := Parse(b); err != nil || !strings.Contains(string(b), `"$suggestions": {`) || !strings.Contains(string(b), `"field": "ShipRead.id"`) {
 		t.Fatalf("with suggestions: %v\n%s", err, b)
 	}
 	if err := SaveSuggestions(path, nil); err != nil {
@@ -1125,6 +1129,65 @@ func TestRecordSuggestions(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(path); string(b) != orig {
 		t.Errorf("without suggestions:\n%s", b)
+	}
+
+	// with the suggestions merged the notes are gone
+	fixed := `{"params": {"planetCode": "P1", "UpdateShip.id": {"field": "ShipRead.id"}}, "seed": ["Planet", "Dock"],
+	  "select": {"Dock": {"details": {"/Planet/{planetCode}/Dock/{dockCode}/Config": {"mandatory": ["settings.mode"]}}},
+	    "ShipRead": {"details": {"/Ship/id/{id}": {}}}},
+	  "$apitest": {"MethodOrder": ["POST", "PUT", "PATCH", "GET"], "IgnoreFields": ["/*/updatedAt"]}}`
+	sp = newStarport()
+	sp.gone = map[string]bool{"/Ship/id/101": true}
+	res, _, _ = runConfig(t, sp, specPath, fixed, nil, true)
+	for _, code := range []string{CodeNoData, CodeContainer, CodeVolatile, CodeChanged, CodeNotExecuted} {
+		if strings.Contains(notes(res), code) {
+			t.Errorf("%s after the suggestions:\n%s", code, notes(res))
+		}
+	}
+	if len(res.Suggestions) > 0 {
+		t.Errorf("suggestions after the suggestions: %+v", res.Suggestions)
+	}
+}
+
+// A suggestion never repeats what the defaults set already: a GET that
+// reads another record than the one of the seed gets "select", a write
+// that runs first but for no record gets an explanation.
+func TestRecordSuggestionsAlreadySet(t *testing.T) {
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "record.yaml")
+	b, err := os.ReadFile("../../../testdata/gen/record.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(specPath, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// GetShip reads ship 100 of dock D1; the seed holds dock D2
+	config := `{"params": {"planetCode": "P1", "GetShip.id": 100, "UpdateShip.id": {"field": "nope"}}, "seed": ["Planet", "Dock", "Ship"],
+	  "select": {"Dock": {"details": {"/Planet/{planetCode}/Dock/{dockCode}/Config": {"mandatory": ["settings.mode"]}}}},
+	  "$apitest": {"MethodOrder": ["POST", "PUT", "PATCH", "GET"], "DeleteLast": true, "IgnoreFields": ["updatedAt"]}}`
+	res, _, _ := runConfig(t, newStarport(), specPath, config, nil, true)
+	for _, s := range res.Suggestions {
+		if seed, ok := s.Fix["seed"]; ok && len(seed.([]string)) == 3 {
+			t.Errorf("%s %s proposes the seed it has: %s", s.Where, s.Code, s.Hint)
+		}
+		if a, ok := s.Fix["$apitest"].(map[string]any); ok && (a["DeleteLast"] != nil || a["MethodOrder"] != nil) {
+			t.Errorf("%s %s proposes %v, which is set", s.Where, s.Code, a)
+		}
+	}
+	got := map[string][]Suggestion{}
+	fixes := map[string]bool{}
+	for _, s := range res.Suggestions {
+		got[s.Where+" "+s.Code] = append(got[s.Where+" "+s.Code], s)
+		fixes[s.Where+" "+text(s.Fix)] = true
+	}
+	for _, want := range []string{`GetShip {"select":{"ShipRead":{"equal":{"id":100}}}}`, `GetShip {"select":{"DockRead":{"equal":{"id":30}}}}`} {
+		if !fixes[want] {
+			t.Errorf("no suggestion %s: %+v\n%s", want, got["GetShip NOT_IN_CONTAINER"], notes(res))
+		}
+	}
+	if s := got["UpdateShip NO_DATA"]; len(s) != 1 || !strings.Contains(s[0].Hint, `no selected record has the field "nope"`) {
+		t.Errorf("UpdateShip: %+v", s)
 	}
 }
 
@@ -1142,5 +1205,65 @@ func TestDeleteKey(t *testing.T) {
 	}
 	if _, err := deleteKey([]byte(`[1]`), "x"); err == nil {
 		t.Error("no error for an array")
+	}
+}
+
+// The table of an allOf of several DTOs is the one its path names: the
+// body of CreateShip (allOf [ShipBase, ShipExtra]) creates a ship.
+func TestNamerComposed(t *testing.T) {
+	s, err := spec.Load(context.Background(), "../../../testdata/gen/composed.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := newNamer(s)
+	if got := createTable(s.Op("CreateShip"), n); got != "ship" {
+		t.Errorf("CreateShip creates %q", got)
+	}
+	items, _, ok := listShape(responseSchema(s.Op("ListShips"), 0))
+	if !ok || n.of(items) != "ship" {
+		t.Errorf("ListShips lists %q", n.of(items))
+	}
+	captain := s.Doc.Components.Schemas["ShipExtra"].Value.Properties["Captain"]
+	if got := n.of(captain); got != "person" {
+		t.Errorf("Captain: %q", got)
+	}
+}
+
+// A field the server sets when it writes a record changes the data the
+// GETs read after the writes: DATA_CHANGED names it, proposes IgnoreFields,
+// and with it the run is clean.
+func TestRecordDataChanged(t *testing.T) {
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "record.yaml")
+	b, err := os.ReadFile("../../../testdata/gen/record.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(specPath, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	config := `{"params": {"planetCode": "P1"}, "seed": ["Planet", "Dock"],
+	  "select": {"Dock": {"details": {"/Planet/{planetCode}/Dock/{dockCode}/Config": {"mandatory": ["settings.mode"]}}}},
+	  "$apitest": {"DeleteLast": true, "IgnoreFields": ["updatedAt"]}}`
+	sp := newStarport()
+	sp.revision = true
+	res, _, _ := runConfig(t, sp, specPath, config, nil, true)
+	var found bool
+	for _, s := range res.Suggestions {
+		if s.Code == CodeChanged {
+			found = true
+			if text(s.Fix) != `{"$apitest":{"IgnoreFields":["updatedAt","revision"]}}` || !strings.Contains(s.Hint, "revision are no fields of the body") {
+				t.Errorf("%s: %s %s", s.Where, s.Hint, text(s.Fix))
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("no DATA_CHANGED suggestion:\n%s", notes(res))
+	}
+	sp = newStarport()
+	sp.revision = true
+	res, _, _ = runConfig(t, sp, specPath, strings.Replace(config, `["updatedAt"]`, `["updatedAt", "revision"]`, 1), nil, true)
+	if strings.Contains(notes(res), CodeChanged) {
+		t.Errorf("with IgnoreFields:\n%s", notes(res))
 	}
 }

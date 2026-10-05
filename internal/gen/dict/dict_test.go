@@ -1,12 +1,15 @@
 package dict
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/getkin/kin-openapi/openapi3"
 
 	"github.com/fada4773-sketch/specproof/internal/spec"
 )
@@ -195,5 +198,56 @@ func TestLoadSave(t *testing.T) {
 	}
 	if _, _, err := Load(path); err == nil || !strings.Contains(err.Error(), "version 99") {
 		t.Errorf("newer version: %v", err)
+	}
+}
+
+func TestDTOParts(t *testing.T) {
+	s, err := spec.Load(context.Background(), "../../../testdata/gen/composed.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := s.Op("CreateShip").Op.RequestBody.Value.Content["application/json"].Schema
+	captain := s.Doc.Components.Schemas["ShipExtra"].Value.Properties["Captain"]
+	read := s.Op("GetShip").Op.Responses.Value("200").Value.Content["application/json"].Schema
+	for name, tc := range map[string]struct {
+		ref  *openapi3.SchemaRef
+		want []string
+	}{
+		"inline body":  {body, []string{"ShipBase", "ShipExtra"}},
+		"property":     {captain, []string{"Person", "PilotLicense"}},
+		"named DTO":    {read, []string{"ShipRead"}},
+		"own fields":   {s.Op("UpdateDock").Op.RequestBody.Value.Content["application/json"].Schema, []string{"DockBase", "PilotLicense"}},
+		"only fields":  {s.Doc.Components.Schemas["DockRead"].Value.AllOf[1], nil},
+		"no reference": {s.Doc.Components.Schemas["ShipMeta"].Value.Properties["Id"], nil},
+	} {
+		if got := DTOParts(tc.ref); !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("%s: %v, want %v", name, got, tc.want)
+		}
+		if DTORef(tc.ref) != "" && len(tc.want) > 1 {
+			t.Errorf("%s: DTORef %q of several DTOs", name, DTORef(tc.ref))
+		}
+	}
+}
+
+// A property declared again in a part of an allOf keeps both
+// declarations: one with only a description keeps the DTO, two that
+// constrain become an allOf.
+func TestPropertiesJoin(t *testing.T) {
+	s, err := spec.Load(context.Background(), "../../../testdata/gen/composed.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := s.Op("CreateShip").Op.RequestBody.Value.Content["application/json"].Schema
+	props, req := Properties(body.Value)
+	if c := props["Captain"]; c == nil || DTOParts(c) == nil || props["Registry"] == nil || !contains(req, "Registry") {
+		t.Errorf("Captain %+v, Registry %v, required %v", c, props["Registry"], req)
+	}
+	a := &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"string"}, MaxLength: openapi3.Ptr(uint64(5))}}
+	b := &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"string"}, Pattern: "^a", ReadOnly: true}}
+	if j := joinProperty(a, b); len(j.Value.AllOf) != 2 || !j.Value.ReadOnly {
+		t.Errorf("joined %+v", j.Value)
+	}
+	if j := joinProperty(a, &openapi3.SchemaRef{Value: &openapi3.Schema{ReadOnly: true}}); j.Value.MaxLength == nil || !j.Value.ReadOnly || a.Value.ReadOnly {
+		t.Errorf("flags %+v, original %+v", j.Value, a.Value)
 	}
 }

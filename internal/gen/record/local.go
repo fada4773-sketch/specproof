@@ -748,16 +748,61 @@ func (w *writes) verify() {
 		}
 		resp, err := w.rd.c.do(w.rd.ctx, http.MethodGet, u, nil, "after", "read "+id+" again: is everything as before the writes?")
 		if err != nil || !resp.ok() {
-			w.res.problem(CodeChanged, id, "#%d GET %s answered %d before the writes, #%d GET %s answers %s now", f.resp.Seq, f.url, f.resp.Status, resp.Seq, u, status(resp, err))
+			msg := fmt.Sprintf("#%d GET %s answered %d before the writes, #%d GET %s answers %s now", f.resp.Seq, f.url, f.resp.Status, resp.Seq, u, status(resp, err))
+			w.res.problem(CodeChanged, id, "%s", msg)
+			w.res.suggest(CodeChanged, id, msg, "the writes removed what this GET reads: a DELETE removed it and no POST created it again under the same key; "+
+				"restore it in the instance and check the DELETEs and POSTs the log shows for it (\"select\".<DTO>.delete chooses the DELETE)", nil)
 			continue
 		}
 		before, after := w.canon(w.newIDs(f.resp.Body, responseSchema(f.op, f.resp.Status))), w.canon(resp.Body)
 		if l1, l2 := size(before), size(after); l1 != l2 {
-			w.res.problem(CodeChanged, id, "#%d GET %s lists %d elements, #%d before the writes listed %d", resp.Seq, u, l2, f.resp.Seq, l1)
+			msg := fmt.Sprintf("#%d GET %s lists %d elements, #%d before the writes listed %d", resp.Seq, u, l2, f.resp.Seq, l1)
+			w.res.problem(CodeChanged, id, "%s", msg)
+			w.res.suggest(CodeChanged, id, msg, "the writes removed or added elements: a DELETE also removed records below the deleted one, which no POST creates again, "+
+				"or a POST created one more; restore the data in the instance, then let \"select\" take a record without such records below it", nil)
 		} else if d := diffFields(before, after, ""); len(d) > 0 {
-			w.res.problem(CodeChanged, id, "#%d GET %s answers other values than #%d before the writes: %s", resp.Seq, u, f.resp.Seq, strings.Join(d, ", "))
+			msg := fmt.Sprintf("#%d GET %s answers other values than #%d before the writes: %s", resp.Seq, u, f.resp.Seq, strings.Join(d, ", "))
+			w.res.problem(CodeChanged, id, "%s", msg)
+			hint := "the server sets these fields itself when a record is written (time, user, version): let apitest ignore them"
+			if lost := w.unsettable(d); len(lost) > 0 {
+				hint = fmt.Sprintf("%s are no fields of the body of the PUT or POST that wrote the record, so the record created again has the server's values: "+
+					"if the server sets them (time, user, version) let apitest ignore them; else the run lost data: restore it in the instance", strings.Join(lost, ", "))
+			}
+			w.res.suggestIgnore(w.in.Config, CodeChanged, id, msg, hint, d)
 		}
 	}
+}
+
+// unsettable are the fields no body the run sent can set: fields of no
+// request schema of a PUT, PATCH or POST it sent.
+func (w *writes) unsettable(fields []string) []string {
+	settable := map[string]bool{}
+	var add func(ref *openapi3.SchemaRef, depth int)
+	add = func(ref *openapi3.SchemaRef, depth int) {
+		if ref == nil || ref.Value == nil || depth > 10 {
+			return
+		}
+		if ref.Value.Items != nil {
+			add(ref.Value.Items, depth+1)
+		}
+		props, _ := dict.Properties(ref.Value)
+		for k, p := range props {
+			settable[strings.ToLower(k)] = true
+			add(p, depth+1)
+		}
+	}
+	for _, x := range w.ops {
+		if x.sent && x.kind != kindDelete {
+			add(requestSchema(x.c.Op), 0)
+		}
+	}
+	var out []string
+	for _, f := range fields {
+		if !settable[strings.ToLower(f)] && !contains(out, f) {
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 // canon leaves out the fields that change anyway and sorts the lists, so a
@@ -785,7 +830,7 @@ func (w *writes) canon(v any) any {
 
 // changing reports a field the reads found changing or the config ignores.
 func (w *writes) changing(field string) bool {
-	if contains(w.in.Config.Run.IgnoreFields, field) {
+	if ignores(w.in.Config.Run.IgnoreFields, field) {
 		return true
 	}
 	_, ok := w.rd.volatile[field]

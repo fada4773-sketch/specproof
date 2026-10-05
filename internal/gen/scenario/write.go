@@ -2,6 +2,7 @@ package scenario
 
 import (
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/getkin/kin-openapi/openapi3"
@@ -153,7 +154,7 @@ func (w *writer) response(s *step, pl *place) any {
 	if rec == nil {
 		return nil
 	}
-	if dto := dict.DTORef(pl.schema); dto != "" && containsFold(r.Schemas, dto) {
+	if slices.ContainsFunc(dict.DTOParts(pl.schema), func(dto string) bool { return containsFold(r.Schemas, dto) }) {
 		return forget(project(pl.schema, base, rec, r, spec.ModeResponse), pl.schema, r, s.unknown)
 	}
 	// another DTO, e.g. {Id, Message}: only the keys of the record

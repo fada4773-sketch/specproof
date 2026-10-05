@@ -87,10 +87,18 @@ func word(s, w string) bool {
 	return len(s) == len(w) || (s[len(w)] >= 'A' && s[len(w)] <= 'Z')
 }
 
-// of is the table of a schema, "" for an inline schema.
+// of is the table of a schema, "" for an inline schema. Of an allOf of
+// several DTOs it is the first table a path names, else that of the first
+// DTO.
 func (n namer) of(ref *openapi3.SchemaRef) string {
-	if dto := dict.DTORef(ref); dto != "" {
-		return n.table(dto)
+	parts := dict.DTOParts(ref)
+	for _, dto := range parts {
+		if t := n.table(dto); n[t] {
+			return t
+		}
+	}
+	if len(parts) > 0 {
+		return n.table(parts[0])
 	}
 	return ""
 }

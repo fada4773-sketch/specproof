@@ -60,6 +60,9 @@ func (e Entry) String() string {
 	return line
 }
 
+// Clip is a value as JSON text, at most 1500 bytes, for the log.
+func Clip(v any) string { return clip(text(v)) }
+
 func clip(s string) string {
 	if len(s) > 1500 {
 		return s[:1500] + fmt.Sprintf("… (%d bytes)", len(s))

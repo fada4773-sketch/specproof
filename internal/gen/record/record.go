@@ -35,6 +35,52 @@ const (
 	CodeLintIgnored = "LINT_IGNORED"     // a violation reported, not stopping
 )
 
+// Severity of a code: what a reader has to do about it.
+type Severity int
+
+// Severities, the most serious last.
+const (
+	Info    Severity = iota // the run did something other than usual; the examples are fine
+	Warning                 // an operation lacks an example or apitest will see other data
+	Problem                 // the instance or the defaults need a fix
+)
+
+// codeInfo explains a code in a few words: what happened and what to do.
+type codeInfo struct {
+	Severity     Severity
+	Meaning, Fix string
+}
+
+var codeInfos = map[string]codeInfo{
+	CodeFetch:       {Problem, "a GET answered with an error or not at all", "check the URL and the record in the log (the line with its #number)"},
+	CodeParam:       {Warning, "a GET is not read: no selected record has a value for a parameter", `set it in "params"`},
+	CodeSelectNone:  {Problem, `no record of the list passes "select"`, `loosen "select" or add such a record to the instance`},
+	CodeSeedMissing: {Problem, "a DTO of the seed was not read", `check "params" and "select" of that DTO`},
+	CodeNotExecuted: {Warning, "a PUT, PATCH, DELETE or POST was neither sent nor built from the data read; it gets no example", "see the message: mostly a parameter without value"},
+	CodeBuilt:       {Info, "a write was not sent, to keep the data of the instance; its example is built from what the GETs read", "nothing; the example is fine"},
+	CodeWriteFailed: {Problem, "the instance rejected a write", "see the answer in the log"},
+	CodeChanged:     {Problem, "after the writes a GET answers differently than before: the run changed data of the instance", `see "$suggestions": fields the server sets go into IgnoreFields; else restore the data`},
+	CodeContainer:   {Warning, "apitest will read data the empty test environment does not hold at that point", `see "$suggestions": seed, select, MethodOrder, Tags or DeleteLast`},
+	CodeDuplicate:   {Warning, "two POSTs create the same record; with a unique key the second fails", "give the second POST a record of its own"},
+	CodeVolatile:    {Warning, "a field changes between two reads of the same GET (time, counter)", `add it to "$apitest".IgnoreFields and to the IgnoreFields of the test`},
+	CodeNoData:      {Warning, "an operation gets no example: its GET could not be read or a parameter has no value", `see "$suggestions": params or select`},
+	CodeInvalid:     {Problem, "an example violates its schema", "fix the data or the spec; -ignorelinting writes it anyway"},
+	CodeShared:      {Problem, "one parameter declared for several operations needs two values", "declare it in each operation"},
+	CodeStatus:      {Info, "the instance answers with another 2xx than the spec's first one", "nothing, or document that status"},
+	CodeRemapped:    {Info, "ids of unchanged examples moved because records are created in another order", "nothing"},
+	CodeLintIgnored: {Info, "an example that violates its schema was written (-ignorelinting)", "fix the data or the spec"},
+}
+
+// Explain returns the severity of a code and what it means and what to do,
+// in a few words; unknown codes are warnings without text.
+func Explain(code string) (sev Severity, meaning, fix string) {
+	i, ok := codeInfos[code]
+	if !ok {
+		return Warning, "", ""
+	}
+	return i.Severity, i.Meaning, i.Fix
+}
+
 // Note is one line of the report.
 type Note struct{ Code, Where, Message string }
 
@@ -178,6 +224,11 @@ func Run(ctx context.Context, in Input) (*Result, error) {
 	for _, name := range sortedKeys(rd.volatile) {
 		res.note(CodeVolatile, name, "changes between two reads (%s); apitest cannot compare it: add %q to \"$apitest\".IgnoreFields and to the IgnoreFields of the test",
 			strings.Join(rd.volatile[name], ", "), name)
+	}
+	if len(rd.volatile) > 0 {
+		names := sortedKeys(rd.volatile)
+		res.suggestIgnore(in.Config, CodeVolatile, "$apitest", "fields that change between two reads: "+strings.Join(names, ", "),
+			"the instance changes them by itself (time, counter); apitest cannot compare them: add them to \"$apitest\".IgnoreFields and to the IgnoreFields of the test", names)
 	}
 	w.offline()
 	if in.Writes && w.any() {
@@ -334,6 +385,11 @@ func diffFields(a, b any, name string) []string {
 		var out []string
 		for _, k := range sortedKeys(x) {
 			out = append(out, diffFields(x[k], y[k], k)...)
+		}
+		for _, k := range sortedKeys(y) { // a field only the second answer has
+			if _, ok := x[k]; !ok && y[k] != nil {
+				out = append(out, k)
+			}
 		}
 		return out
 	case []any:

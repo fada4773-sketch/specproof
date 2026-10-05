@@ -595,7 +595,9 @@ func (t *timeline) required(r *model.Resource, field string) bool {
 	return containsFold(req, field)
 }
 
-// overlay lays the fields of a sent body over a record.
+// overlay lays the fields of a sent body over a record. A nested object
+// keeps the fields the body leaves out, such as the readOnly id of a
+// nested DTO that a request must not contain.
 func overlay(r *model.Resource, rec Record, body map[string]any) Record {
 	out := rec.clone()
 	for k, v := range body {
@@ -603,9 +605,40 @@ func overlay(r *model.Resource, rec Record, body map[string]any) Record {
 		if f == "" {
 			f = k
 		}
-		out[f] = spec.Normalize(v)
+		out[f] = merge(out[f], spec.Normalize(v))
 	}
 	return out
+}
+
+// merge lays top over base: objects field by field, lists of the same
+// length element by element; anything else is replaced by top.
+func merge(base, top any) any {
+	switch t := top.(type) {
+	case map[string]any:
+		b, ok := base.(map[string]any)
+		if !ok {
+			return top
+		}
+		out := make(map[string]any, len(b)+len(t))
+		for k, v := range b {
+			out[k] = v
+		}
+		for k, v := range t {
+			out[k] = merge(b[k], v)
+		}
+		return out
+	case []any:
+		b, ok := base.([]any)
+		if !ok || len(b) != len(t) {
+			return top
+		}
+		out := make([]any, len(t))
+		for i := range t {
+			out[i] = merge(b[i], t[i])
+		}
+		return out
+	}
+	return top
 }
 
 // presenceOnly reports the formats apitest only checks for presence.
@@ -648,8 +681,43 @@ func project(ref *openapi3.SchemaRef, base any, rec Record, r *model.Resource, m
 			continue
 		}
 		if v, ok := rec[f]; ok && v != nil {
-			out[k] = coerce(v, p.Value)
+			out[k] = visible(coerce(v, p.Value), p, mode, 0)
 		}
 	}
 	return out
+}
+
+// visible keeps the fields of a nested value the schema has in this mode:
+// a record holds the readOnly fields of a nested DTO (from the response),
+// a request body must not.
+func visible(v any, ref *openapi3.SchemaRef, mode spec.Mode, depth int) any {
+	if ref == nil || ref.Value == nil || depth > 20 {
+		return v
+	}
+	switch x := v.(type) {
+	case map[string]any:
+		props, _ := dict.Properties(ref.Value)
+		if len(props) == 0 {
+			return v
+		}
+		out := make(map[string]any, len(x))
+		for k, cv := range x {
+			c := props[k]
+			if c == nil || c.Value == nil || (mode == spec.ModeRequest && c.Value.ReadOnly) || (mode == spec.ModeResponse && c.Value.WriteOnly) {
+				continue
+			}
+			out[k] = visible(cv, c, mode, depth+1)
+		}
+		return out
+	case []any:
+		if ref.Value.Items == nil {
+			return v
+		}
+		out := make([]any, len(x))
+		for i, e := range x {
+			out[i] = visible(e, ref.Value.Items, mode, depth+1)
+		}
+		return out
+	}
+	return v
 }

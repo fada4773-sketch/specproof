@@ -264,6 +264,35 @@ func DTORef(ref *openapi3.SchemaRef) string {
 	return target
 }
 
+// DTOParts returns the DTOs a schema is made of: the one DTORef returns,
+// or the $refs of an inline allOf, as code generators write a type that
+// joins several DTOs and maybe adds fields of its own, e.g.
+// [{$ref: ShipBase}, {$ref: ShipExtra}, {properties: {…}}, {x-go-type: ShipCreate}].
+// An allOf with a oneOf or anyOf part is no such type.
+func DTOParts(ref *openapi3.SchemaRef) []string {
+	if target := DTORef(ref); target != "" {
+		return []string{target}
+	}
+	if ref == nil || ref.Value == nil || ref.Ref != "" {
+		return nil
+	}
+	var out []string
+	for _, part := range ref.Value.AllOf {
+		switch {
+		case part == nil || part.Value == nil:
+		case strings.HasPrefix(part.Ref, schemaRef):
+			if target := DTORef(part); target != "" {
+				out = append(out, target)
+			}
+		case part.Ref == "" && len(part.Value.OneOf) == 0 && len(part.Value.AnyOf) == 0 && len(part.Value.AllOf) == 0 &&
+			(blank(part.Value) || value.Type(part.Value) == "object"):
+		default:
+			return nil
+		}
+	}
+	return out
+}
+
 // blank reports whether s constrains nothing, e.g. a schema with only
 // extensions or a description.
 func blank(s *openapi3.Schema) bool {
@@ -415,7 +444,7 @@ func Properties(s *openapi3.Schema) (openapi3.Schemas, []string) {
 			return
 		}
 		for k, v := range x.Properties {
-			out[k] = v
+			out[k] = joinProperty(out[k], v)
 		}
 		req = append(req, x.Required...)
 		for _, p := range x.AllOf {
@@ -424,6 +453,37 @@ func Properties(s *openapi3.Schema) (openapi3.Schemas, []string) {
 	}
 	add(s, 0)
 	return out, req
+}
+
+// joinProperty joins two declarations of one property in the parts of an
+// allOf, both of which apply: a declaration that only adds a description
+// or readOnly keeps the other one and adds its flags; two that constrain
+// become an allOf of both.
+func joinProperty(old, add *openapi3.SchemaRef) *openapi3.SchemaRef {
+	switch {
+	case old == nil || old.Value == nil:
+		return add
+	case add == nil || add.Value == nil || old == add:
+		return old
+	}
+	flags := func(base *openapi3.SchemaRef, other *openapi3.Schema) *openapi3.SchemaRef {
+		c := *base.Value
+		c.ReadOnly = c.ReadOnly || other.ReadOnly
+		c.WriteOnly = c.WriteOnly || other.WriteOnly
+		return &openapi3.SchemaRef{Ref: base.Ref, Value: &c}
+	}
+	switch {
+	case add.Ref == "" && blank(add.Value):
+		return flags(old, add.Value)
+	case old.Ref == "" && blank(old.Value):
+		return flags(add, old.Value)
+	}
+	return &openapi3.SchemaRef{Value: &openapi3.Schema{
+		AllOf:     openapi3.SchemaRefs{old, add},
+		ReadOnly:  old.Value.ReadOnly || add.Value.ReadOnly,
+		WriteOnly: old.Value.WriteOnly || add.Value.WriteOnly,
+		Nullable:  old.Value.Nullable && add.Value.Nullable,
+	}}
 }
 
 // Primitive reports the primitive type of s, following an allOf as

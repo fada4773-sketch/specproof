@@ -232,3 +232,21 @@ func TestPage(t *testing.T) {
 		}
 	}
 }
+
+// A body or list of an allOf of several DTOs belongs to the resource its
+// path names: CreateShip sends allOf [ShipBase, ShipExtra], ListShips
+// returns allOf [ShipBase, ShipMeta].
+func TestDetectComposed(t *testing.T) {
+	s := load(t, "composed.yaml")
+	m := Detect(s, nil)
+	want := map[string]Role{"ListShips": RoleList, "CreateShip": RoleCreate, "UpdateShip": RoleUpdate, "PatchShip": RoleUpdate, "UpdateDock": RoleUpdate}
+	for id, role := range want {
+		o := m.OpByID(id)
+		if o == nil || o.Role != role {
+			t.Errorf("%s: %+v, want %s\n%s", id, o, role, m.Describe())
+		}
+	}
+	if got := requestDTO(s.Op("CreateShip")); got != "ShipBase" {
+		t.Errorf("CreateShip DTO %q", got)
+	}
+}

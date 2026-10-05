@@ -262,6 +262,13 @@ func (rd *reader) value(op *spec.Operation, p *openapi3.Parameter, k *known) (pv
 		case e.Format != "":
 			return rd.format(e.Format, k)
 		case e.Field != "":
+			if dto, f, scoped := strings.Cut(e.Field, "."); scoped {
+				// "Ship.id": the field of the record of that DTO, also for
+				// generic names a path segment does not name
+				t, lf := rd.n.table(dto), strings.ToLower(f)
+				x, ok := k.scoped[t+"."+lf]
+				return pval{v: x, table: t, field: k.names[t+"."+lf]}, ok
+			}
 			return k.field(seg, e.Field)
 		}
 		return pval{v: e.Value}, true
@@ -388,7 +395,7 @@ func (rd *reader) again(f *fetched) {
 	}
 	for _, name := range diffFields(sortLists(f.resp.Body), sortLists(r.Body), "") {
 		entry := fmt.Sprintf("%s #%d/#%d", f.op.ID, f.resp.Seq, r.Seq)
-		if !contains(rd.cfg.Run.IgnoreFields, name) && !contains(rd.volatile[name], entry) {
+		if !ignores(rd.cfg.Run.IgnoreFields, name) && !contains(rd.volatile[name], entry) {
 			rd.volatile[name] = append(rd.volatile[name], entry)
 		}
 	}

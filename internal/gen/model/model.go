@@ -442,8 +442,56 @@ func (d *detector) roles() {
 	for _, op := range d.s.Ops { // spec order
 		if o := d.m.ops[op]; o != nil {
 			o.Resource.Ops = append(o.Resource.Ops, o)
+			o.inlineFields()
 		}
 	}
+}
+
+// inlineFields adds the fields of an inline schema made of DTOs of the
+// resource (allOf [ShipBase, ShipExtra, {properties: {Registry}}]): a
+// field only such a body or list element has belongs to the record too.
+func (o *Op) inlineFields() {
+	var refs []*openapi3.SchemaRef
+	switch o.Role {
+	case RoleCreate, RoleUpdate:
+		if o.via == nil {
+			refs = append(refs, requestSchema(o.Op))
+		}
+	case RoleList, RoleRead:
+		ref := successSchema(o.Op)
+		if o.Role == RoleList && ref != nil && ref.Value != nil {
+			ref = ref.Value.Items
+			if o.Items != "" {
+				ref = nil
+			}
+		}
+		refs = append(refs, ref)
+	}
+	for _, ref := range refs {
+		if ref == nil || ref.Value == nil || ref.Ref != "" || len(dict.DTOParts(ref)) < 1 || dict.DTORef(ref) != "" {
+			continue
+		}
+		props, _ := dict.Properties(ref.Value)
+		for _, k := range sortedKeys(props) {
+			if o.Resource.Field(k) == "" {
+				o.Resource.fields[k] = props[k]
+			}
+		}
+	}
+}
+
+// requestSchema is the schema of the JSON request body of op.
+func requestSchema(op *spec.Operation) *openapi3.SchemaRef {
+	rb := op.Op.RequestBody
+	if rb == nil || rb.Value == nil {
+		return nil
+	}
+	for _, mt := range sortedKeys(rb.Value.Content) {
+		if m := rb.Value.Content[mt]; spec.IsJSON(mt) && m.Schema != nil {
+			return m.Schema
+		}
+	}
+	return nil
 }
 
 // at returns the operation with the role at a path, or nil.
@@ -972,9 +1020,9 @@ func listOrItem(op *spec.Operation) (dto, items string, list bool) {
 		return "", "", false
 	}
 	if ref.Value.Items != nil && isArray(ref.Value) {
-		return dict.DTORef(ref.Value.Items), "", true
+		return dtoOf(ref.Value.Items, op.Path), "", true
 	}
-	name := dict.DTORef(ref)
+	name := dtoOf(ref, op.Path)
 	if name == "" {
 		return "", "", false
 	}
@@ -982,14 +1030,43 @@ func listOrItem(op *spec.Operation) (dto, items string, list bool) {
 	props, _ := dict.Properties(ref.Value)
 	var lists []string
 	for _, k := range sortedKeys(props) {
-		if p := props[k]; p.Value != nil && isArray(p.Value) && p.Value.Items != nil && dict.DTORef(p.Value.Items) != "" {
+		if p := props[k]; p.Value != nil && isArray(p.Value) && p.Value.Items != nil && dtoOf(p.Value.Items, op.Path) != "" {
 			lists = append(lists, k)
 		}
 	}
 	if len(lists) == 1 && len(props) <= 4 && page(name, lists[0]) {
-		return dict.DTORef(props[lists[0]].Value.Items), "/" + lists[0], true
+		return dtoOf(props[lists[0]].Value.Items, op.Path), "/" + lists[0], true
 	}
 	return name, "", false
+}
+
+// dtoOf returns the DTO a schema of an operation stands for: its $ref, or
+// of an allOf of several DTOs the first one whose name the path names, the
+// last segment first (allOf [ShipBase, ShipMeta] at /ships → ShipBase),
+// else the first one.
+func dtoOf(ref *openapi3.SchemaRef, path string) string {
+	parts := dict.DTOParts(ref)
+	switch len(parts) {
+	case 0:
+		return ""
+	case 1:
+		return parts[0]
+	}
+	segs := strings.Split(strings.Trim(path, "/"), "/")
+	for i := len(segs) - 1; i >= 0; i-- {
+		seg := segs[i]
+		if seg == "" || strings.HasPrefix(seg, "{") {
+			continue
+		}
+		for _, p := range parts {
+			if slices.ContainsFunc(Stems(p), func(s string) bool {
+				return strings.EqualFold(s, seg) || strings.EqualFold(s, singular(seg))
+			}) {
+				return p
+			}
+		}
+	}
+	return parts[0]
 }
 
 // Page reports whether a DTO with one list is a page of that list.
@@ -1046,7 +1123,7 @@ func requestDTO(op *spec.Operation) string {
 	}
 	for _, mt := range sortedKeys(rb.Value.Content) {
 		if m := rb.Value.Content[mt]; spec.IsJSON(mt) && m.Schema != nil {
-			return dict.DTORef(m.Schema)
+			return dtoOf(m.Schema, op.Path)
 		}
 	}
 	return ""

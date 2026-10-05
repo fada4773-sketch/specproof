@@ -35,6 +35,7 @@ type sim struct {
 	made    map[*rec]bool // records a POST of the run created
 	tables  map[string]bool
 	noted   map[string]bool
+	stepped map[string]bool // operations whose case ran already
 }
 
 // example is what one case sends and gets.
@@ -50,7 +51,7 @@ type example struct {
 
 func newSim(rd *reader, cfg *Config, res *Result, w *writes) *sim {
 	s := &sim{rd: rd, cfg: cfg, res: res, w: w, next: map[string]int{}, ids: map[string]map[string]int{}, live: map[*rec]bool{},
-		written: map[string]bool{}, created: map[string]int{}, made: map[*rec]bool{}, tables: map[string]bool{}, noted: map[string]bool{}}
+		written: map[string]bool{}, created: map[string]int{}, made: map[*rec]bool{}, tables: map[string]bool{}, noted: map[string]bool{}, stepped: map[string]bool{}}
 	for t := range rd.recs {
 		s.tables[t] = true
 	}
@@ -105,6 +106,7 @@ func (s *sim) seedRecords() map[string]any {
 // step follows one case and returns its example; nil if there is none to
 // write.
 func (s *sim) step(c *cases.Case) *example {
+	defer func() { s.stepped[c.Op.ID] = true }()
 	if c.Op.Method == http.MethodGet {
 		return s.read(c)
 	}
@@ -235,14 +237,15 @@ func (s *sim) check(c *cases.Case, f *fetched, ref *openapi3.SchemaRef) {
 		case r == nil:
 			msg := fmt.Sprintf("GET %s reads a %s the environment never holds: it holds only the ones of the seed and of the POSTs of the run", f.url, t)
 			s.res.note(CodeContainer, c.Op.ID, "%s", msg)
-			s.suggestSeed(c.Op.ID, msg, t)
+			_, id := idOf(o)
+			s.suggestSeed(c.Op.ID, msg, t, id)
 		case !s.live[r]:
 			msg := fmt.Sprintf("GET %s runs while the environment does not hold this %s: it is %s", f.url, t, s.why(r))
 			s.res.note(CodeContainer, c.Op.ID, "%s", msg)
 			if s.made[r] {
 				s.suggestDeleteLast(c.Op.ID, msg)
 			} else {
-				s.suggestSeed(c.Op.ID, msg, t)
+				s.suggestSeed(c.Op.ID, msg, t, r.id)
 			}
 		}
 		return
@@ -255,7 +258,7 @@ func (s *sim) check(c *cases.Case, f *fetched, ref *openapi3.SchemaRef) {
 			msg := fmt.Sprintf("GET %s runs before %s writes it, so the environment answers without these data; let %s run first (\"$apitest\".MethodOrder or x-apitest-order)",
 				f.url, op.ID, op.ID)
 			s.res.note(CodeContainer, c.Op.ID, "%s", msg)
-			s.suggestOrder(c.Op.ID, msg, op)
+			s.suggestOrder(c.Op.ID, msg, c.Op, op)
 			return
 		}
 	}
@@ -316,7 +319,7 @@ func (s *sim) id(t string, v any, where string) any {
 		s.noted[t+" "+text(v)+" "+where] = true
 		msg := fmt.Sprintf("refers to %s %s, which the environment does not hold", t, text(v))
 		s.res.note(CodeContainer, where, "%s", msg)
-		s.suggestSeed(where, msg, t)
+		s.suggestSeed(where, msg, t, v)
 	}
 	return v
 }

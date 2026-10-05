@@ -1,0 +1,191 @@
+openapi: 3.0.3
+info: { title: Starport, version: "1" }
+# DTOs a code generator writes as allOf of several $refs with x-go-type
+paths:
+  /ships:
+    get:
+      tags: [Ship]
+      operationId: ListShips
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  allOf:
+                    - $ref: "#/components/schemas/ShipBase"
+                    - $ref: "#/components/schemas/ShipMeta"
+                    - properties:
+                        Registry: { type: string }
+                    - x-go-type: ShipRead
+    post:
+      tags: [Ship]
+      operationId: CreateShip
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/ShipBase"
+                - $ref: "#/components/schemas/ShipExtra"
+                - type: object
+                  required: [Registry]
+                  properties:
+                    Registry: { type: string, pattern: '^R-[0-9]{3}$' }
+                    Captain:
+                      description: the pilot in command
+                - x-go-type: ShipCreate
+      responses:
+        "201":
+          description: created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ShipRead" }
+  /ships/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: integer } }
+    get:
+      tags: [Ship]
+      operationId: GetShip
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ShipRead" }
+    put:
+      tags: [Ship]
+      operationId: UpdateShip
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ShipUpdate" }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ShipRead" }
+    patch:
+      tags: [Ship]
+      operationId: PatchShip
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/ShipExtra"
+                - $ref: "#/components/schemas/ShipNaming"
+                - x-go-type: ShipPatch
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ShipRead" }
+    delete:
+      tags: [Ship]
+      operationId: DeleteShip
+      responses:
+        "204": { description: deleted }
+  /docks/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: integer } }
+    get:
+      tags: [Dock]
+      operationId: GetDock
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DockRead" }
+    put:
+      tags: [Dock]
+      operationId: UpdateDock
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/DockBase"
+                - $ref: "#/components/schemas/PilotLicense"
+                - properties:
+                    Note: { type: string, maxLength: 20 }
+              x-go-type: DockUpdate
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DockRead" }
+components:
+  schemas:
+    DockBase:
+      type: object
+      properties:
+        Name: { type: string, minLength: 2, maxLength: 30 }
+        Manager:
+          allOf:
+            - $ref: "#/components/schemas/Person"
+            - $ref: "#/components/schemas/PilotLicense"
+            - x-go-type: Pilot
+    DockRead:
+      x-go-type: DockRead
+      allOf:
+        - $ref: "#/components/schemas/DockBase"
+        - type: object
+          properties:
+            Id: { type: integer, readOnly: true }
+    ShipNaming:
+      type: object
+      properties:
+        Name: { type: string, minLength: 2, maxLength: 30 }
+    ShipBase:
+      type: object
+      required: [ShipCode]
+      allOf:
+        - $ref: "#/components/schemas/ShipNaming"
+      properties:
+        ShipCode: { type: string, pattern: '^S[0-9]{2}$' }
+    ShipExtra:
+      type: object
+      properties:
+        Crew: { type: integer, minimum: 1, maximum: 40 }
+        Captain:
+          allOf:
+            - $ref: "#/components/schemas/Person"
+            - $ref: "#/components/schemas/PilotLicense"
+            - x-go-type: Pilot
+    ShipMeta:
+      type: object
+      properties:
+        Id: { type: integer, readOnly: true }
+        Created: { type: string, format: date-time, readOnly: true }
+    ShipUpdate:
+      x-go-type: ShipUpdate
+      allOf:
+        - $ref: "#/components/schemas/ShipBase"
+        - $ref: "#/components/schemas/ShipExtra"
+    ShipRead:
+      x-go-type: ShipRead
+      allOf:
+        - $ref: "#/components/schemas/ShipBase"
+        - $ref: "#/components/schemas/ShipExtra"
+        - $ref: "#/components/schemas/ShipMeta"
+    Person:
+      type: object
+      properties:
+        PersonId: { type: integer, readOnly: true }
+        Name: { type: string }
+    PilotLicense:
+      type: object
+      required: [License]
+      properties:
+        License: { type: string, pattern: '^L-[0-9]{4}$' }

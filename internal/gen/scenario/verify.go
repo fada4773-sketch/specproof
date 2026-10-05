@@ -200,7 +200,7 @@ func (v *verifier) checkRecord(c *cases.Case, r *model.Resource, at ref) {
 		return
 	}
 	rec := v.st.get(r, at)
-	family := c.Expect.Response != nil && containsFold(r.Schemas, responseDTO(c))
+	family := c.Expect.Response != nil && slices.ContainsFunc(responseDTOs(c), func(dto string) bool { return containsFold(r.Schemas, dto) })
 	for _, k := range sortedKeys(obj) {
 		f := r.Field(k)
 		if f == "" || v.ignored(c, r, f) || (at.created != nil && containsFold(v.server[at.created], f)) {
@@ -300,13 +300,13 @@ func (v *verifier) ignored(c *cases.Case, r *model.Resource, field string) bool 
 	return ref != nil && ref.Value != nil && (ref.Value.ReadOnly || presenceOnly(ref.Value))
 }
 
-// responseDTO is the DTO of the expected response of a case.
-func responseDTO(c *cases.Case) string {
+// responseDTOs are the DTOs the expected response of a case is made of.
+func responseDTOs(c *cases.Case) []string {
 	if c.Expect.Response == nil {
-		return ""
+		return nil
 	}
 	if _, m := jsonMedia(c.Expect.Response.Content); m != nil {
-		return dict.DTORef(m.Schema)
+		return dict.DTOParts(m.Schema)
 	}
-	return ""
+	return nil
 }

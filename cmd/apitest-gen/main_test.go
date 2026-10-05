@@ -29,6 +29,9 @@ func TestDictCreateUpdateDryRun(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("output misses %q:\n%s", want, out)
 		}
+		if strings.Contains(out, "\x1b[") {
+			t.Fatal("colors in output that is no terminal")
+		}
 	}
 	if strings.Contains(out, "VALUE_NEW") {
 		t.Error("VALUE_NEW is only listed with -v")
@@ -496,8 +499,8 @@ func TestRecordCommand(t *testing.T) {
 	if code != 0 || errOut != "" {
 		t.Fatalf("record: %d\n%s\n%s", code, out, errOut)
 	}
-	for _, want := range []string{"requests to " + srv.URL + ", in the order they are sent", "#001 [Dock]", "record: 13 operations, 13 with new or changed schemas",
-		"examples written", `"$recorded" updated`, "2 seed records"} {
+	for _, want := range []string{"REQUESTS to " + srv.URL, "── Dock", "#001 GET", "record: 13 operations, 13 with new or changed schemas",
+		"FINDINGS", "WHAT THE CODES MEAN", "examples written", `"$recorded" updated`, "2 seed records"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output misses %q:\n%s", want, out)
 		}
@@ -557,5 +560,26 @@ func TestRecordIgnoreLinting(t *testing.T) {
 	}
 	if !strings.Contains(out, "examples written") {
 		t.Errorf("-ignorelinting: %d\n%s", code, out)
+	}
+}
+
+func TestTable(t *testing.T) {
+	t.Setenv("COLUMNS", "60")
+	var b strings.Builder
+	table(&b, style{}, []string{"CODE", "WHERE", "MESSAGE"}, [][]cell{
+		{{"NO_DATA", red}, {"GetShip", ""}, {"not read (status 404); it gets no example, and this line is long enough to wrap", ""}},
+		{{"BUILT", ""}, {"CreateDockShip", ""}, {"short", ""}},
+	})
+	want := `  CODE     WHERE           MESSAGE
+  NO_DATA  GetShip         not read (status 404); it gets no
+                           example, and this line is long
+                           enough to wrap
+  BUILT    CreateDockShip  short
+`
+	if b.String() != want {
+		t.Errorf("table:\n%s\nwant:\n%s", b.String(), want)
+	}
+	if got := (style{on: true}).paint(red, "x"); got != "\x1b[31mx\x1b[0m" {
+		t.Errorf("paint %q", got)
 	}
 }
