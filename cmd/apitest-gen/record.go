@@ -53,7 +53,7 @@ func recordCommand(o *options, out io.Writer) error {
 	section(out, st, fmt.Sprintf("REQUESTS to %s", o.baseURL))
 	fmt.Fprintln(out, st.paint(dim, "  in the order they are sent; per tag: GET and POSTs that read, PUT/PATCH, DELETE, then POST"))
 	tag := ""
-	client := &record.Client{Opt: opt, Log: func(e record.Entry) { logEntry(out, st, e, &tag) }}
+	client := &record.Client{Opt: opt, Log: func(e record.Entry) { logEntry(out, st, e, &tag, o.showBodies) }}
 	res, err := record.Run(context.Background(), record.Input{Spec: s, Doc: doc, Config: cfg, Client: client,
 		Prev: prev, Overwrite: o.overwrite, Writes: !o.readOnly && !o.dryRun, IgnoreLinting: o.ignoreLinting})
 	if err != nil {
@@ -114,8 +114,9 @@ func counts(m map[string]int) string {
 }
 
 // logEntry writes one request as a line: a heading when the tag changes,
-// the status colored, what was sent and answered under a failed one.
-func logEntry(out io.Writer, st style, e record.Entry, tag *string) {
+// the status colored, what was sent and answered under a failed one, and
+// with -show-bodies the body of every write.
+func logEntry(out io.Writer, st style, e record.Entry, tag *string, bodies bool) {
 	if e.Tag != *tag {
 		*tag = e.Tag
 		fmt.Fprintln(out, st.paint(cyan, "  ── "+e.Tag+" "))
@@ -133,6 +134,9 @@ func logEntry(out io.Writer, st style, e record.Entry, tag *string) {
 	if e.Err != nil {
 		fmt.Fprintln(out, "         "+st.paint(red, "error:  "+e.Err.Error()))
 		return
+	}
+	if bodies && e.Status/100 == 2 && e.Body != nil {
+		fmt.Fprintln(out, "         "+st.paint(dim, "sent:   "+record.JSON(e.Body)))
 	}
 	if e.Status/100 != 2 {
 		if e.Body != nil {

@@ -16,6 +16,11 @@ contain breaking changes, which are listed here.
 
 ### Features
 
+- `apitest-gen record -show-bodies` prints the body of every PUT, PATCH and
+  POST it sends.
+- `apitest-gen record`: a value `"{name}"` in `select.<DTO>.equal` and in
+  `details.<GET>.equal` takes the value `params` sets for `name`; the run
+  stops if `params` has no plain value for it.
 - `apitest-gen record` prints its output in parts: the requests below a
   heading per tag with colored status, a summary, the findings as a table
   (`FATAL`, `PROBLEM`, `WARN`, `INFO`, the most serious first), one line
@@ -319,6 +324,19 @@ contain breaking changes, which are listed here.
   write suggestions: the fields for `"$apitest".IgnoreFields`, and for
   `DATA_CHANGED` the fields no body of the run can set or a hint that the
   writes lost records.
+- `apitest-gen record`: an update whose GET at the same path answers a list
+  sent that list as its body (the server answered "cannot unmarshal array");
+  it sends the record now. The body of an update comes from that GET only
+  if it read the same record (the same URL).
+- `apitest-gen record`: the request examples of PUT, PATCH and POST keep
+  every element of their nested lists; before, elements whose record the
+  empty environment does not hold were left out. Such an element is now
+  reported as `NOT_IN_CONTAINER` with its id.
+- `apitest-gen record`: `DATA_CHANGED` names the path of every difference
+  with both values (`dock.crew: 1 → 0 elements`, `dock.name: "North" →
+  "South"`), compares list elements by id, and reports nested lists with
+  another number of elements. Before, the number of elements of an object
+  answer was taken from any of its lists, which reported wrong counts.
 - `apitest-gen`: the body of an update no longer contains the readOnly
   fields of a nested DTO (the `Id` of a nested `Person`), which made apply
   stop with `EXAMPLE_INVALID`; the record keeps them after the update, so

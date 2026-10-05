@@ -1267,3 +1267,88 @@ func TestRecordDataChanged(t *testing.T) {
 		t.Errorf("with IgnoreFields:\n%s", notes(res))
 	}
 }
+
+// The body of an update comes from the GET of its path only if that GET
+// read the same record and answers one object; a list or another record
+// gives the record's own data.
+func TestBodyFor(t *testing.T) {
+	s, err := spec.Load(context.Background(), "../../../testdata/gen/record.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	put, get := s.Op("UpdateDockConfig"), s.Op("GetDockConfig")
+	cfg := map[string]any{"settings": map[string]any{"mode": "auto"}}
+	other := map[string]any{"settings": map[string]any{"mode": "manual"}}
+	r := &rec{table: "dock", data: map[string]any{"settings": map[string]any{"mode": "own"}}}
+	for name, tc := range map[string]struct {
+		url, getURL string
+		answer      any
+		want        string
+	}{
+		"same record":    {"/Planet/P1/Dock/D2/Config", "/Planet/P1/Dock/D2/Config", cfg, `{"settings":{"mode":"auto"}}`},
+		"another record": {"/Planet/P1/Dock/D2/Config", "/Planet/P1/Dock/D1/Config", other, `{"settings":{"mode":"own"}}`},
+		"a list":         {"/Planet/P1/Dock/D2/Config", "/Planet/P1/Dock/D2/Config", []any{cfg, other}, `{"settings":{"mode":"own"}}`},
+	} {
+		w := &writes{rd: &reader{gets: map[string]*fetched{get.ID: {op: get, url: tc.getURL, resp: response{Status: 200, Body: tc.answer}}}}}
+		u := &wop{c: &cases.Case{Op: put}, url: tc.url, rec: r}
+		if got := text(w.bodyFor(u)); got != tc.want {
+			t.Errorf("%s: %s, want %s", name, got, tc.want)
+		}
+	}
+}
+
+// changes names the path of every difference with both values; a nested
+// list with another number of elements is one change.
+func TestChanges(t *testing.T) {
+	var a, b any
+	if err := spec.DecodeJSON([]byte(`{"name": "Comet", "crew": [{"id": 1}], "dock": {"name": "North", "code": "D1"}}`), &a); err != nil {
+		t.Fatal(err)
+	}
+	if err := spec.DecodeJSON([]byte(`{"name": "Comet", "crew": [], "dock": {"name": "South", "code": "D1"}, "version": 2}`), &b); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, c := range changes(a, b, "", "") {
+		got = append(got, c.String()+" ("+c.name+")")
+	}
+	want := []string{`crew: 1 → 0 elements (crew)`, `dock.name: "North" → "South" (name)`, `version: missing → 2 (version)`}
+	if !slices.Equal(got, want) {
+		t.Errorf("changes:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// The body of a write keeps every element of its lists; a GET answer keeps
+// only the records the environment holds.
+func TestConvAllKeepsElements(t *testing.T) {
+	held, other := &rec{table: "ship", id: json.Number("100")}, &rec{table: "ship", id: json.Number("101")}
+	s := &sim{rd: &reader{s: &spec.Spec{}, all: map[string][]*rec{"ship": {held, other}}}, cfg: &Config{}, res: &Result{}, live: map[*rec]bool{held: true},
+		ids: map[string]map[string]int{"ship": {"100": 1}}, tables: map[string]bool{"ship": true}, noted: map[string]bool{}}
+	list := []any{map[string]any{"id": json.Number("100")}, map[string]any{"id": json.Number("101")}}
+	if got := text(s.convAll(list, nil, "ship", "UpdateDock")); got != `[{"id":1},{"id":101}]` {
+		t.Errorf("write: %s", got)
+	}
+	if got := text(s.conv(list, nil, "ship", "GetDock")); got != `[{"id":1}]` {
+		t.Errorf("read: %s", got)
+	}
+	if !strings.Contains(notes(s.res), "UpdateDock: refers to ship 101, which the environment does not hold") {
+		t.Errorf("notes:\n%s", notes(s.res))
+	}
+}
+
+// "{name}" in "equal" takes the value of "params"; without one the check
+// names it.
+func TestFillEqual(t *testing.T) {
+	c, err := Parse([]byte(`{"params": {"planetCode": "P1", "dockCode": {"field": "code"}},
+	  "select": {"Dock": {"equal": {"Planet.planetCode": "{planetCode}", "name": "{x"},
+	    "details": {"/Planet/{planetCode}/Dock/{dockCode}/Config": {"equal": {"owner": "{dockCode}"}}}}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	errs := c.fillEqual()
+	if got := c.Select["Dock"].Equal; got["Planet.planetCode"] != "P1" || got["name"] != "{x" {
+		t.Errorf("equal: %v", got)
+	}
+	if len(errs) != 1 || !strings.Contains(errs[0], `.equal.owner: "{dockCode}" needs a value of "params".dockCode`) {
+		t.Errorf("errors: %v", errs)
+	}
+}

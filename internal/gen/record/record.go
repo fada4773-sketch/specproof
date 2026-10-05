@@ -408,3 +408,76 @@ func diffFields(a, b any, name string) []string {
 	}
 	return nil
 }
+
+// change is a value that differs between two answers.
+type change struct {
+	path, name    string // "dock.crew[2].name", "name"
+	before, after any
+	list          bool // a list with another number of elements
+}
+
+func (c change) String() string {
+	if c.list {
+		return fmt.Sprintf("%s: %d → %d elements", c.path, len(c.before.([]any)), len(c.after.([]any)))
+	}
+	show := func(v any) string {
+		if v == nil {
+			return "missing"
+		}
+		s := text(v)
+		if str, ok := v.(string); ok {
+			s = fmt.Sprintf("%q", str)
+		}
+		if len(s) > 40 {
+			s = s[:37] + "..."
+		}
+		return s
+	}
+	return fmt.Sprintf("%s: %s → %s", c.path, show(c.before), show(c.after))
+}
+
+// changes returns what differs between two values, with the path of each
+// difference and the name of its field; a list with another number of
+// elements is one change.
+func changes(a, b any, path, name string) []change {
+	join := func(k string) string {
+		if path == "" {
+			return k
+		}
+		return path + "." + k
+	}
+	switch x := a.(type) {
+	case map[string]any:
+		y, ok := b.(map[string]any)
+		if !ok {
+			return []change{{path: path, name: name, before: a, after: b}}
+		}
+		var out []change
+		for _, k := range sortedKeys(x) {
+			out = append(out, changes(x[k], y[k], join(k), k)...)
+		}
+		for _, k := range sortedKeys(y) {
+			if _, ok := x[k]; !ok && y[k] != nil {
+				out = append(out, change{path: join(k), name: k, after: y[k]})
+			}
+		}
+		return out
+	case []any:
+		y, ok := b.([]any)
+		switch {
+		case !ok:
+			return []change{{path: path, name: name, before: a, after: b}}
+		case len(x) != len(y):
+			return []change{{path: path, name: name, before: a, after: b, list: true}}
+		}
+		var out []change
+		for i := range x {
+			out = append(out, changes(x[i], y[i], fmt.Sprintf("%s[%d]", path, i), name)...)
+		}
+		return out
+	}
+	if !same(a, b) && (a != nil || b != nil) {
+		return []change{{path: path, name: name, before: a, after: b}}
+	}
+	return nil
+}

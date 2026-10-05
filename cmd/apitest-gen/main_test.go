@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/fada4773-sketch/specproof/internal/gen/record"
 )
 
 const shop = "../../testdata/gen/shop.yaml"
@@ -581,5 +583,20 @@ func TestTable(t *testing.T) {
 	}
 	if got := (style{on: true}).paint(red, "x"); got != "\x1b[31mx\x1b[0m" {
 		t.Errorf("paint %q", got)
+	}
+}
+
+func TestLogEntryBodies(t *testing.T) {
+	e := record.Entry{N: 3, Tag: "Dock", Method: "PUT", URL: "/Dock/D1", Why: "update", Status: 200, Body: map[string]any{"name": "North"}}
+	var b strings.Builder
+	tag := ""
+	logEntry(&b, style{}, e, &tag, false)
+	if strings.Contains(b.String(), "sent:") || !strings.Contains(b.String(), "── Dock") || !strings.Contains(b.String(), "#003 PUT    200 /Dock/D1") {
+		t.Errorf("without -show-bodies:\n%s", b.String())
+	}
+	b.Reset()
+	logEntry(&b, style{}, e, &tag, true)
+	if !strings.Contains(b.String(), `sent:   {"name":"North"}`) || strings.Contains(b.String(), "── Dock") {
+		t.Errorf("with -show-bodies:\n%s", b.String())
 	}
 }

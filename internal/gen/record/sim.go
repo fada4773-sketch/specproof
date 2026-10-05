@@ -156,7 +156,7 @@ func (s *sim) step(c *cases.Case) *example {
 	}
 	e := &example{params: s.params(x.vals), src: x.source()}
 	if x.body != nil {
-		e.body, e.hasBody = s.conv(x.body, requestSchema(c.Op), "", c.Op.ID), true
+		e.body, e.hasBody = s.convAll(x.body, requestSchema(c.Op), "", c.Op.ID), true
 	}
 	if x.resp != nil {
 		e.status = x.resp.Status
@@ -176,7 +176,11 @@ func (s *sim) step(c *cases.Case) *example {
 			}
 		}
 		if body != nil {
-			e.resp, e.hasResp = s.conv(body, responseSchema(c.Op, x.resp.Status), x.table, c.Op.ID), true
+			conv := s.convAll
+			if x.kind == kindQuery {
+				conv = s.conv // a POST that only reads answers what the environment holds
+			}
+			e.resp, e.hasResp = conv(body, responseSchema(c.Op, x.resp.Status), x.table, c.Op.ID), true
 			if m, ok := e.resp.(map[string]any); ok && idField != "" {
 				m[idField] = json.Number(strconv.Itoa(newID))
 			}
@@ -328,6 +332,14 @@ func (s *sim) id(t string, v any, where string) any {
 // assigns, and in lists only the records it holds at this point.
 func (s *sim) conv(v any, ref *openapi3.SchemaRef, hint, where string) any {
 	return walk(v, ref, hint, func(t string, id any) any { return s.id(t, id, where) }, s.present, s.tables, s.rd.n)
+}
+
+// convAll turns the body or answer of a write into the one of the
+// environment: the ids it assigns, every element of its lists kept. The
+// body is what apitest sends; an element that refers to a record the
+// environment does not hold is reported by its id, not left out.
+func (s *sim) convAll(v any, ref *openapi3.SchemaRef, hint, where string) any {
+	return walk(v, ref, hint, func(t string, id any) any { return s.id(t, id, where) }, nil, s.tables, s.rd.n)
 }
 
 // present reports whether an element of a list exists in the environment.

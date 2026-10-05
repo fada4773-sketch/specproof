@@ -60,6 +60,9 @@ func (e Entry) String() string {
 	return line
 }
 
+// JSON is a value as JSON text.
+func JSON(v any) string { return text(v) }
+
 // Clip is a value as JSON text, at most 1500 bytes, for the log.
 func Clip(v any) string { return clip(text(v)) }
 

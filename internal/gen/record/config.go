@@ -423,10 +423,42 @@ func (c *Config) check(s *spec.Spec, n namer) error {
 			errs = append(errs, fmt.Sprintf("\"select\".%s.from: %s does not return a list of %s; name the GET that lists them (e.g. %s)", name, op.ID, name, listsOf(s, n, t)))
 		}
 	}
+	errs = append(errs, c.fillEqual()...)
 	if len(errs) > 0 {
 		return errors.New(strings.Join(errs, "\n"))
 	}
 	return nil
+}
+
+// fillEqual replaces a value "{name}" in the "equal" of "select" and of its
+// "details" by the value "params" sets for that parameter, so a value is
+// set once: "equal": {"Planet.planetCode": "{planetCode}"}. It returns
+// the placeholders without such a value.
+func (c *Config) fillEqual() []string {
+	var errs []string
+	fill := func(where string, eq map[string]any) {
+		for _, f := range sortedKeys(eq) {
+			str, ok := eq[f].(string)
+			if !ok || len(str) < 3 || str[0] != '{' || str[len(str)-1] != '}' || strings.ContainsAny(str[1:len(str)-1], "{}") {
+				continue
+			}
+			name := strings.TrimSpace(str[1 : len(str)-1])
+			p, ok := c.param("", name)
+			if !ok || p.Value == nil {
+				errs = append(errs, fmt.Sprintf("%s.equal.%s: %q needs a value of \"params\".%s (a plain value, not a field or format)", where, f, str, name))
+				continue
+			}
+			eq[f] = p.Value
+		}
+	}
+	for _, name := range sortedKeys(c.Select) {
+		sel := c.Select[name]
+		fill(fmt.Sprintf("\"select\".%s", name), sel.Equal)
+		for _, path := range sortedKeys(sel.Details) {
+			fill(fmt.Sprintf("\"select\".%s.details.%s", name, path), sel.Details[path].Equal)
+		}
+	}
+	return errs
 }
 
 // opByID finds an operation, ignoring case.

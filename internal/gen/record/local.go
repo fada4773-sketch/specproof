@@ -3,13 +3,13 @@ package record
 import (
 	"fmt"
 	"net/http"
-	"sort"
 	"strings"
 
 	"github.com/getkin/kin-openapi/openapi3"
 
 	"github.com/fada4773-sketch/specproof/internal/cases"
 	"github.com/fada4773-sketch/specproof/internal/gen/dict"
+	"github.com/fada4773-sketch/specproof/internal/gen/value"
 	"github.com/fada4773-sketch/specproof/internal/spec"
 )
 
@@ -434,6 +434,11 @@ func (w *writes) update(u *wop) {
 		return
 	}
 	u.body = w.bodyFor(u)
+	if u.body == nil && requestSchema(u.c.Op) != nil {
+		w.res.note(CodeNotExecuted, u.c.Op.ID, "%s %s is not sent: the GET of its path answers a list, its body is one object, and no %s was selected",
+			u.c.Op.Method, u.c.Op.Path, u.table)
+		return
+	}
 	resp, ok := w.send(u, u.c.Op.Method, "update "+u.c.Op.ID+" with the data it has")
 	if !ok && resp.Status == http.StatusNotFound && u.rec != nil {
 		w.retry[u.rec] = append(w.retry[u.rec], u)
@@ -592,10 +597,12 @@ func (r *rec) matchKeys(o map[string]any) bool {
 	return n > 0
 }
 
-// sameGet is the GET of the path of an update, if the run read it.
+// sameGet is the GET of the path of an update, if the run read it for the
+// same record: a GET of the same path with other values read another one.
 func (w *writes) sameGet(u *wop) *fetched {
-	for _, f := range w.rd.gets {
-		if f.op.Path == u.c.Op.Path {
+	for _, id := range sortedKeys(w.rd.gets) {
+		f := w.rd.gets[id]
+		if f.op.Path == u.c.Op.Path && (u.url == "" || f.url == u.url) {
 			return f
 		}
 	}
@@ -603,13 +610,21 @@ func (w *writes) sameGet(u *wop) *fetched {
 }
 
 // bodyFor is the body of an update: what the GET of the same path answers,
-// else the record, with the fields of the request schema.
+// else the record, with the fields of the request schema. A GET that
+// answers a list where the body is one object gives no body: the record
+// is used.
 func (w *writes) bodyFor(u *wop) any {
 	src := u.rec.dataOrNil()
 	if f := w.sameGet(u); f != nil {
-		src = f.resp.Body
+		if _, isList := f.resp.Body.([]any); !isList || isArray(requestSchema(u.c.Op)) {
+			src = f.resp.Body
+		}
 	}
 	return project(src, requestSchema(u.c.Op), spec.ModeRequest)
+}
+
+func isArray(ref *openapi3.SchemaRef) bool {
+	return ref != nil && ref.Value != nil && value.Type(ref.Value) == "array"
 }
 
 func (r *rec) dataOrNil() any {
@@ -754,22 +769,51 @@ func (w *writes) verify() {
 				"restore it in the instance and check the DELETEs and POSTs the log shows for it (\"select\".<DTO>.delete chooses the DELETE)", nil)
 			continue
 		}
-		before, after := w.canon(w.newIDs(f.resp.Body, responseSchema(f.op, f.resp.Status))), w.canon(resp.Body)
-		if l1, l2 := size(before), size(after); l1 != l2 {
-			msg := fmt.Sprintf("#%d GET %s lists %d elements, #%d before the writes listed %d", resp.Seq, u, l2, f.resp.Seq, l1)
-			w.res.problem(CodeChanged, id, "%s", msg)
-			w.res.suggest(CodeChanged, id, msg, "the writes removed or added elements: a DELETE also removed records below the deleted one, which no POST creates again, "+
-				"or a POST created one more; restore the data in the instance, then let \"select\" take a record without such records below it", nil)
-		} else if d := diffFields(before, after, ""); len(d) > 0 {
-			msg := fmt.Sprintf("#%d GET %s answers other values than #%d before the writes: %s", resp.Seq, u, f.resp.Seq, strings.Join(d, ", "))
-			w.res.problem(CodeChanged, id, "%s", msg)
-			hint := "the server sets these fields itself when a record is written (time, user, version): let apitest ignore them"
-			if lost := w.unsettable(d); len(lost) > 0 {
-				hint = fmt.Sprintf("%s are no fields of the body of the PUT or POST that wrote the record, so the record created again has the server's values: "+
-					"if the server sets them (time, user, version) let apitest ignore them; else the run lost data: restore it in the instance", strings.Join(lost, ", "))
+		ref := responseSchema(f.op, f.resp.Status)
+		before, after := w.canon(w.newIDs(f.resp.Body, ref)), w.canon(resp.Body)
+		if _, l1, _, ok := listOf(ref, before); ok {
+			if _, l2, _, ok := listOf(ref, after); ok && len(l1) != len(l2) {
+				msg := fmt.Sprintf("#%d GET %s lists %d elements, #%d before the writes listed %d", resp.Seq, u, len(l2), f.resp.Seq, len(l1))
+				w.res.problem(CodeChanged, id, "%s", msg)
+				w.res.suggest(CodeChanged, id, msg, "the writes removed or added elements: a DELETE also removed records below the deleted one, which no POST creates again, "+
+					"or a POST created one more; restore the data in the instance, then let \"select\" take a record without such records below it", nil)
+				continue
 			}
-			w.res.suggestIgnore(w.in.Config, CodeChanged, id, msg, hint, d)
 		}
+		d := changes(before, after, "", "")
+		if len(d) == 0 {
+			continue
+		}
+		var text, fields, lists []string
+		for i, c := range d {
+			if i < 8 {
+				text = append(text, c.String())
+			}
+			if c.list {
+				lists = append(lists, c.path)
+			} else if !contains(fields, c.name) {
+				fields = append(fields, c.name)
+			}
+		}
+		if len(d) > 8 {
+			text = append(text, fmt.Sprintf("… %d more", len(d)-8))
+		}
+		msg := fmt.Sprintf("#%d GET %s answers other values than #%d before the writes: %s", resp.Seq, u, f.resp.Seq, strings.Join(text, "; "))
+		w.res.problem(CodeChanged, id, "%s", msg)
+		if len(lists) > 0 {
+			w.res.suggest(CodeChanged, id, msg, fmt.Sprintf("the writes changed the number of elements of %s: the body of the PUT or POST left them out or the server keeps them elsewhere "+
+				"(e.g. it takes ids, not objects); restore the data in the instance and check the body the log shows (-show-bodies)", strings.Join(lists, ", ")), nil)
+		}
+		if len(fields) == 0 {
+			continue
+		}
+		hint := "the server sets these fields itself when a record is written (time, user, version): let apitest ignore them; " +
+			"if the values are data, the body of the PUT or POST did not carry them: check it with -show-bodies"
+		if lost := w.unsettable(fields); len(lost) > 0 {
+			hint = fmt.Sprintf("%s are no fields of the body of the PUT or POST that wrote the record, so the record created again has the server's values: "+
+				"if the server sets them (time, user, version) let apitest ignore them; else the run lost data: restore it in the instance", strings.Join(lost, ", "))
+		}
+		w.res.suggestIgnore(w.in.Config, CodeChanged, id, msg, hint, fields)
 	}
 }
 
@@ -805,27 +849,31 @@ func (w *writes) unsettable(fields []string) []string {
 	return out
 }
 
-// canon leaves out the fields that change anyway and sorts the lists, so a
-// record created again at the end of a list compares equal.
+// canon leaves out the fields that change anyway and sorts the lists (by
+// id, else by text), so a record created again at the end of a list
+// compares equal and the elements of a list compare with the same record.
 func (w *writes) canon(v any) any {
-	switch x := v.(type) {
-	case map[string]any:
-		out := map[string]any{}
-		for k, e := range x {
-			if !w.changing(k) {
-				out[k] = w.canon(e)
+	var strip func(v any) any
+	strip = func(v any) any {
+		switch x := v.(type) {
+		case map[string]any:
+			out := map[string]any{}
+			for k, e := range x {
+				if !w.changing(k) {
+					out[k] = strip(e)
+				}
 			}
+			return out
+		case []any:
+			out := make([]any, len(x))
+			for i, e := range x {
+				out[i] = strip(e)
+			}
+			return out
 		}
-		return out
-	case []any:
-		out := make([]any, len(x))
-		for i, e := range x {
-			out[i] = w.canon(e)
-		}
-		sort.SliceStable(out, func(i, j int) bool { return text(out[i]) < text(out[j]) })
-		return out
+		return v
 	}
-	return v
+	return sortLists(strip(v))
 }
 
 // changing reports a field the reads found changing or the config ignores.
@@ -860,18 +908,4 @@ func (w *writes) newIDs(v any, ref *openapi3.SchemaRef) any {
 		}
 		return id
 	}, nil, tables, w.rd.n)
-}
-
-func size(v any) int {
-	switch x := v.(type) {
-	case []any:
-		return len(x)
-	case map[string]any:
-		for _, e := range x {
-			if l, ok := e.([]any); ok {
-				return len(l)
-			}
-		}
-	}
-	return -1
 }
