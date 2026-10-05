@@ -30,6 +30,10 @@ type Config struct {
 	Seed []string
 	// Select chooses the record of a DTO where a list returns several.
 	Select map[string]Select
+	// Bodies are bodies of writes and of POSTs that only read, by
+	// operationId, laid over the body the run builds: for fields no record
+	// holds, such as the filter of a table query.
+	Bodies map[string]any
 	// Run is "$apitest", the Config apitest runs with.
 	Run defaults.Run
 	// Recorded is what the last run wrote ("$recorded"); nil before the
@@ -206,6 +210,13 @@ func Parse(b []byte) (*Config, error) {
 			err = strict(v, &c.Seed)
 		case key == "select":
 			c.Select, err = parseSelect(v)
+		case key == "bodies":
+			err = strict(v, &c.Bodies)
+			for k := range c.Bodies {
+				if strings.HasPrefix(k, "$") {
+					delete(c.Bodies, k)
+				}
+			}
 		case key == defaults.ApitestKey:
 			if err = strict(v, &c.Run); err == nil {
 				err = defaults.CheckRun(c.Run)
@@ -216,9 +227,9 @@ func Parse(b []byte) (*Config, error) {
 			err = strict(v, c.Recorded)
 		case strings.HasPrefix(key, "$comment"):
 		case contains(old, key):
-			return nil, fmt.Errorf("%q belongs to the format of \"apitest-gen apply\"; record reads \"params\", \"seed\", \"select\" and %q", key, defaults.ApitestKey)
+			return nil, fmt.Errorf("%q belongs to the format of \"apitest-gen apply\"; record reads \"params\", \"seed\", \"select\", \"bodies\" and %q", key, defaults.ApitestKey)
 		default:
-			return nil, fmt.Errorf("unknown key %q; record reads \"params\", \"seed\", \"select\" and %q", key, defaults.ApitestKey)
+			return nil, fmt.Errorf("unknown key %q; record reads \"params\", \"seed\", \"select\", \"bodies\" and %q", key, defaults.ApitestKey)
 		}
 		if err != nil {
 			return nil, fmt.Errorf("%q: %w", key, err)
@@ -421,6 +432,11 @@ func (c *Config) check(s *spec.Spec, n namer) error {
 		items, _, list := listShape(responseSchema(op, 0))
 		if t := n.table(name); !list || n.of(items) != t {
 			errs = append(errs, fmt.Sprintf("\"select\".%s.from: %s does not return a list of %s; name the GET that lists them (e.g. %s)", name, op.ID, name, listsOf(s, n, t)))
+		}
+	}
+	for _, id := range sortedKeys(c.Bodies) {
+		if op := opByID(s, id); op == nil || requestSchema(op) == nil {
+			errs = append(errs, fmt.Sprintf("\"bodies\".%s: no operation %q with a JSON body in the spec", id, id))
 		}
 	}
 	errs = append(errs, c.fillEqual()...)

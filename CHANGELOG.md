@@ -18,6 +18,11 @@ contain breaking changes, which are listed here.
 
 - `apitest-gen record -show-bodies` prints the body of every PUT, PATCH and
   POST it sends.
+- `apitest-gen record`: `"bodies": {"<operationId>": {…}}` in the defaults
+  file sets fields of the body of a write or of a POST that only reads,
+  laid over the body the run builds, e.g. the filter of a table query. The
+  body of a query also fills a list in the plural from the selected
+  records (`dockCodes` takes the `dockCode`).
 - `apitest-gen record`: a value `"{name}"` in `select.<DTO>.equal` and in
   `details.<GET>.equal` takes the value `params` sets for `name`; the run
   stops if `params` has no plain value for it.
@@ -324,6 +329,11 @@ contain breaking changes, which are listed here.
   write suggestions: the fields for `"$apitest".IgnoreFields`, and for
   `DATA_CHANGED` the fields no body of the run can set or a hint that the
   writes lost records.
+- `apitest-gen record`: the body of an update takes the fields the GET of
+  its path lacks or holds as null from the selected record: a detail GET
+  that shows a nested object instead of the plain field of its list no
+  longer drops that field from the PUT. A null in a detail GET no longer
+  replaces a value the list read.
 - `apitest-gen record`: an update whose GET at the same path answers a list
   sent that list as its body (the server answered "cannot unmarshal array");
   it sends the record now. The body of an update comes from that GET only

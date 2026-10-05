@@ -315,7 +315,7 @@ func (w *writes) queries(tag string) {
 			w.res.note(CodeNotExecuted, x.c.Op.ID, "POST %s is not sent: no value read for its required fields %s", x.c.Op.Path, strings.Join(missing, ", "))
 			continue
 		}
-		x.body = body
+		x.body = w.withBody(x.c.Op, body)
 		w.send(x, http.MethodPost, "read "+x.c.Op.ID+" (a POST that only reads)")
 	}
 }
@@ -333,6 +333,19 @@ func (w *writes) queryBody(op *spec.Operation) (map[string]any, []string) {
 	for _, k := range sortedKeys(props) {
 		if v, ok := w.rd.k.field("", k); ok {
 			body[k] = v.v
+			continue
+		}
+		// a list of simple values named in the plural: dockCodes takes
+		// the dockCode of the selected record
+		if p := props[k].Value; p != nil && value.Type(p) == "array" && p.Items != nil && p.Items.Value != nil && isPrimitive(p.Items.Value) && strings.HasSuffix(k, "s") {
+			if v, ok := w.rd.k.field("", strings.TrimSuffix(k, "s")); ok {
+				body[k] = []any{v.v}
+			}
+		}
+	}
+	if set, ok := w.in.Config.Bodies[op.ID].(map[string]any); ok {
+		for k, v := range set {
+			body[k] = spec.Normalize(v)
 		}
 	}
 	var missing []string
@@ -617,10 +630,74 @@ func (w *writes) bodyFor(u *wop) any {
 	src := u.rec.dataOrNil()
 	if f := w.sameGet(u); f != nil {
 		if _, isList := f.resp.Body.([]any); !isList || isArray(requestSchema(u.c.Op)) {
-			src = f.resp.Body
+			// the GET wins, the record keeps what it lacks: a detail GET
+			// may leave out fields its list has (DockCode next to a Dock object)
+			src = fillIn(f.resp.Body, src)
 		}
 	}
-	return project(src, requestSchema(u.c.Op), spec.ModeRequest)
+	return w.withBody(u.c.Op, project(src, requestSchema(u.c.Op), spec.ModeRequest))
+}
+
+// fillIn lays base under top: fields top lacks or holds as null take the
+// value of base, in nested objects too.
+func fillIn(top, base any) any {
+	t, ok1 := top.(map[string]any)
+	b, ok2 := base.(map[string]any)
+	if !ok1 || !ok2 {
+		if top == nil {
+			return base
+		}
+		return top
+	}
+	out := make(map[string]any, len(t)+len(b))
+	for k, v := range b {
+		out[k] = v
+	}
+	for k, v := range t {
+		if bk := fieldName(b, k); bk != "" && bk != k {
+			delete(out, bk) // the same field in another case
+			out[k] = fillIn(v, b[bk])
+			continue
+		}
+		out[k] = fillIn(v, b[k])
+	}
+	return out
+}
+
+// withBody lays the body "bodies" sets for an operation over the one the
+// run built.
+func (w *writes) withBody(op *spec.Operation, built any) any {
+	if w.in.Config == nil {
+		return built
+	}
+	set, ok := w.in.Config.Bodies[op.ID]
+	if !ok {
+		return built
+	}
+	return overlay(built, spec.Normalize(set))
+}
+
+// overlay lays top over base: objects field by field, anything else is
+// replaced.
+func overlay(base, top any) any {
+	t, ok1 := top.(map[string]any)
+	b, ok2 := base.(map[string]any)
+	if !ok1 || !ok2 {
+		return top
+	}
+	out := make(map[string]any, len(b)+len(t))
+	for k, v := range b {
+		out[k] = v
+	}
+	for k, v := range t {
+		out[k] = overlay(b[k], v)
+	}
+	return out
+}
+
+func isPrimitive(s *openapi3.Schema) bool {
+	_, ok := dict.Primitive(s)
+	return ok
 }
 
 func isArray(ref *openapi3.SchemaRef) bool {

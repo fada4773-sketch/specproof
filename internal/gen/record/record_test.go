@@ -1270,7 +1270,8 @@ func TestRecordDataChanged(t *testing.T) {
 
 // The body of an update comes from the GET of its path only if that GET
 // read the same record and answers one object; a list or another record
-// gives the record's own data.
+// gives the record's own data. Fields the GET lacks or holds as null keep
+// the value of the record.
 func TestBodyFor(t *testing.T) {
 	s, err := spec.Load(context.Background(), "../../../testdata/gen/record.yaml")
 	if err != nil {
@@ -1285,9 +1286,10 @@ func TestBodyFor(t *testing.T) {
 		answer      any
 		want        string
 	}{
-		"same record":    {"/Planet/P1/Dock/D2/Config", "/Planet/P1/Dock/D2/Config", cfg, `{"settings":{"mode":"auto"}}`},
-		"another record": {"/Planet/P1/Dock/D2/Config", "/Planet/P1/Dock/D1/Config", other, `{"settings":{"mode":"own"}}`},
-		"a list":         {"/Planet/P1/Dock/D2/Config", "/Planet/P1/Dock/D2/Config", []any{cfg, other}, `{"settings":{"mode":"own"}}`},
+		"same record":                {"/Planet/P1/Dock/D2/Config", "/Planet/P1/Dock/D2/Config", cfg, `{"settings":{"mode":"auto"}}`},
+		"another record":             {"/Planet/P1/Dock/D2/Config", "/Planet/P1/Dock/D1/Config", other, `{"settings":{"mode":"own"}}`},
+		"a list":                     {"/Planet/P1/Dock/D2/Config", "/Planet/P1/Dock/D2/Config", []any{cfg, other}, `{"settings":{"mode":"own"}}`},
+		"a detail without the field": {"/Planet/P1/Dock/D2/Config", "/Planet/P1/Dock/D2/Config", map[string]any{"settings": map[string]any{"mode": nil}}, `{"settings":{"mode":"own"}}`},
 	} {
 		w := &writes{rd: &reader{gets: map[string]*fetched{get.ID: {op: get, url: tc.getURL, resp: response{Status: 200, Body: tc.answer}}}}}
 		u := &wop{c: &cases.Case{Op: put}, url: tc.url, rec: r}
@@ -1350,5 +1352,72 @@ func TestFillEqual(t *testing.T) {
 	}
 	if len(errs) != 1 || !strings.Contains(errs[0], `.equal.owner: "{dockCode}" needs a value of "params".dockCode`) {
 		t.Errorf("errors: %v", errs)
+	}
+}
+
+// The body of a POST that only reads takes the fields of the selected
+// records, a list in the plural takes the singular field, and "bodies"
+// sets what no record holds (a filter).
+func TestQueryBody(t *testing.T) {
+	doc, err := openapi3.NewLoader().LoadFromData([]byte(`
+openapi: 3.0.3
+info: {title: t, version: "1"}
+paths:
+  /Ship/table:
+    post:
+      operationId: GetShipsAsTable
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [filters]
+              properties:
+                dockCodes: {type: array, items: {type: string}}
+                planetCode: {type: string}
+                filters: {type: array, items: {type: object}}
+      responses:
+        "200": {description: ok}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	op := &spec.Operation{ID: "GetShipsAsTable", Method: http.MethodPost, Path: "/Ship/table", Op: doc.Paths.Value("/Ship/table").Post}
+	k := newKnown()
+	k.add("dock", map[string]any{"dockCode": "D1"})
+	k.add("planet", map[string]any{"planetCode": "P1"})
+	w := &writes{rd: &reader{k: k}, in: Input{Config: &Config{}}}
+	body, missing := w.queryBody(op)
+	if text(body) != `{"dockCodes":["D1"],"planetCode":"P1"}` || !slices.Equal(missing, []string{"filters"}) {
+		t.Errorf("without bodies: %s, missing %v", text(body), missing)
+	}
+	c, err := Parse([]byte(`{"bodies": {"$comment": "x", "GetShipsAsTable": {"filters": [{"field": "name"}], "planetCode": "P2"}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.in.Config = c
+	body, missing = w.queryBody(op)
+	if text(body) != `{"dockCodes":["D1"],"filters":[{"field":"name"}],"planetCode":"P2"}` || len(missing) > 0 {
+		t.Errorf("with bodies: %s, missing %v", text(body), missing)
+	}
+}
+
+func TestConfigCheckBodies(t *testing.T) {
+	s, err := spec.Load(context.Background(), "../../../testdata/gen/record.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := Parse([]byte(`{"bodies": {"SearchShips": {"name": "Comet"}, "GetShip": {}, "Nope": {}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = c.check(s, newNamer(s))
+	for _, want := range []string{`"bodies".GetShip: no operation "GetShip" with a JSON body`, `"bodies".Nope: no operation "Nope"`} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("check: %v, want %s", err, want)
+		}
+	}
+	if err != nil && strings.Contains(err.Error(), "SearchShips") {
+		t.Errorf("SearchShips has a body: %v", err)
 	}
 }

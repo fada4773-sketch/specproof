@@ -485,7 +485,9 @@ func (rd *reader) take(f *fetched) {
 	if r := rd.recs[t]; r != nil {
 		if rd.sameRecord(r, o, f.vals) {
 			for k, v := range o {
-				r.data[k] = v
+				if v != nil || r.data[k] == nil { // null in a detail GET keeps the value of the list
+					r.data[k] = v
+				}
 			}
 			if !slices.Contains(r.ops, f.op.ID) {
 				r.ops = append(r.ops, f.op.ID)
