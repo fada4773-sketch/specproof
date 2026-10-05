@@ -36,6 +36,7 @@ type starport struct {
 	sent     []string
 	gone     map[string]bool // GET paths that answer 404
 	revision bool            // a PUT of a dock config sets its "revision"
+	bodies   map[string]any  // the last body per "METHOD path"
 }
 
 func newStarport() *starport {
@@ -83,6 +84,12 @@ func (sp *starport) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var body map[string]any
 	if r.Body != nil {
 		_ = json.NewDecoder(r.Body).Decode(&body)
+	}
+	if body != nil {
+		if sp.bodies == nil {
+			sp.bodies = map[string]any{}
+		}
+		sp.bodies[r.Method+" "+r.URL.Path] = body
 	}
 	planet := func(code string) map[string]any {
 		for _, p := range sp.planets {
@@ -401,7 +408,7 @@ func TestRecordSelectNone(t *testing.T) {
 	sp.configs["D2"] = map[string]any{"settings": map[string]any{}}
 	res, _, _ := runRecord(t, sp, "../../../testdata/gen/record.yaml", nil, false)
 	all := notes(res)
-	for _, want := range []string{"SELECT_NONE GetDocks: no dock of #1 GET /Planet/P1/Dock passes", "settings.mode empty", "SEED_MISSING Dock"} {
+	for _, want := range []string{"SELECT_NONE GetDocks: no dock of #3 GET /Planet/P1/Dock passes", "settings.mode empty", "SEED_MISSING Dock"} {
 		if !strings.Contains(all, want) {
 			t.Errorf("notes lack %q:\n%s", want, all)
 		}
@@ -884,7 +891,8 @@ func TestRecordLateUpdate(t *testing.T) {
 	if err := os.WriteFile(specPath, b, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	config := `{"params": {"planetCode": "P1", "UpdateShip.id": {"format": "9{Dock.id}"}}, "seed": ["Planet", "Dock"],
+	// Dock is no seed: a seed is read first, before every tag
+	config := `{"params": {"planetCode": "P1", "UpdateShip.id": {"format": "9{Dock.id}"}}, "seed": ["Planet"],
 	  "$apitest": {"Tags": ["Ship", "Dock"]}}`
 	sp := newStarport()
 	sp.ships = append(sp.ships, map[string]any{"id": json.Number("930"), "shipCode": "S9", "dockId": json.Number("30"), "name": "Nova"})
@@ -1419,5 +1427,95 @@ func TestConfigCheckBodies(t *testing.T) {
 	}
 	if err != nil && strings.Contains(err.Error(), "SearchShips") {
 		t.Errorf("SearchShips has a body: %v", err)
+	}
+}
+
+// The seed is read first, before every tag, each record from the list
+// "select" names in "from": a list at the path of a POST read earlier does
+// not choose it. "$recorded".seed holds it complete.
+func TestRecordSeedFirst(t *testing.T) {
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "record.yaml")
+	b, err := os.ReadFile("../../../testdata/gen/record.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(specPath, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	config := `{"params": {"planetCode": "P1"}, "seed": ["Planet", "Dock", "Ship"],
+	  "select": {"Dock": {"details": {"/Planet/{planetCode}/Dock/{dockCode}/Config": {"mandatory": ["settings.mode"]}}},
+	    "Ship": {"from": "GetDockShips"}},
+	  "$apitest": {"Tags": ["Ship", "Dock", "Planet"], "IgnoreFields": ["updatedAt"]}}`
+	var log []string
+	srv := httptest.NewServer(newStarport())
+	t.Cleanup(srv.Close)
+	s, _ := spec.Load(context.Background(), specPath)
+	doc, _ := yamldoc.Load(specPath)
+	cfg, err := Parse([]byte(config))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &Client{Opt: discover.Options{BaseURL: srv.URL}, Log: func(e Entry) { log = append(log, e.Tag+" "+e.Method+" "+e.URL) }}
+	res, err := Run(context.Background(), Input{Spec: s, Doc: doc, Config: cfg, Client: c, Writes: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(log[0], "seed ") || !slices.Contains(log, "seed GET /Planet/P1/Dock/D2/Ship") {
+		t.Errorf("the seed is not read first:\n%s", strings.Join(log, "\n"))
+	}
+	for _, l := range log {
+		if strings.HasPrefix(l, "seed GET /Planet/P1/Ship") {
+			t.Errorf("the seed reads a list \"from\" does not name: %s", l)
+		}
+	}
+	ship, _ := res.Recorded.Seed["Ship"].(map[string]any)
+	if ship["shipCode"] != "S1" {
+		t.Errorf("seed Ship %v, want S1 of dock D2 (GetDockShips)\n%s", ship, notes(res))
+	}
+}
+
+// The seed holds its records complete: every element of their lists, also
+// of records the environment does not hold.
+func TestSeedRecordsComplete(t *testing.T) {
+	held, other := &rec{table: "ship", id: json.Number("100")}, &rec{table: "ship", id: json.Number("101")}
+	dock := &rec{table: "dock", id: json.Number("30"), data: map[string]any{"id": json.Number("30"),
+		"ships": []any{map[string]any{"id": json.Number("100")}, map[string]any{"id": json.Number("101")}}}}
+	s := &sim{rd: &reader{s: &spec.Spec{}, recs: map[string]*rec{"dock": dock}, all: map[string][]*rec{"ship": {held, other}, "dock": {dock}}},
+		cfg: &Config{Seed: []string{"Dock"}}, res: &Result{}, live: map[*rec]bool{held: true, dock: true},
+		ids: map[string]map[string]int{"ship": {"100": 1}, "dock": {"30": 1}}, tables: map[string]bool{"ship": true, "dock": true}, noted: map[string]bool{}}
+	if got := text(s.seedRecords()); got != `{"Dock":{"id":1,"ships":[{"id":1},{"id":101}]}}` {
+		t.Errorf("seed: %s", got)
+	}
+}
+
+// Fields of the record the request schema does not declare are reported;
+// "bodies" sends one with "{field}".
+func TestRecordNotSent(t *testing.T) {
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "record.yaml")
+	b, err := os.ReadFile("../../../testdata/gen/record.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(specPath, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	config := `{"params": {"planetCode": "P1"}, "seed": ["Planet", "Dock"],
+	  "select": {"Dock": {"details": {"/Planet/{planetCode}/Dock/{dockCode}/Config": {"mandatory": ["settings.mode"]}}}},
+	  "bodies": {"UpdateShip": {"shipCode": "{shipCode}", "note": "{nope}"}},
+	  "$apitest": {"DeleteLast": true, "IgnoreFields": ["updatedAt"]}}`
+	sp := newStarport()
+	res, _, _ := runConfig(t, sp, specPath, config, nil, true)
+	all := notes(res)
+	if !strings.Contains(all, "NOT_SENT UpdateShip: PUT /Ship/id/{id} does not send these fields of the record, its request schema has none of them: shipCode, updatedAt") {
+		t.Errorf("notes:\n%s", all)
+	}
+	if !strings.Contains(all, `PARAM_UNKNOWN bodies: "{nope}": no field nope`) {
+		t.Errorf("unknown placeholder:\n%s", all)
+	}
+	sent, _ := sp.bodies["PUT /Ship/id/101"].(map[string]any)
+	if sent["shipCode"] != "S1" || sent["name"] != "Falcon" {
+		t.Errorf("PUT body %v", sent)
 	}
 }

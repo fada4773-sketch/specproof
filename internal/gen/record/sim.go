@@ -92,12 +92,13 @@ func (s *sim) mapID(t string, r *rec, id int) {
 	}
 }
 
-// seedRecords are the seed records as the environment must hold them.
+// seedRecords are the seed records as the environment must hold them:
+// complete, with the ids it assigns.
 func (s *sim) seedRecords() map[string]any {
 	out := map[string]any{}
 	for _, name := range s.cfg.Seed {
 		if r := s.rd.recs[s.rd.n.table(name)]; r != nil {
-			out[name] = s.conv(r.data, nil, r.table, "seed "+name)
+			out[name] = s.convAll(r.data, nil, r.table, "seed "+name) // complete: every element of its lists
 		}
 	}
 	return out

@@ -33,6 +33,7 @@ const (
 	CodeStatus      = "STATUS"           // the instance answers with another 2xx
 	CodeRemapped    = "IDS_SHIFTED"      // ids of unchanged examples moved
 	CodeLintIgnored = "LINT_IGNORED"     // a violation reported, not stopping
+	CodeUndeclared  = "NOT_SENT"         // fields of a record the request schema does not declare
 )
 
 // Severity of a code: what a reader has to do about it.
@@ -69,6 +70,7 @@ var codeInfos = map[string]codeInfo{
 	CodeStatus:      {Info, "the instance answers with another 2xx than the spec's first one", "nothing, or document that status"},
 	CodeRemapped:    {Info, "ids of unchanged examples moved because records are created in another order", "nothing"},
 	CodeLintIgnored: {Info, "an example that violates its schema was written (-ignorelinting)", "fix the data or the spec"},
+	CodeUndeclared:  {Info, "a write leaves out fields of its record that its request schema does not declare", `declare them in the spec if the server needs them, or send them with "bodies"`},
 }
 
 // Explain returns the severity of a code and what it means and what to do,
@@ -203,6 +205,10 @@ func Run(ctx context.Context, in Input) (*Result, error) {
 	w.classify(run)
 
 	byTag := rd.byTag(tags)
+	rd.seedPhase()
+	if rd.down != nil {
+		return nil, fmt.Errorf("the instance does not answer: %w", rd.down)
+	}
 	for _, tag := range tags {
 		rd.tag = tag
 		rd.readOps(byTag[tag])

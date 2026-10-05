@@ -44,6 +44,8 @@ type wop struct {
 
 // writes runs the writing operations against the instance.
 type writes struct {
+	noted map[string]bool // operations whose undeclared fields were reported
+
 	rd    *reader
 	in    Input
 	res   *Result
@@ -315,7 +317,7 @@ func (w *writes) queries(tag string) {
 			w.res.note(CodeNotExecuted, x.c.Op.ID, "POST %s is not sent: no value read for its required fields %s", x.c.Op.Path, strings.Join(missing, ", "))
 			continue
 		}
-		x.body = w.withBody(x.c.Op, body)
+		x.body = body
 		w.send(x, http.MethodPost, "read "+x.c.Op.ID+" (a POST that only reads)")
 	}
 }
@@ -343,10 +345,8 @@ func (w *writes) queryBody(op *spec.Operation) (map[string]any, []string) {
 			}
 		}
 	}
-	if set, ok := w.in.Config.Bodies[op.ID].(map[string]any); ok {
-		for k, v := range set {
-			body[k] = spec.Normalize(v)
-		}
+	if b, ok := w.withBody(op, body, nil).(map[string]any); ok {
+		body = b
 	}
 	var missing []string
 	for _, k := range req {
@@ -514,7 +514,7 @@ func (w *writes) recreate(d *wop, u string, vals map[string]pval, cr *wop, r *re
 		post.rec = r
 		post.url, post.vals, _ = w.urlFor(cr.c.Op, r)
 	}
-	post.body = project(r.data, requestSchema(cr.c.Op), spec.ModeRequest)
+	post.body = w.requestBody(cr.c.Op, r.data)
 	if resp, ok := w.send(post, http.MethodPost, fmt.Sprintf("create the %s again that #%d deleted (%s)", r.table, del.seq, cr.c.Op.ID)); !ok {
 		w.res.problem(CodeWriteFailed, cr.c.Op.ID, "the %s deleted by #%d is missing in the instance now; create it again with the body of #%d (%s)",
 			r.table, del.seq, resp.Seq, clip(text(post.body)))
@@ -635,7 +635,7 @@ func (w *writes) bodyFor(u *wop) any {
 			src = fillIn(f.resp.Body, src)
 		}
 	}
-	return w.withBody(u.c.Op, project(src, requestSchema(u.c.Op), spec.ModeRequest))
+	return w.requestBody(u.c.Op, src)
 }
 
 // fillIn lays base under top: fields top lacks or holds as null take the
@@ -664,9 +664,68 @@ func fillIn(top, base any) any {
 	return out
 }
 
+// requestBody is the body of a write built from data the run read: the
+// fields of the request schema, with the body "bodies" sets laid over it.
+// Fields of the data the schema does not declare are not sent; they are
+// reported once per operation, so a field the server needs but the spec
+// lacks shows up (and "bodies" can send it: "{Field}").
+func (w *writes) requestBody(op *spec.Operation, src any) any {
+	ref := requestSchema(op)
+	body := project(src, ref, spec.ModeRequest)
+	if lost := undeclared(src, ref, "", 0); len(lost) > 0 && !w.noted[op.ID] {
+		if w.noted == nil {
+			w.noted = map[string]bool{}
+		}
+		w.noted[op.ID] = true
+		if len(lost) > 12 {
+			lost = append(lost[:12], fmt.Sprintf("… %d more", len(lost)-12))
+		}
+		w.res.note(CodeUndeclared, op.ID, "%s %s does not send these fields of the record, its request schema has none of them: %s; "+
+			"if the server needs one, declare it in the schema, or send it with \"bodies\": {\"%s\": {\"<field>\": \"{<field>}\"}}",
+			op.Method, op.Path, strings.Join(lost, ", "), op.ID)
+	}
+	return w.withBody(op, body, src)
+}
+
+// undeclared are the filled fields of data a schema has no property for,
+// as paths; an id is left out, a request schema rarely has one.
+func undeclared(v any, ref *openapi3.SchemaRef, path string, depth int) []string {
+	if ref == nil || ref.Value == nil || depth > 10 {
+		return nil
+	}
+	switch x := v.(type) {
+	case map[string]any:
+		props, _ := dict.Properties(ref.Value)
+		if len(props) == 0 {
+			return nil
+		}
+		var out []string
+		for _, k := range sortedKeys(x) {
+			p := propOf(props, k)
+			name := k
+			if path != "" {
+				name = path + "." + k
+			}
+			switch {
+			case p == nil && filled(x[k]) && !strings.EqualFold(k, "id"):
+				out = append(out, name)
+			case p != nil:
+				out = append(out, undeclared(x[k], p, name, depth+1)...)
+			}
+		}
+		return out
+	case []any:
+		if len(x) > 0 && ref.Value.Items != nil {
+			return undeclared(x[0], ref.Value.Items, path+"[]", depth+1)
+		}
+	}
+	return nil
+}
+
 // withBody lays the body "bodies" sets for an operation over the one the
-// run built.
-func (w *writes) withBody(op *spec.Operation, built any) any {
+// run built. A value "{Field}" takes that field of the data the body was
+// built from (src), else of the selected records.
+func (w *writes) withBody(op *spec.Operation, built, src any) any {
 	if w.in.Config == nil {
 		return built
 	}
@@ -674,7 +733,40 @@ func (w *writes) withBody(op *spec.Operation, built any) any {
 	if !ok {
 		return built
 	}
-	return overlay(built, spec.Normalize(set))
+	return overlay(built, w.fillBody(spec.Normalize(set), src))
+}
+
+// fillBody replaces the values "{Field}" of a configured body.
+func (w *writes) fillBody(v, src any) any {
+	switch x := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(x))
+		for k, e := range x {
+			out[k] = w.fillBody(e, src)
+		}
+		return out
+	case []any:
+		out := make([]any, len(x))
+		for i, e := range x {
+			out[i] = w.fillBody(e, src)
+		}
+		return out
+	case string:
+		if len(x) < 3 || x[0] != '{' || x[len(x)-1] != '}' || strings.ContainsAny(x[1:len(x)-1], "{}") {
+			return x
+		}
+		name := strings.TrimSpace(x[1 : len(x)-1])
+		if found := lookup(src, name); len(found) > 0 {
+			return found[0]
+		}
+		if w.rd != nil && w.rd.k != nil {
+			if p, ok := w.rd.k.field("", name); ok {
+				return p.v
+			}
+		}
+		w.res.note(CodeParam, "bodies", "%q: no field %s in the data of the record; the value is sent as it is", x, name)
+	}
+	return v
 }
 
 // overlay lays top over base: objects field by field, anything else is
@@ -728,7 +820,7 @@ func (w *writes) offline() {
 			if r == nil {
 				continue
 			}
-			x.body = project(r.data, requestSchema(x.c.Op), spec.ModeRequest)
+			x.body = w.requestBody(x.c.Op, r.data)
 			x.resp = &response{Status: successStatus(x.c.Op), Body: project(r.data, responseSchema(x.c.Op, 0), spec.ModeResponse)}
 		case kindUpdate:
 			if r == nil {
@@ -745,7 +837,7 @@ func (w *writes) offline() {
 			if r == nil {
 				continue
 			}
-			x.body = project(r.data, requestSchema(x.c.Op), spec.ModeRequest)
+			x.body = w.requestBody(x.c.Op, r.data)
 		default:
 			continue
 		}

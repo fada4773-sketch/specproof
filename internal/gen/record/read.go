@@ -383,6 +383,32 @@ func (rd *reader) readOps(ops []*spec.Operation) {
 	}
 }
 
+// seedPhase reads the records of the seed before anything else, in the
+// order of "seed": each from the list "select" names in "from", else from
+// the lists of its DTO, so the seed holds the record "select" chooses
+// whatever the tags read before it.
+func (rd *reader) seedPhase() {
+	var ops []*spec.Operation
+	for _, name := range rd.cfg.Seed {
+		t := rd.n.table(name)
+		from := rd.cfg.selection(t, rd.n).From
+		for _, op := range rd.getOps() {
+			items, _, list := listShape(responseSchema(op, 0))
+			if !list || rd.n.of(items) != t || (from != "" && !strings.EqualFold(from, op.ID)) || slices.Contains(ops, op) {
+				continue
+			}
+			ops = append(ops, op)
+		}
+	}
+	if len(ops) == 0 {
+		return
+	}
+	tag := rd.tag
+	rd.tag = "seed"
+	rd.readOps(ops)
+	rd.tag = tag
+}
+
 // again reads a GET a second time; fields with another value are listed
 // for IgnoreFields.
 func (rd *reader) again(f *fetched) {
@@ -537,12 +563,15 @@ func (rd *reader) selectRec(t string, o map[string]any, f *fetched) *rec {
 }
 
 // addRec makes r a record of its table; the first one of a table is the
-// one the paths address.
+// one the paths address, unless "select" names another list in "from":
+// then only a record of that list is.
 func (rd *reader) addRec(r *rec) {
 	t := r.table
 	rd.all[t] = append(rd.all[t], r)
 	rd.order = append(rd.order, r)
-	if rd.recs[t] == nil {
+	from := rd.cfg.selection(t, rd.n).From
+	opID, _, _ := strings.Cut(r.from, " ")
+	if rd.recs[t] == nil && (from == "" || strings.EqualFold(from, opID)) {
 		rd.recs[t] = r
 		rd.k.add(t, r.data)
 	}

@@ -18,6 +18,11 @@ contain breaking changes, which are listed here.
 
 - `apitest-gen record -show-bodies` prints the body of every PUT, PATCH and
   POST it sends.
+- `apitest-gen record` reads the seed first, before every tag (log tag
+  `seed`), in the order of `seed`, each record from its `from` list.
+- `apitest-gen record` reports `NOT_SENT` when a write leaves out filled
+  fields of its record that its request schema does not declare; a value
+  `"{field}"` in `bodies` sends such a field from the record.
 - `apitest-gen record`: `"bodies": {"<operationId>": {…}}` in the defaults
   file sets fields of the body of a write or of a POST that only reads,
   laid over the body the run builds, e.g. the filter of a table query. The
@@ -329,6 +334,11 @@ contain breaking changes, which are listed here.
   write suggestions: the fields for `"$apitest".IgnoreFields`, and for
   `DATA_CHANGED` the fields no body of the run can set or a hint that the
   writes lost records.
+- `apitest-gen record`: the seed record of a DTO with `select.from` is the
+  one of that list; before, a list at the path of a POST read earlier made
+  its record the seed. `"$recorded".seed` holds the seed records complete;
+  before, elements of their lists the environment did not hold were left
+  out.
 - `apitest-gen record`: the body of an update takes the fields the GET of
   its path lacks or holds as null from the selected record: a detail GET
   that shows a nested object instead of the plain field of its list no
