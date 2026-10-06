@@ -391,12 +391,35 @@ func (w *writes) cycle(d, cr *wop, r *rec) {
 		w.conflict(post, resp, r, false)
 		return
 	}
-	made := &rec{table: r.table, data: cp, keys: r.keys, note: fmt.Sprintf("the copy #%d POST %s created", resp.Seq, post.url), seq: resp.Seq}
+	// the copy has the values the POST sent and answered, never the id of
+	// the record: a DELETE must not reach the record through it
+	idField := fieldName(r.data, "id") // a number or a uuid
+	base := make(map[string]any, len(cp))
+	for k, v := range cp {
+		if k != idField {
+			base[k] = v
+		}
+	}
+	made := &rec{table: r.table, data: base, keys: r.keys, note: fmt.Sprintf("the copy #%d POST %s created", resp.Seq, post.url), seq: resp.Seq}
 	if o, ok := resp.Body.(map[string]any); ok {
-		made.data, _ = fillIn(o, cp).(map[string]any)
+		made.data, _ = fillIn(o, base).(map[string]any)
 	}
 	if _, id := idOf(made.data); id != nil {
 		made.id = id
+	} else if idField != "" && fieldName(made.data, "id") == "" && r.from != "" {
+		// an answer without id: the list the record came from shows it,
+		// found by the values the copy changed, which tell it from the record
+		keys := map[string]bool{}
+		for k := range r.keys {
+			keys[k] = true
+		}
+		for _, v := range vars {
+			keys[strings.ToLower(v.field)] = true
+		}
+		if id := w.findID(r, made.data, keys, post); id != nil {
+			made.id, made.data[idField] = id, id
+			made.note = fmt.Sprintf("the copy #%d POST %s created (its id from the list %s)", resp.Seq, post.url, r.from[strings.Index(r.from, " ")+1:])
+		}
 	}
 	w.copies = append(w.copies, made)
 	if post == cr {
@@ -483,8 +506,8 @@ func (w *writes) asRecord(x *wop, r *rec, cp map[string]any, vars []variant) {
 		x.rec = nil
 		return
 	}
-	if f, _ := idOf(out); f != "" && r.id != nil {
-		out[f] = r.id
+	if f, _ := idOf(r.data); f != "" && r.id != nil {
+		out[f] = r.id // also into an answer without id
 	}
 }
 

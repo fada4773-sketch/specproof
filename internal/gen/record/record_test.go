@@ -188,9 +188,9 @@ func (sp *starport) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			out = append(out, ship(s))
 		}
 		reply(200, out)
-	case len(seg) == 3 && seg[0] == "Ship":
+	case (len(seg) == 3 && seg[0] == "Ship") || (len(seg) == 2 && seg[0] == "Ship"):
 		for i, s := range sp.ships {
-			if fmt.Sprint(s["id"]) != seg[2] || s["_deleted"] != nil {
+			if fmt.Sprint(s["id"]) != seg[len(seg)-1] || s["_deleted"] != nil {
 				continue
 			}
 			switch r.Method {
@@ -809,8 +809,10 @@ func TestRecordReuse(t *testing.T) {
 	// other "params" select every record again
 	other := *old
 	other.Params = "x"
-	if res4, _, _ := runRecord(t, sp, specPath, &other, true); res4.Stats.Reused != 0 {
-		t.Errorf("other params: reused %d", res4.Stats.Reused)
+	// the examples that show them are written again, none is taken from
+	// the last output
+	if res4, _, _ := runRecord(t, sp, specPath, &other, true); res4.Stats.Reused != 0 || res4.Stats.Unchanged != 0 {
+		t.Errorf("other params: reused %d, %d unchanged", res4.Stats.Reused, res4.Stats.Unchanged)
 	}
 }
 
@@ -1850,6 +1852,8 @@ type crewPort struct {
 	bodies map[string]any
 	// audit makes a POST of a dock add a crew row its answer does not show
 	audit bool
+	// noID leaves the id out of the answer to a POST of a dock
+	noID bool
 }
 
 func newCrewPort() *crewPort {
@@ -1930,6 +1934,9 @@ func (cp *crewPort) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		answer := cp.withCrew(d)
+		if cp.noID {
+			delete(answer, "id")
+		}
 		if cp.audit {
 			cp.nextID++
 			cp.crew = append(cp.crew, map[string]any{"id": json.Number(strconv.Itoa(cp.nextID)), "dockId": d["id"], "name": "audit"})
@@ -2120,5 +2127,208 @@ func TestRecordCopyHiddenRows(t *testing.T) {
 	all := notes(res)
 	if !strings.Contains(all, "DATA_CHANGED GetCrew: #") || !strings.Contains(all, fmt.Sprintf("new elements of copies: id 104 (dockId 101: the copy #%d created)", post)) {
 		t.Errorf("notes:\n%s", all)
+	}
+}
+
+// A second DELETE of a record that the first DELETE and its POST created
+// again sends the id the POST answered, not the one the GET read; its log
+// names that POST.
+func TestRecordDeleteAfterRecreate(t *testing.T) {
+	b, err := os.ReadFile("../../../testdata/gen/record.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	drop := `  /Ship/{id}:
+    delete:
+      operationId: DropShip
+      tags: [Ship]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: deleted
+components:`
+	specPath := filepath.Join(t.TempDir(), "record.yaml")
+	if err := os.WriteFile(specPath, []byte(strings.Replace(string(b), "components:", drop, 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(newStarport())
+	t.Cleanup(srv.Close)
+	sp := newStarport()
+	srv.Config.Handler = sp
+	s, err := spec.Load(context.Background(), specPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := yamldoc.Load(specPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Parse([]byte(recordConfig))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var entries []Entry
+	c := &Client{Opt: discover.Options{BaseURL: srv.URL}, Log: func(e Entry) { entries = append(entries, e) }}
+	res, err := Run(context.Background(), Input{Spec: s, Doc: doc, Config: cfg, Client: c, Writes: true, Token: "t1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Problems) > 0 {
+		t.Fatalf("problems:\n%s\nwrites: %v", notes(res), sp.sent)
+	}
+	got := strings.Join(sp.sent, ", ")
+	if !strings.Contains(got, "DELETE /Ship/id/101, POST /Planet/P1/Ship, DELETE /Ship/104, POST /Planet/P1/Ship") {
+		t.Fatalf("writes: %s", got)
+	}
+	var post, drop2 *Entry
+	for i := range entries {
+		e := &entries[i]
+		switch {
+		case e.Method == http.MethodPost && e.URL == "/Planet/P1/Ship" && post == nil:
+			post = e
+		case e.Method == http.MethodDelete && e.URL == "/Ship/104":
+			drop2 = e
+		}
+	}
+	want := fmt.Sprintf("{id} = 104 ← ship.id of the ship #%d POST /Planet/P1/Ship created again with id 104, first selected from #", post.N)
+	if drop2 == nil || !slices.ContainsFunc(drop2.Origin, func(o string) bool { return strings.HasPrefix(o, want) }) {
+		t.Errorf("origin of the second DELETE, want %q: %+v", want, drop2)
+	}
+	// the examples show the ids of the environment, whichever id it had
+	equal(t, "DropShip {id}", exampleAt(t, doc, "paths", "/Ship/{id}", "delete", "parameters", "0"), `2`)
+}
+
+// The copy of a record whose POST answers without id is deleted by the id
+// its list shows, never by the id of the record it copies.
+func TestRecordCopyWithoutID(t *testing.T) {
+	cp := newCrewPort()
+	cp.noID = true
+	res, entries, _ := runCrewSpec(t, cp, crewConfig, crewSpec(t))
+	if strings.Contains(notes(res), CodeCopyLeft) {
+		t.Fatalf("notes:\n%s", notes(res))
+	}
+	if got := strings.Join(cp.sent, ", "); got != "POST /Dock, DELETE /Crew/id/102, DELETE /Crew/id/103, DELETE /Dock/id/101" {
+		t.Errorf("writes: %s", got)
+	}
+	for _, e := range entries {
+		if e.Method == http.MethodDelete && strings.HasPrefix(e.URL, "/Dock/") && !slices.ContainsFunc(e.Origin, func(o string) bool { return strings.Contains(o, "its id from the list /Dock") }) {
+			t.Errorf("origin of the DELETE: %v", e.Origin)
+		}
+	}
+}
+
+// A record other than the first one of its table takes none of the fields
+// of the first one: a field it lacks has no value.
+func TestKnownUse(t *testing.T) {
+	k := newKnown()
+	k.addRec(&rec{table: "ship", data: map[string]any{"id": json.Number("101"), "shipCode": "S1"}, from: "GetShips /Ship", seq: 3})
+	c := k.clone()
+	c.use(&rec{table: "ship", data: map[string]any{"shipCode": "S1-t1"}, note: "the copy #9"})
+	if v, ok := c.value("ship", "id"); ok {
+		t.Errorf("the copy takes the id of the first ship: %v", v)
+	}
+	if v, ok := c.value("ship", "shipcode"); !ok || v.v != "S1-t1" || v.src != "ship.shipCode of the copy #9" {
+		t.Errorf("shipCode: %+v", v)
+	}
+	if v, ok := k.value("ship", "id"); !ok || v.v != json.Number("101") {
+		t.Errorf("the first ship lost its id: %+v", v)
+	}
+}
+
+// Every example of -spec goes, wherever it is; a property, a header or a
+// default value called "example" stays.
+func TestStripAll(t *testing.T) {
+	doc, err := yamldoc.Parse([]byte(`openapi: 3.0.3
+info: {title: t, version: "1"}
+paths:
+  /Ship:
+    get:
+      parameters:
+        - name: X-Trace
+          in: header
+          example: abc
+          schema: {type: string}
+      responses:
+        "200":
+          description: ok
+          headers:
+            example:
+              schema: {type: string, example: h}
+          content:
+            application/json:
+              examples:
+                one: {$ref: "#/components/examples/One"}
+              schema:
+                $ref: "#/components/schemas/Ship"
+components:
+  examples:
+    One: {value: {name: x}}
+  schemas:
+    Ship:
+      type: object
+      example: {name: x}
+      default: {example: 1}
+      x-note: {example: 2}
+      properties:
+        example: {type: string, example: e}
+        name: {type: string, examples: [a]}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	em := newEmitter(doc, &Result{}, false)
+	em.stripAll()
+	b, _ := doc.Bytes()
+	out := string(b)
+	for _, gone := range []string{"abc", "example: h", "examples:", "One", "{name: x}", "example: e", "[a]"} {
+		if strings.Contains(out, gone) {
+			t.Errorf("%q stays:\n%s", gone, out)
+		}
+	}
+	for _, kept := range []string{"headers:\n            example:", "default:", "example: 1", "example: 2", "properties:\n        example:"} {
+		if !strings.Contains(out, kept) {
+			t.Errorf("%q is gone:\n%s", kept, out)
+		}
+	}
+	if !em.changed {
+		t.Error("not changed")
+	}
+}
+
+// A record created again passes its new id on: to its data, to the records
+// that refer to it, to the values of the paths and to the writes not sent
+// yet, which are resolved again.
+func TestMoved(t *testing.T) {
+	n := func(i int) json.Number { return json.Number(strconv.Itoa(i)) }
+	dock := &rec{table: "dock", data: map[string]any{"id": n(30), "dockCode": "D1"}, id: n(30), from: "GetDocks /Dock", seq: 4}
+	ship := &rec{table: "ship", data: map[string]any{"id": n(100), "dockId": n(30)}, id: n(100), from: "GetShips /Ship", seq: 5}
+	rd := &reader{recs: map[string]*rec{"dock": dock, "ship": ship}, all: map[string][]*rec{"dock": {dock}, "ship": {ship}},
+		k: newKnown(), cache: map[string]response{"/Dock": {}}}
+	rd.k.addRec(dock)
+	rd.k.addRec(ship)
+	op := &cases.Case{Op: &spec.Operation{ID: "DeleteShip"}, Example: cases.DefaultExample}
+	open, sent := &wop{c: op, resolved: true, url: "/Dock/30/Ship/100"}, &wop{c: op, resolved: true, sent: true}
+	w := &writes{rd: rd, ops: []*wop{open, sent}}
+	dock.newID, dock.again = n(31), "#9 POST /Dock"
+	w.moved(dock, n(30))
+	if dock.data["id"] != n(31) || ship.data["dockId"] != n(31) {
+		t.Errorf("data: %v %v", dock.data, ship.data)
+	}
+	if v, _ := rd.k.value("dock", "id"); v.v != n(31) || v.src != "dock.id of the dock #9 POST /Dock created again with id 31, first selected from #4 GET /Dock (GetDocks)" {
+		t.Errorf("dock.id: %+v", v)
+	}
+	if v, _ := rd.k.value("ship", "dockid"); v.v != n(31) {
+		t.Errorf("ship.dockId: %+v", v)
+	}
+	if open.resolved || !sent.resolved || len(rd.cache) != 0 {
+		t.Errorf("resolved: open %v, sent %v; cache %v", open.resolved, sent.resolved, rd.cache)
+	}
+	if !dock.hasID(n(30)) || !dock.hasID(n(31)) || dock.hasID(n(32)) {
+		t.Errorf("ids: %v", dock.ids())
 	}
 }

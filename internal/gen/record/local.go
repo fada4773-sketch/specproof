@@ -132,7 +132,7 @@ func (w *writes) resolve(x *wop) {
 	k := w.rd.k
 	if x.rec != nil && x.rec != w.rd.recs[x.table] {
 		k = k.clone()
-		k.addRec(x.rec)
+		k.use(x.rec)
 	}
 	x.url, x.vals, _ = w.rd.url(op, k)
 	if x.why == "" && x.url == "" {
@@ -177,7 +177,7 @@ func (w *writes) urlFor(op *spec.Operation, r *rec) (string, map[string]pval, bo
 	k := w.rd.k
 	if r != w.rd.recs[r.table] {
 		k = k.clone()
-		k.addRec(r)
+		k.use(r)
 	}
 	return w.rd.url(op, k)
 }
@@ -611,34 +611,90 @@ func short(v any) string {
 // newID finds the id the instance gave the record it created again: in
 // the answer of the POST, else by reading the list it came from.
 func (w *writes) newID(r *rec, cr *wop) {
+	var id any
 	if o, ok := cr.resp.Body.(map[string]any); ok {
-		if _, id := idOf(o); id != nil {
-			r.newID = id
-		}
+		_, id = idOf(o)
 	}
-	if r.newID == nil && r.id != nil {
-		from := r.from[strings.Index(r.from, " ")+1:]
-		if resp, err := w.rd.c.do(w.rd.ctx, http.MethodGet, from, nil, cr.tag, "find the new id of the "+r.table+" #"+fmt.Sprint(cr.seq)+" created"); err == nil && resp.ok() {
-			elems := []any{resp.Body}
-			if l, ok := resp.Body.([]any); ok {
+	if id == nil && r.id != nil {
+		id = w.findID(r, r.data, r.keys, cr)
+	}
+	if id == nil {
+		return
+	}
+	old := r.newID
+	if old == nil {
+		old = r.id
+	} else {
+		r.oldIDs = append(r.oldIDs, old)
+	}
+	r.newID = id
+	r.again = fmt.Sprintf("#%d POST %s", cr.seq, cr.url)
+	w.moved(r, old)
+}
+
+// findID reads the list a record came from and returns the id of the
+// element whose fields keys have the values of data, nil if there is none.
+func (w *writes) findID(r *rec, data map[string]any, keys map[string]bool, cr *wop) any {
+	from := r.from[strings.Index(r.from, " ")+1:]
+	resp, err := w.rd.c.do(w.rd.ctx, http.MethodGet, from, nil, cr.tag, "find the new id of the "+r.table+" #"+fmt.Sprint(cr.seq)+" created")
+	if err != nil || !resp.ok() {
+		return nil
+	}
+	elems := []any{resp.Body}
+	if l, ok := resp.Body.([]any); ok {
+		elems = l
+	} else if o, ok := resp.Body.(map[string]any); ok {
+		for _, v := range o {
+			if l, ok := v.([]any); ok {
 				elems = l
-			} else if o, ok := resp.Body.(map[string]any); ok {
-				for _, v := range o {
-					if l, ok := v.([]any); ok {
-						elems = l
-					}
-				}
 			}
-			for _, e := range elems {
-				if o, ok := e.(map[string]any); ok && r.matchKeys(o) {
-					_, r.newID = idOf(o)
+		}
+	}
+	probe := &rec{data: data, keys: keys}
+	var id any
+	for _, e := range elems {
+		if o, ok := e.(map[string]any); ok && probe.matchKeys(o) {
+			_, id = idOf(o)
+		}
+	}
+	return id
+}
+
+// moved carries the new id of a record created again into everything that
+// addresses it: its data, the fields of the other records that refer to it
+// (dockId), the values the paths take and the writes not sent yet, so a
+// DELETE, PUT, GET or POST after the POST sends the id the instance holds
+// now, not the one the GET read.
+func (w *writes) moved(r *rec, old any) {
+	rd := w.rd
+	if f, _ := idOf(r.data); f != "" {
+		r.data[f] = r.newID
+		if r == rd.recs[r.table] {
+			rd.k.replace(r.table, f, old, r.newID)
+		}
+	}
+	if r == rd.recs[r.table] {
+		rd.k.from[r.table] = r.origin()
+	}
+	for _, t := range sortedKeys(rd.all) {
+		for _, o := range rd.all[t] {
+			for _, f := range sortedKeys(o.data) {
+				if refTable(f) != r.table || !same(o.data[f], old) {
+					continue
+				}
+				o.data[f] = r.newID
+				if o == rd.recs[t] {
+					rd.k.replace(t, f, old, r.newID)
 				}
 			}
 		}
 	}
-	if r.newID != nil && r == w.rd.recs[r.table] {
-		idField, _ := idOf(r.data)
-		w.rd.k.add(r.table, map[string]any{idField: r.newID})
+	// answers read before hold the old id
+	rd.cache = map[string]response{}
+	for _, x := range w.ops {
+		if !x.sent && !x.failed && !x.held && !x.built {
+			x.resolved, x.why = false, ""
+		}
 	}
 }
 

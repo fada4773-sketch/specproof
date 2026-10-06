@@ -85,10 +85,8 @@ func (s *sim) mapID(t string, r *rec, id int) {
 	if s.ids[t] == nil {
 		s.ids[t] = map[string]int{}
 	}
-	for _, local := range []any{r.id, r.newID} {
-		if local != nil {
-			s.ids[t][text(local)] = id
-		}
+	for _, local := range r.ids() {
+		s.ids[t][text(local)] = id
 	}
 }
 

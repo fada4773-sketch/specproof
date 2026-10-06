@@ -27,6 +27,33 @@ type rec struct {
 	path  string   // the POST path whose list it was selected from, "" for the first of a table
 	seq   int      // the request it was selected from; 0 for a stored record
 	note  string   // where it comes from, if not from a list: a copy the run created
+	// again is the POST that created it again ("#181 POST /Planet/P1/Ship"),
+	// "" while the instance holds it with its first id
+	again string
+	// oldIDs are the ids it had before the last time it was created again
+	oldIDs []any
+}
+
+// ids are the local ids the record had during the run: the first one, the
+// ones between and the current one.
+func (r *rec) ids() []any {
+	var out []any
+	for _, id := range append(append([]any{r.id}, r.oldIDs...), r.newID) {
+		if id != nil {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+// hasID reports whether id is one of the ids the record had.
+func (r *rec) hasID(id any) bool {
+	for _, x := range r.ids() {
+		if same(id, x) {
+			return true
+		}
+	}
+	return false
 }
 
 // origin names the record and the request it comes from, for the log.
@@ -35,10 +62,14 @@ func (r *rec) origin() string {
 	if r.note != "" {
 		return r.note
 	}
+	sel := fmt.Sprintf("selected from #%d GET %s (%s)", r.seq, u, op)
 	if r.seq == 0 {
-		return fmt.Sprintf("the %s stored in %q (%s %s)", r.table, RecordedKey, op, u)
+		sel = fmt.Sprintf("stored in %q (%s %s)", RecordedKey, op, u)
 	}
-	return fmt.Sprintf("the %s selected from #%d GET %s (%s)", r.table, r.seq, u, op)
+	if r.again != "" {
+		return fmt.Sprintf("the %s %s created again with id %s, first %s", r.table, r.again, text(r.newID), sel)
+	}
+	return fmt.Sprintf("the %s %s", r.table, sel)
 }
 
 // known are the values the parameters can take: the fields of the
@@ -79,6 +110,25 @@ func (k *known) addRec(r *rec) {
 	k.add(r.table, r.data)
 }
 
+// use makes r the record of its table: its fields replace those of the
+// record before, so a field r lacks (the id of a copy whose answer has
+// none) takes no value of another record.
+func (k *known) use(r *rec) {
+	prefix := r.table + "."
+	for key, v := range k.scoped {
+		if !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		lf := key[len(prefix):]
+		if p, ok := k.plain[lf]; ok && same(p, v) {
+			delete(k.plain, lf)
+		}
+		delete(k.scoped, key)
+		delete(k.names, key)
+	}
+	k.addRec(r)
+}
+
 // value is a field of table t as a parameter value, with its origin.
 func (k *known) value(t, lf string) (pval, bool) {
 	v, ok := k.scoped[t+"."+lf]
@@ -111,6 +161,19 @@ func (k *known) add(t string, o map[string]any) {
 		if _, ok := k.plain[lf]; !ok {
 			k.plain[lf] = v
 		}
+	}
+}
+
+// replace sets a field of table t that changed (a new id); the value by
+// name alone follows if it was the old one.
+func (k *known) replace(t, f string, old, v any) {
+	lf := strings.ToLower(f)
+	if _, ok := k.scoped[t+"."+lf]; !ok {
+		return
+	}
+	k.scoped[t+"."+lf] = v
+	if p, ok := k.plain[lf]; ok && same(p, old) {
+		k.plain[lf] = v
 	}
 }
 
@@ -256,6 +319,9 @@ type reader struct {
 	// down is the error of the first request when the instance did not
 	// answer at all
 	down error
+	// answered is set once a GET got an answer: a later error is no
+	// instance that is down
+	answered bool
 	// tag is the tag whose step runs now, for the log
 	tag string
 	// volatile are the fields that changed between two reads: field →
@@ -289,6 +355,7 @@ func (rd *reader) get(u, why string, vals map[string]pval, probe bool) (response
 	if err != nil {
 		return r, err
 	}
+	rd.answered = true
 	rd.cache[u] = r
 	return r, nil
 }
@@ -466,7 +533,7 @@ func (rd *reader) readOps(ops []*spec.Operation) {
 			}
 			progress = true
 			r, err := rd.get(u, "read "+op.ID, vals, false)
-			if err != nil && len(rd.cache) == 0 {
+			if err != nil && !rd.answered {
 				rd.down = err
 				return
 			}
@@ -642,7 +709,7 @@ func (rd *reader) take(f *fetched) {
 // read with the values of the record.
 func (rd *reader) sameRecord(r *rec, o map[string]any, vals map[string]pval) bool {
 	if _, id := idOf(o); id != nil && r.id != nil {
-		return same(id, r.id)
+		return r.hasID(id)
 	}
 	for _, v := range vals {
 		if v.table == r.table {
@@ -729,7 +796,7 @@ func (rd *reader) taken(t string, o map[string]any) *rec {
 // keys the paths address it by.
 func (r *rec) is(o map[string]any) bool {
 	if _, id := idOf(o); id != nil && r.id != nil {
-		return same(id, r.id) || (r.newID != nil && same(id, r.newID))
+		return r.hasID(id)
 	}
 	n := 0
 	for k := range r.keys {

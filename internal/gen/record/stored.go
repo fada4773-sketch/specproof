@@ -5,19 +5,23 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"strings"
+
+	"github.com/fada4773-sketch/specproof/internal/spec"
 )
 
 // load takes the records the last run stored: each one whose GETs and
 // "select" entry are unchanged. The others are read and selected again;
 // where the instance still holds the stored one, it is taken again. It
-// returns the number of records taken.
-func (rd *reader) load(old *Recorded) int {
+// returns the number of records taken and the tables of those not taken.
+func (rd *reader) load(old *Recorded) (int, map[string]bool) {
 	rd.stored = map[string][]StoredRecord{}
 	same := old.Params == paramsHash(rd.cfg)
 	n := 0
+	stale := map[string]bool{}
 	for _, st := range old.Records {
 		rd.stored[st.Table] = append(rd.stored[st.Table], st)
 		if !same || !rd.valid(st) {
+			stale[st.Table] = true
 			continue
 		}
 		r := st.rec()
@@ -30,7 +34,26 @@ func (rd *reader) load(old *Recorded) int {
 		rd.addRec(r)
 		n++
 	}
-	return n
+	return n, stale
+}
+
+// touches reports whether an operation reads or writes a record of one of
+// these tables: the DTO of its body, of its answer or of the elements of
+// its list.
+func (rd *reader) touches(op *spec.Operation, tables map[string]bool) bool {
+	if op == nil || len(tables) == 0 {
+		return false
+	}
+	resp := responseSchema(op, 0)
+	if items, _, ok := listShape(resp); ok {
+		resp = items
+	}
+	for _, t := range []string{createTable(op, rd.n), rd.n.of(requestSchema(op)), rd.n.of(resp)} {
+		if t != "" && tables[t] {
+			return true
+		}
+	}
+	return false
 }
 
 // valid reports whether a stored record still fits the spec and the

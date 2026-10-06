@@ -336,6 +336,24 @@ contain breaking changes, which are listed here.
 
 ### Fixed
 
+- `apitest-gen record`: after a POST created a record again, every later
+  request takes its new id. The DELETEs, PUTs and POSTs not sent yet are
+  resolved again, so a second DELETE no longer sends the id the GET read
+  (answered 404, then a duplicate POST). Fields of other records that refer
+  to it (`dockId`) take the new id, and GETs are no longer answered from
+  before. The log names the POST as the origin of the id.
+- `apitest-gen record`: a request for a record other than the first of its
+  table (a copy, the record of a list of its own) no longer fills a
+  missing field with the value of the first record. The copy of a record
+  no longer inherits its id: the id comes from the answer of the POST,
+  else from its list; without one the DELETE by id is not sent
+  (`COPY_LEFT`), so it never reaches the record.
+- `apitest-gen record`: no example of `-spec` reaches the output any more.
+  Header parameters, response headers, schemas and their properties and
+  `components.examples` are cleared too, and without `"$recorded"` no
+  example is carried over. Operations whose stored record is selected
+  again are written again.
+
 - `apitest-gen record` no longer reports `DATA_CHANGED` for a GET whose
   objects have the same `id` as a record the run created again (a planet
   with id 14 next to a ship 14 that became 136): the new id only

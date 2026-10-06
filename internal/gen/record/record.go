@@ -227,7 +227,16 @@ func Run(ctx context.Context, in Input) (*Result, error) {
 	rd.needs = needs
 	if old != nil && !in.Overwrite {
 		rd.reuse = true
-		res.Stats.Reused = rd.load(old)
+		var stale map[string]bool
+		res.Stats.Reused, stale = rd.load(old)
+		// a record selected again may be another one: the examples that
+		// show it are written again
+		for id := range ops {
+			if !needs[id] && rd.touches(in.Spec.Op(id), stale) {
+				needs[id] = true
+				res.Stats.Unchanged--
+			}
+		}
 	}
 	if in.Token == "" {
 		in.Token = "run"
@@ -277,15 +286,19 @@ func Run(ctx context.Context, in Input) (*Result, error) {
 
 	sm := newSim(rd, in.Config, res, w)
 	sm.seed()
-	for _, op := range in.Spec.Ops {
-		if prev != nil {
+	if prev != nil {
+		for _, op := range in.Spec.Ops {
 			ex.remember(prev, op)
 		}
-		ex.strip(op)
 	}
-	for _, op := range in.Spec.Ops {
-		if !ops[op.ID] || !needs[op.ID] {
-			ex.carry(op)
+	ex.stripAll()
+	// only the output of an earlier run passes its examples on; without
+	// "$recorded" the last output may be -spec itself
+	if old != nil {
+		for _, op := range in.Spec.Ops {
+			if !ops[op.ID] || !needs[op.ID] {
+				ex.carry(op)
+			}
 		}
 	}
 	done := map[string]bool{}

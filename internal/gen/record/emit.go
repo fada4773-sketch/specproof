@@ -418,16 +418,49 @@ func (em *emitter) holders(op *spec.Operation) map[string]*yaml.Node {
 	return out
 }
 
-// strip removes every example of an operation, single and named: the
-// examples of a run come from the instance, never from the spec.
-func (em *emitter) strip(op *spec.Operation) {
-	for _, n := range em.holders(op) {
-		if yamldoc.Ref(n) != "" {
-			continue
+// nameKeys hold maps whose keys are names, not keywords: a property, a
+// header or a schema may be called "example".
+var nameKeys = map[string]bool{"properties": true, "patternProperties": true, "dependentSchemas": true, "$defs": true, "definitions": true,
+	"schemas": true, "parameters": true, "responses": true, "requestBodies": true, "headers": true, "securitySchemes": true, "links": true,
+	"callbacks": true, "pathItems": true, "paths": true, "webhooks": true, "content": true, "encoding": true, "mapping": true,
+	"variables": true, "scopes": true}
+
+// dataKeys hold values, not parts of the spec: an "example" inside is data.
+var dataKeys = map[string]bool{"default": true, "enum": true, "const": true}
+
+// stripAll removes every example of the document, wherever the spec has
+// one: parameters and headers, media types, schemas and their properties,
+// "components.examples". The examples of a run come from the instance,
+// never from the spec.
+func (em *emitter) stripAll() {
+	var walk func(n *yaml.Node, names bool)
+	walk = func(n *yaml.Node, names bool) {
+		if n == nil {
+			return
 		}
-		a, b := yamldoc.Delete(n, "example"), yamldoc.Delete(n, "examples")
-		em.changed = em.changed || a || b
+		switch n.Kind {
+		case yaml.SequenceNode:
+			for _, c := range n.Content {
+				walk(c, false)
+			}
+		case yaml.MappingNode:
+			for i := 0; i+1 < len(n.Content); {
+				key, v := n.Content[i].Value, n.Content[i+1]
+				switch {
+				case names:
+					walk(v, false)
+				case key == "example" || key == "examples":
+					n.Content = append(n.Content[:i], n.Content[i+2:]...)
+					em.changed = true
+					continue
+				case !strings.HasPrefix(key, "x-") && !dataKeys[key]:
+					walk(v, nameKeys[key])
+				}
+				i += 2
+			}
+		}
 	}
+	walk(em.doc.Root, false)
 }
 
 // has reports whether the output of the last run holds an example of an
