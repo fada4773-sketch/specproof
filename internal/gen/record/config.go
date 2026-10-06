@@ -82,6 +82,8 @@ type StoredRecord struct {
 	Path string `json:"path,omitempty"`
 	// Keys are the fields the paths address it by.
 	Keys []string `json:"keys,omitempty"`
+	// More marks a further record of a seed DTO ("count").
+	More bool `json:"more,omitempty"`
 	// Ops are the fingerprints of the GETs whose answers Data holds: if
 	// one changed, the record is read and selected again.
 	Ops map[string]string `json:"ops"`
@@ -168,7 +170,50 @@ type Select struct {
 	// Details are GETs of the spec ("/Dock/{dockCode}/Config") that must
 	// answer for the record with 2xx and pass their checks.
 	Details map[string]Check `json:"details,omitempty"`
-	Comment string           `json:"$comment,omitempty"`
+	// Count is how many records of a DTO of "seed" the empty environment
+	// holds: the first ones of the list that pass, "*" every one.
+	Count   Count  `json:"count,omitempty"`
+	Comment string `json:"$comment,omitempty"`
+}
+
+// Count is the number of records of a seed DTO; 0 is not set (one), All
+// is "*".
+type Count int
+
+// All is "count": "*": every element of the list that passes.
+const All Count = -1
+
+// UnmarshalJSON reads a number of at least 1 or "*".
+func (c *Count) UnmarshalJSON(b []byte) error {
+	if string(bytes.TrimSpace(b)) == `"*"` {
+		*c = All
+		return nil
+	}
+	var n int
+	if err := json.Unmarshal(b, &n); err != nil || n < 1 {
+		return fmt.Errorf(`"count" is a number of at least 1 or "*", not %s`, b)
+	}
+	*c = Count(n)
+	return nil
+}
+
+// MarshalJSON writes "*" for All.
+func (c Count) MarshalJSON() ([]byte, error) {
+	if c == All {
+		return []byte(`"*"`), nil
+	}
+	return json.Marshal(int(c))
+}
+
+// many reports a count other than one: the seed holds a list of records.
+func (c Count) many() bool { return c != 0 && c != 1 }
+
+// String is the count as the config writes it.
+func (c Count) String() string {
+	if c == All {
+		return `"*"`
+	}
+	return fmt.Sprint(int(c))
 }
 
 // Check is what the answer of a detail must fulfil.
@@ -514,6 +559,9 @@ func (c *Config) check(s *spec.Spec, n namer) error {
 		}
 	}
 	for _, name := range sortedKeys(c.Select) {
+		if c.Select[name].Count != 0 && !c.seeded(n.table(name), n) {
+			errs = append(errs, fmt.Sprintf("\"select\".%s.count: %s is not in \"seed\"; \"count\" says how many records of a seed DTO the empty environment holds", name, name))
+		}
 		for _, id := range c.Select[name].Delete {
 			if op := opByID(s, id); op == nil || op.Method != "DELETE" {
 				errs = append(errs, fmt.Sprintf("\"select\".%s.delete: no DELETE %q in the spec", name, id))

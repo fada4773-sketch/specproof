@@ -66,18 +66,22 @@ func newSim(rd *reader, cfg *Config, res *Result, w *writes) *sim {
 	return s
 }
 
-// seed puts the seed records in: id 1 each.
+// seed puts the seed records in: id 1 each, with "count" ids 1 to n in
+// the order of the list.
 func (s *sim) seed() {
 	for _, name := range s.cfg.Seed {
 		t := s.rd.n.table(name)
-		s.next[t] = 1
-		r := s.rd.recs[t]
-		if r == nil {
+		recs := s.rd.seedRecs(t)
+		if len(recs) == 0 {
+			s.next[t] = 1
 			s.res.problem(CodeSeedMissing, name, "the seed lists %s, but no GET of the run read one; check \"params\" and \"select\"", name)
 			continue
 		}
-		s.live[r] = true
-		s.mapID(t, r, 1)
+		for i, r := range recs {
+			s.live[r] = true
+			s.mapID(t, r, i+1)
+		}
+		s.next[t] = len(recs)
 	}
 }
 
@@ -91,12 +95,22 @@ func (s *sim) mapID(t string, r *rec, id int) {
 }
 
 // seedRecords are the seed records as the environment must hold them:
-// complete, with the ids it assigns.
+// complete, with the ids it assigns; a DTO with "count" has a list.
 func (s *sim) seedRecords() map[string]any {
 	out := map[string]any{}
 	for _, name := range s.cfg.Seed {
-		if r := s.rd.recs[s.rd.n.table(name)]; r != nil {
-			out[name] = s.convAll(r.data, nil, r.table, "seed "+name) // complete: every element of its lists
+		t := s.rd.n.table(name)
+		recs := s.rd.seedRecs(t)
+		if len(recs) == 0 {
+			continue
+		}
+		var list []any
+		for _, r := range recs {
+			list = append(list, s.convAll(r.data, nil, r.table, "seed "+name)) // complete: every element of its lists
+		}
+		out[name] = list[0]
+		if s.cfg.selection(t, s.rd.n).Count.many() {
+			out[name] = list
 		}
 	}
 	return out

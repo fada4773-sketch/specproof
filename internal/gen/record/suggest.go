@@ -225,17 +225,24 @@ func (rd *reader) suggestRead(op *spec.Operation, problem string) {
 func (s *sim) suggestSeed(where, problem, t string, id any) {
 	dto := s.rd.dto(t)
 	if s.cfg.seeded(t, s.rd.n) {
-		sel := "the selected one"
+		sel := "only one " + dto + ", the selected one"
 		if r := s.rd.recs[t]; r != nil && r.id != nil {
-			sel = fmt.Sprintf("the selected one, id %s (%s)", text(r.id), r.from)
+			sel = fmt.Sprintf("only one %s, the selected one, id %s (%s)", dto, text(r.id), r.from)
+		}
+		if n := len(s.rd.seedRecs(t)); n > 1 {
+			sel = fmt.Sprintf("%d of them (\"count\"), the first selected from %s", n, s.rd.recs[t].from)
+		}
+		more := ""
+		if s.cfg.selection(t, s.rd.n).Count != All {
+			more = fmt.Sprintf(", or let the seed hold more of them: \"select\": {\"%s\": {\"count\": \"*\"}}", dto)
 		}
 		if id == nil {
 			s.res.suggest(CodeContainer, where, problem,
-				fmt.Sprintf("%s is in the seed already, but the seed holds only one %s, %s; the GET reads another one: let its parameters take the fields of the selected %s (\"params\")", dto, dto, sel, dto), nil)
+				fmt.Sprintf("%s is in the seed already, but the seed holds %s; the GET reads another one: let its parameters take the fields of the selected %s (\"params\")%s", dto, sel, dto, more), nil)
 			return
 		}
 		s.res.suggest(CodeContainer, where, problem,
-			fmt.Sprintf("%s is in the seed already, but the seed holds only one %s, %s; this refers to id %s: let \"select\" take that %s (or let the parameters take the fields of the selected one)", dto, dto, sel, text(id), dto),
+			fmt.Sprintf("%s is in the seed already, but the seed holds %s; this refers to id %s: let \"select\" take that %s (or let the parameters take the fields of the selected one)%s", dto, sel, text(id), dto, more),
 			map[string]any{"select": map[string]any{dto: map[string]any{"equal": map[string]any{"id": id}}}})
 		return
 	}

@@ -40,6 +40,7 @@ type wop struct {
 	seq      int       // the number of its request in the log
 	failed   bool      // sent and rejected
 	held     bool      // not sent on purpose: no copy of its record can be made
+	forced   bool      // sent only because of -all: the run lacks data for it
 	bodySrc  string    // where the body comes from, for the log
 	why      string    // why it has no record, for the notes
 }
@@ -329,11 +330,11 @@ func (w *writes) queries(tag string) {
 			continue
 		}
 		w.resolve(x)
-		if x.url == "" {
+		if !w.force(x) {
 			continue
 		}
 		body, from, missing := w.queryBody(x.c.Op)
-		if len(missing) > 0 {
+		if len(missing) > 0 && !w.in.All {
 			w.res.note(CodeNotExecuted, x.c.Op.ID, "POST %s is not sent: no value read for its required fields %s", x.c.Op.Path, strings.Join(missing, ", "))
 			continue
 		}
@@ -341,6 +342,10 @@ func (w *writes) queries(tag string) {
 		x.bodySrc = "fields of the selected records: " + strings.Join(from, "; ")
 		if len(from) == 0 {
 			x.bodySrc = "no field of a selected record fits it"
+		}
+		if len(missing) > 0 {
+			x.body = w.generate(x.c.Op, body)
+			w.forced(x, "no value read for its required fields "+strings.Join(missing, ", ")+"; they are generated")
 		}
 		w.send(x, http.MethodPost, "read "+x.c.Op.ID+" (a POST that only reads)")
 	}
@@ -417,8 +422,16 @@ func (w *writes) writeAll(xs []*wop) {
 				w.later = append(w.later, d)
 				continue
 			}
-			w.res.note(CodeNotExecuted, d.c.Op.ID, "DELETE %s is not sent: %s", d.c.Op.Path, d.why)
-			continue
+			if !w.in.All || !w.force(d) {
+				w.res.note(CodeNotExecuted, d.c.Op.ID, "DELETE %s is not sent: %s", d.c.Op.Path, d.why)
+				continue
+			}
+			if d.rec == nil {
+				w.forced(d, d.why+"; it is sent on its own, nothing creates again what it deletes")
+				w.send(d, http.MethodDelete, "delete "+d.c.Op.ID+" (-all)")
+				continue
+			}
+			w.forced(d, d.why+"; the value is generated")
 		}
 		cr := w.creator(d.table, d.rec)
 		switch {
@@ -443,6 +456,9 @@ func (w *writes) writeAll(xs []*wop) {
 			continue
 		}
 		w.resolve(cr)
+		if cr.url == "" && w.late && w.force(cr) {
+			w.forced(cr, cr.why+"; the value is generated")
+		}
 		if cr.rec == nil || cr.url == "" {
 			if cr.url == "" && !w.late {
 				w.later = append(w.later, cr)
@@ -472,8 +488,17 @@ func (w *writes) writeAll(xs []*wop) {
 	for _, x := range kindOf(xs, kindAction) {
 		if w.needs[x.c.Op.ID] {
 			w.resolve(x)
+			w.force(x)
 			if r := w.rd.recs[w.rd.n.of(requestSchema(x.c.Op))]; r != nil && x.url != "" {
 				w.res.note(CodeBuilt, x.c.Op.ID, "POST %s is not sent: it creates no record the run can create again; its body is the %s of %s", x.c.Op.Path, r.table, r.from)
+				continue
+			}
+			if w.in.All && x.url != "" {
+				if requestSchema(x.c.Op) != nil {
+					x.body = w.generate(x.c.Op, map[string]any{})
+				}
+				w.forced(x, "no record read fits its body; its body is assembled from the data of the run and generated values")
+				w.send(x, http.MethodPost, x.c.Op.ID+" (-all)")
 				continue
 			}
 			w.res.note(CodeNotExecuted, x.c.Op.ID, "POST %s is not sent: it creates no record the run can create again, and no record read fits its body; it gets no example", x.c.Op.Path)
@@ -490,17 +515,28 @@ func (w *writes) update(u *wop) {
 		return
 	}
 	if u.url == "" || (u.rec == nil && w.sameGet(u) == nil) {
-		w.res.note(CodeNotExecuted, u.c.Op.ID, "%s %s is not sent: %s", u.c.Op.Method, u.c.Op.Path, u.why)
-		return
+		why := u.why
+		if why == "" {
+			why = "no " + u.table + " was read"
+		}
+		if !w.in.All || !w.force(u) {
+			w.res.note(CodeNotExecuted, u.c.Op.ID, "%s %s is not sent: %s", u.c.Op.Method, u.c.Op.Path, why)
+			return
+		}
+		w.forced(u, why+"; what no data has is generated")
 	}
 	u.body = w.bodyFor(u)
 	if u.body == nil && requestSchema(u.c.Op) != nil {
-		w.res.note(CodeNotExecuted, u.c.Op.ID, "%s %s is not sent: the GET of its path answers a list, its body is one object, and no %s was selected",
-			u.c.Op.Method, u.c.Op.Path, u.table)
-		return
+		if !w.in.All {
+			w.res.note(CodeNotExecuted, u.c.Op.ID, "%s %s is not sent: the GET of its path answers a list, its body is one object, and no %s was selected",
+				u.c.Op.Method, u.c.Op.Path, u.table)
+			return
+		}
+		u.body = w.generate(u.c.Op, map[string]any{})
+		w.forced(u, fmt.Sprintf("the GET of its path answers a list, its body is one object, and no %s was selected; its body is assembled and generated", u.table))
 	}
 	resp, ok := w.send(u, u.c.Op.Method, "update "+u.c.Op.ID+" with the data it has")
-	if !ok && resp.Status == http.StatusNotFound && u.rec != nil {
+	if !ok && resp.Status == http.StatusNotFound && u.rec != nil && !u.forced {
 		w.retry[u.rec] = append(w.retry[u.rec], u)
 	}
 }
@@ -515,6 +551,45 @@ func (w *writes) lateWrites() {
 		x.resolved, x.why = false, ""
 	}
 	w.writeAll(later)
+}
+
+// force reports whether a write has its URL; with -all a parameter no
+// record and no config fills gets a generated value first.
+func (w *writes) force(x *wop) bool {
+	if x.url != "" || !w.in.All {
+		return x.url != ""
+	}
+	k := w.rd.k
+	if x.rec != nil && x.rec != w.rd.recs[x.table] {
+		k = k.clone()
+		k.use(x.rec)
+	}
+	u, vals, ok := w.rd.urlOf(x.c.Op, k, true)
+	if !ok {
+		return false
+	}
+	x.url, x.vals = u, vals
+	return true
+}
+
+// generate is the body of a write -all sends although no data fits it:
+// assembled from the data of the run, a required field without data
+// generated.
+func (w *writes) generate(op *spec.Operation, src any) any {
+	a := w.assembler(op, spec.ModeRequest)
+	body := a.build(requestSchema(op), src)
+	if w.filled == nil {
+		w.filled = map[string][]string{}
+	}
+	w.filled[op.ID] = a.origins("body")
+	return w.withBody(op, body, src)
+}
+
+// forced reports a write that only -all sends: the run lacks the data for
+// it.
+func (w *writes) forced(x *wop, why string) {
+	x.forced = true
+	w.res.note(CodeForced, x.c.Op.ID, "%s %s is sent because of -all: %s", x.c.Op.Method, x.c.Op.Path, why)
 }
 
 // kindOf are the writes of one kind.
@@ -582,6 +657,11 @@ func (w *writes) recreate(d *wop, u string, vals map[string]pval, cr *wop, r *re
 func (w *writes) send(x *wop, method, why string) (response, bool) {
 	resp, err := w.rd.c.do(w.rd.ctx, method, x.url, x.body, x.tag, why, w.origin(x)...)
 	x.seq = resp.Seq
+	if x.forced && (err != nil || !resp.ok()) {
+		// values the run generated that the instance rejects make no
+		// example: the write stays without one
+		defer func() { x.url, x.vals = "", nil }()
+	}
 	if err != nil {
 		x.failed = true
 		w.res.problem(CodeWriteFailed, x.c.Op.ID, "#%d %s %s: %v", resp.Seq, method, x.url, err)

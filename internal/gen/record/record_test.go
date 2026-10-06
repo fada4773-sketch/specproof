@@ -234,6 +234,12 @@ func runRecord(t *testing.T, sp *starport, specPath string, old *Recorded, write
 
 func runConfig(t *testing.T, sp *starport, specPath, config string, old *Recorded, writes bool) (*Result, *yamldoc.Doc, *Client) {
 	t.Helper()
+	return runInput(t, sp, specPath, config, old, Input{Writes: writes})
+}
+
+// runInput runs with the switches of in (Writes, All).
+func runInput(t *testing.T, sp *starport, specPath, config string, old *Recorded, in Input) (*Result, *yamldoc.Doc, *Client) {
+	t.Helper()
 	srv := httptest.NewServer(sp)
 	t.Cleanup(srv.Close)
 	s, err := spec.Load(context.Background(), specPath)
@@ -255,7 +261,8 @@ func runConfig(t *testing.T, sp *starport, specPath, config string, old *Recorde
 	}
 	var log []string
 	c := &Client{Opt: discover.Options{BaseURL: srv.URL}, Log: func(e Entry) { log = append(log, e.String()) }}
-	res, err := Run(context.Background(), Input{Spec: s, Doc: doc, Config: cfg, Client: c, Writes: writes, Prev: prev, Token: "t1"})
+	in.Spec, in.Doc, in.Config, in.Client, in.Prev, in.Token = s, doc, cfg, c, prev, "t1"
+	res, err := Run(context.Background(), in)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2510,4 +2517,140 @@ func TestRecordCoverage(t *testing.T) {
 	if c := res2.Coverage; c.Places != 32 || c.Run != 2 || c.Kept != 30 || c.Without() != 0 {
 		t.Errorf("second run: %+v", c)
 	}
+}
+
+// "count" in "select" lets the seed hold more records of a DTO: the first
+// ones of its list that pass "select", every one with "*", with the ids 1
+// to n of the environment. The next run takes them from "$recorded".
+func TestRecordSeedCount(t *testing.T) {
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "record.yaml")
+	b, err := os.ReadFile("../../../testdata/gen/record.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(specPath, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// "params" keeps P2 out: Planet gets fewer records than its count
+	config := `{"params": {"planetCode": "P1"}, "seed": ["Planet", "Dock"],
+	  "select": {"Dock": {"count": "*"}, "Planet": {"count": 2}}, "$apitest": {"DeleteLast": true}}`
+	sp := newStarport()
+	res, doc, _ := runConfig(t, sp, specPath, config, nil, true)
+	if len(res.Problems) > 0 {
+		t.Fatalf("problems:\n%s", notes(res))
+	}
+	want := `{"Planet":[{"id":1,"planetCode":"P1","name":"Mars"}],` +
+		`"Dock":[{"id":1,"dockCode":"D1","planetId":1,"name":"North"},{"id":2,"dockCode":"D2","planetId":1,"name":"South"}]}`
+	equal(t, "seed", res.Recorded.Seed, want)
+	equal(t, "GetDocks", exampleAt(t, doc, "paths", "/Planet/{planetCode}/Dock", "get", "responses", "200", "content", "application/json"),
+		`[{"id":1,"dockCode":"D1","planetId":1,"name":"North"},{"id":2,"dockCode":"D2","planetId":1,"name":"South"}]`)
+	if !strings.Contains(notes(res), `SEED_SHORT GetPlanets: "count" of the PlanetRead in "select" asks for 2 records, #1 GET /Planet has 1`) {
+		t.Errorf("no SEED_SHORT:\n%s", notes(res))
+	}
+	more := 0
+	for _, r := range res.Recorded.Records {
+		if r.More {
+			more++
+		}
+	}
+	if more != 1 {
+		t.Errorf("%d further records stored, want 1: %+v", more, res.Recorded.Records)
+	}
+
+	// the next run takes every record from "$recorded" and the seed stays
+	if err := doc.Save(specPath); err != nil {
+		t.Fatal(err)
+	}
+	res2, _, _ := runConfig(t, sp, specPath, config, res.Recorded, true)
+	equal(t, "seed of the second run", res2.Recorded.Seed, want)
+	if res2.Stats.Reused != len(res.Recorded.Records) {
+		t.Errorf("second run: %d of %d records reused\n%s", res2.Stats.Reused, len(res.Recorded.Records), notes(res2))
+	}
+
+	// without "count" the seed holds one object again
+	res3, _, _ := runConfig(t, sp, specPath, `{"params": {"planetCode": "P1"}, "seed": ["Planet", "Dock"]}`, res.Recorded, true)
+	equal(t, "seed without count", res3.Recorded.Seed, `{"Planet":{"id":1,"planetCode":"P1","name":"Mars"},"Dock":{"id":1,"dockCode":"D1","planetId":1,"name":"North"}}`)
+}
+
+// "count" is a number of at least 1 or "*", only for a DTO of the seed.
+func TestConfigCount(t *testing.T) {
+	for _, c := range []string{`0`, `-2`, `"all"`, `1.5`} {
+		if _, err := Parse([]byte(`{"seed": ["Dock"], "select": {"Dock": {"count": ` + c + `}}}`)); err == nil || !strings.Contains(err.Error(), `"count" is a number of at least 1 or "*"`) {
+			t.Errorf("count %s: %v", c, err)
+		}
+	}
+	c, err := Parse([]byte(`{"seed": ["Dock"], "select": {"Dock": {"count": "*"}, "Ship": {"count": 3}}}`))
+	if err != nil || c.Select["Dock"].Count != All || c.Select["Ship"].Count != 3 {
+		t.Fatalf("%+v %v", c, err)
+	}
+	s, err := spec.Load(context.Background(), "../../../testdata/gen/record.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = c.check(s, newNamer(s))
+	if err == nil || !strings.Contains(err.Error(), `"select".Ship.count: Ship is not in "seed"`) || strings.Contains(err.Error(), "Dock") {
+		t.Errorf("check: %v", err)
+	}
+	if b, _ := json.Marshal(c.Select["Dock"]); string(b) != `{"count":"*"}` {
+		t.Errorf("marshal: %s", b)
+	}
+}
+
+// -all sends the writes the run would leave out as NOT_EXECUTED: a POST
+// that only reads gets the required fields no record has generated, and a
+// write rejected with generated values gets no example.
+func TestRecordAll(t *testing.T) {
+	b, err := os.ReadFile("../../../testdata/gen/record.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	search := "              type: object\n              properties:\n                name: {type: string}\n"
+	if !strings.Contains(string(b), search) {
+		t.Fatal("the body of SearchShips moved")
+	}
+	b = []byte(strings.Replace(string(b), search, "              type: object\n              required: [name, registry]\n              properties:\n                name: {type: string}\n                registry: {type: string}\n", 1))
+	specPath := filepath.Join(t.TempDir(), "record.yaml")
+	if err := os.WriteFile(specPath, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	config := `{"params": {"planetCode": "P1", "UpdateShip.id": {"field": "registry"}}, "seed": ["Planet", "Dock"], "$apitest": {"DeleteLast": true}}`
+
+	sp := newStarport()
+	res, _, _ := runInput(t, sp, specPath, config, nil, Input{Writes: true})
+	for _, want := range []string{"NOT_EXECUTED SearchShips: POST /Ship/search is not sent: no value read for its required fields name, registry", "NOT_EXECUTED UpdateShip"} {
+		if !strings.Contains(notes(res), want) {
+			t.Errorf("without -all no %q:\n%s", want, notes(res))
+		}
+	}
+
+	sp = newStarport()
+	res, doc, _ := runInput(t, sp, specPath, config, nil, Input{Writes: true, All: true})
+	all := notes(res)
+	if strings.Contains(all, CodeNotExecuted) {
+		t.Errorf("NOT_EXECUTED with -all:\n%s", all)
+	}
+	for _, want := range []string{
+		"FORCED SearchShips: POST /Ship/search is sent because of -all: no value read for its required fields name, registry; they are generated",
+		"FORCED UpdateShip: PUT /Ship/id/{id} is sent because of -all",
+		"NO_DATA UpdateShip: a parameter of /Ship/id/{id} has no value",
+	} {
+		if !strings.Contains(all, want) {
+			t.Errorf("no %q:\n%s", want, all)
+		}
+	}
+	body, _ := sp.bodies["POST /Ship/search"].(map[string]any)
+	if body["registry"] == nil || body["name"] == nil {
+		t.Errorf("SearchShips sent %v", body)
+	}
+	if !slices.ContainsFunc(sp.sent, func(s string) bool { return strings.HasPrefix(s, "PUT /Ship/id/") }) {
+		t.Errorf("UpdateShip not sent: %v", sp.sent)
+	}
+	// the generated id the instance rejected is no example (it would also
+	// clash with the id of GetShip in the shared parameter)
+	if strings.Contains(all, CodeShared) {
+		t.Errorf("SHARED:\n%s", all)
+	}
+	equal(t, "SearchShips body", exampleAt(t, doc, "paths", "/Ship/search", "post", "requestBody", "content", "application/json"),
+		text(body))
 }

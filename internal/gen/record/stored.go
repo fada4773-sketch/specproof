@@ -25,6 +25,16 @@ func (rd *reader) load(old *Recorded) (int, map[string]bool) {
 			continue
 		}
 		r := st.rec()
+		if r.more {
+			// only next to the first record of its table, which the last
+			// run stored before it
+			first := rd.recs[r.table]
+			if first == nil || first.seq != 0 {
+				stale[st.Table] = true
+				continue
+			}
+			r.keys = first.keys
+		}
 		if r.path != "" {
 			if rd.forPath[r.path] != nil {
 				continue
@@ -73,7 +83,7 @@ func (rd *reader) valid(st StoredRecord) bool {
 
 // rec turns a stored record into one of the run.
 func (st StoredRecord) rec() *rec {
-	r := &rec{table: st.Table, data: map[string]any{}, from: st.From, keys: map[string]bool{}, path: st.Path}
+	r := &rec{table: st.Table, data: map[string]any{}, from: st.From, keys: map[string]bool{}, path: st.Path, more: st.More}
 	for k, v := range st.Data {
 		r.data[k] = v
 	}
@@ -105,7 +115,7 @@ func (rd *reader) storedRecords() []StoredRecord {
 				ops[id] = fingerprint(op)
 			}
 		}
-		out = append(out, StoredRecord{Table: r.table, From: r.from, Path: r.path, Keys: sortedKeys(r.keys), Ops: ops,
+		out = append(out, StoredRecord{Table: r.table, From: r.from, Path: r.path, Keys: sortedKeys(r.keys), More: r.more, Ops: ops,
 			Select: selectHash(rd.cfg.selection(r.table, rd.n)), Data: data})
 	}
 	return out

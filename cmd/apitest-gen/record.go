@@ -28,6 +28,9 @@ const logFile = "record-log.html"
 // requests, their bodies and answers, the findings and the summary go into
 // logFile instead, and the console shows only a short report.
 func recordCommand(o *options, out io.Writer) (err error) {
+	if o.all && (o.readOnly || o.dryRun) {
+		return fmt.Errorf("-all sends every write; it cannot be combined with -read-only or -dry-run")
+	}
 	s, err := spec.Load(context.Background(), o.spec)
 	if err != nil {
 		return err
@@ -80,7 +83,7 @@ func recordCommand(o *options, out io.Writer) (err error) {
 		logEntry(full, st, e, &tag)
 	}}
 	res, err := record.Run(context.Background(), record.Input{Spec: s, Doc: doc, Config: cfg, Client: client,
-		Prev: prev, Overwrite: o.overwrite, Writes: !o.readOnly && !o.dryRun, IgnoreLinting: o.ignoreLinting,
+		Prev: prev, Overwrite: o.overwrite, Writes: !o.readOnly && !o.dryRun, All: o.all, IgnoreLinting: o.ignoreLinting,
 		Token: strconv.FormatInt(time.Now().Unix(), 36)})
 	if err != nil {
 		return err

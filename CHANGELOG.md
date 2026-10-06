@@ -16,6 +16,17 @@ contain breaking changes, which are listed here.
 
 ### Features
 
+- `apitest-gen record`: `"select".<DTO>.count` lets the seed hold more
+  records of a seed DTO: the first `n` elements of its list that pass
+  `select`, `"*"` every one. They get the ids 1 to n of the empty
+  environment, the lists show them, and `"$recorded".seed` holds a list of
+  them for that DTO. Fewer passing elements than `count` are reported as
+  `SEED_SHORT`; a `count` for a DTO that is not in `seed` stops the run.
+- `apitest-gen record -all` sends every write the run would leave out as
+  `NOT_EXECUTED`: parameters and required body fields no data has get
+  generated values, a DELETE without a record to create again is sent on
+  its own. Each such write is reported as `FORCED`; one the instance
+  rejects gets no example. Not together with `-read-only` or `-dry-run`.
 - `apitest-gen record` shows how many places of the spec hold an example:
   path and required query parameters, the request body and the first 2xx
   response with JSON content of every operation. The console (`EXAMPLES`)

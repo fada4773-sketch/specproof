@@ -20,7 +20,9 @@ const (
 	CodeParam       = "PARAM_UNKNOWN"      // a parameter no record and no config fills
 	CodeSelectNone  = "SELECT_NONE"        // no element passes "select"
 	CodeSeedMissing = "SEED_MISSING"       // a seed DTO was not read
+	CodeSeedShort   = "SEED_SHORT"         // fewer records of a seed DTO pass than "count" asks for
 	CodeNotExecuted = "NOT_EXECUTED"       // a write the run cannot send nor build
+	CodeForced      = "FORCED"             // a write only -all sends
 	CodeBuilt       = "BUILT"              // a write not sent, its example built from the data read
 	CodeWriteFailed = "WRITE_FAILED"       // a write the instance rejected
 	CodeChanged     = "DATA_CHANGED"       // the instance answers differently after the writes
@@ -60,7 +62,9 @@ var codeInfos = map[string]codeInfo{
 	CodeParam:       {Warning, "a GET is not read: no selected record has a value for a parameter", `set it in "params"`},
 	CodeSelectNone:  {Problem, `no record of the list passes "select"`, `loosen "select" or add such a record to the instance`},
 	CodeSeedMissing: {Problem, "a DTO of the seed was not read", `check "params" and "select" of that DTO`},
+	CodeSeedShort:   {Warning, `fewer records of a seed DTO pass "select" than its "count" asks for; the seed holds the ones that do`, `lower "count", loosen "select" or add such records to the instance`},
 	CodeNotExecuted: {Warning, "a PUT, PATCH, DELETE or POST was neither sent nor built from the data read; it gets no example", "see the message: mostly a parameter without value"},
+	CodeForced:      {Warning, "-all sent a write the run lacks data for: generated values, or a DELETE whose record nothing creates again", "check its answer in the log; restore data of the instance it changed"},
 	CodeBuilt:       {Info, "a write was not sent, to keep the data of the instance; its example is built from what the GETs read", "nothing; the example is fine"},
 	CodeWriteFailed: {Problem, "the instance rejected a write", "see the answer in the log"},
 	CodeChanged:     {Problem, "after the writes a GET answers differently than before: the run changed data of the instance", `see "$suggestions": fields the server sets go into IgnoreFields; else restore the data`},
@@ -164,7 +168,12 @@ type Input struct {
 	Overwrite bool
 	// Writes sends PUT, DELETE and POST to the instance; without it they
 	// are built from the data the GETs read.
-	Writes        bool
+	Writes bool
+	// All sends every write the run would leave out as NOT_EXECUTED: a
+	// parameter without value and the required fields of a body no data
+	// fills get generated values, a DELETE without a record to create
+	// again is sent on its own (-all).
+	All           bool
 	IgnoreLinting bool
 	// Prev is the output of the last run (-out, else the spec itself); nil
 	// if there is none. The examples of unchanged operations come from it,

@@ -12,6 +12,7 @@ import (
 	"github.com/getkin/kin-openapi/openapi3"
 
 	"github.com/fada4773-sketch/specproof/internal/gen/model"
+	"github.com/fada4773-sketch/specproof/internal/gen/value"
 	"github.com/fada4773-sketch/specproof/internal/spec"
 )
 
@@ -32,6 +33,9 @@ type rec struct {
 	again string
 	// oldIDs are the ids it had before the last time it was created again
 	oldIDs []any
+	// more marks a further record of a seed DTO ("count"): the environment
+	// holds it, no path addresses it
+	more bool
 }
 
 // ids are the local ids the record had during the run: the first one, the
@@ -336,6 +340,9 @@ type reader struct {
 	// the last run stored
 	reuse bool
 	needs map[string]bool
+	// more is set while further records of a seed DTO are selected: an
+	// element may refer to any seed record, not only the first one
+	more bool
 }
 
 // get sends a GET once; a second request for the same URL takes the answer
@@ -382,6 +389,12 @@ func (rd *reader) getOps() []*spec.Operation {
 // url fills the parameters of an operation; ok is false while a path
 // parameter or a required query parameter has no value.
 func (rd *reader) url(op *spec.Operation, k *known) (string, map[string]pval, bool) {
+	return rd.urlOf(op, k, false)
+}
+
+// urlOf is url; with gen a path or required query parameter without value
+// gets a generated one (-all).
+func (rd *reader) urlOf(op *spec.Operation, k *known, gen bool) (string, map[string]pval, bool) {
 	path := op.Path
 	vals := map[string]pval{}
 	q := url.Values{}
@@ -390,6 +403,9 @@ func (rd *reader) url(op *spec.Operation, k *known) (string, map[string]pval, bo
 			continue
 		}
 		v, ok := rd.value(op, p, k)
+		if !ok && gen && (p.In == openapi3.ParameterInPath || p.Required) {
+			v, ok = generatedParam(op, p)
+		}
 		if !ok {
 			if p.In == openapi3.ParameterInPath || p.Required {
 				return "", nil, false
@@ -465,6 +481,19 @@ func (rd *reader) value(op *spec.Operation, p *openapi3.Parameter, k *known) (pv
 		return pval{v: spec.Normalize(p.Schema.Value.Enum[0]), src: "the first enum value of the parameter in the spec"}, true
 	}
 	return pval{}, false
+}
+
+// generatedParam is a value for a parameter no record and no config fills,
+// generated from its schema as apitest-gen generates values (-all).
+func generatedParam(op *spec.Operation, p *openapi3.Parameter) (pval, bool) {
+	if p.Schema == nil || p.Schema.Value == nil {
+		return pval{}, false
+	}
+	r := value.Generate(p.Schema.Value, value.Context{Seed: 1, Path: op.ID + "." + p.Name, Name: p.Name})
+	if !r.OK {
+		return pval{}, false
+	}
+	return pval{v: spec.Normalize(r.Value), src: "generated (-all): no record and no \"params\" has a value"}, true
 }
 
 // format puts a value together from fields of the selected records:
@@ -673,6 +702,10 @@ func (rd *reader) take(f *fetched) {
 		if own {
 			rd.forPath[f.op.Path] = r
 			r.path = f.op.Path
+			return
+		}
+		if r == rd.recs[t] {
+			rd.selectMore(t, r, free[i+1:], f)
 		}
 		return
 	}
@@ -733,6 +766,71 @@ func (rd *reader) selectRec(t string, o map[string]any, f *fetched) *rec {
 	}
 	rd.addRec(r)
 	return r
+}
+
+// selectMore selects the further records of a seed DTO with "count": the
+// elements after the first record that pass "select", in the order of the
+// list, up to the count, every one with "*". They may refer to any record
+// of the seed, not only to the first one of its table.
+func (rd *reader) selectMore(t string, first *rec, elems []any, f *fetched) {
+	count := rd.cfg.selection(t, rd.n).Count
+	if !count.many() || !rd.cfg.seeded(t, rd.n) {
+		return
+	}
+	rd.more = true
+	defer func() { rd.more = false }()
+	n := 1
+	for _, e := range elems {
+		if count != All && n >= int(count) {
+			return
+		}
+		o, ok := e.(map[string]any)
+		if !ok || rd.taken(t, o) != nil || rd.check(t, o, rd.k, rd.k.tables, 0) != "" {
+			continue
+		}
+		r := rd.selectRec(t, o, f)
+		r.more, r.keys = true, first.keys
+		n++
+	}
+	if count != All && n < int(count) {
+		rd.res.note(CodeSeedShort, f.op.ID, "\"count\" of the %s in \"select\" asks for %d records, #%d GET %s has %d that pass \"select\"; the seed holds these %d",
+			rd.dto(t), int(count), f.resp.Seq, f.url, n, n)
+	}
+}
+
+// seedRecs are the records of a seed table: the first one, then the
+// further ones of "count".
+func (rd *reader) seedRecs(t string) []*rec {
+	first := rd.recs[t]
+	if first == nil {
+		return nil
+	}
+	out := []*rec{first}
+	for _, r := range rd.all[t] {
+		if r.more {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// inSeed reports whether a field of an element refers to a record of the
+// seed of table t2 (dockId, dockCode), while further seed records are
+// selected.
+func (rd *reader) inSeed(t2, lf string, v any) bool {
+	if !rd.more {
+		return false
+	}
+	for _, r := range rd.seedRecs(t2) {
+		f := fieldName(r.data, lf)
+		if f == "" && lf == t2+"id" {
+			f = fieldName(r.data, "id")
+		}
+		if f != "" && same(r.data[f], v) {
+			return true
+		}
+	}
+	return false
 }
 
 // addRec makes r a record of its table; the first one of a table is the
@@ -849,7 +947,7 @@ func (rd *reader) check(t string, o map[string]any, k *known, in []string, depth
 			if !ok && lf == t2+"id" {
 				want, ok = k.scoped[t2+".id"]
 			}
-			if ok && scalar(o[f]) && !same(o[f], want) {
+			if ok && scalar(o[f]) && !same(o[f], want) && !rd.inSeed(t2, lf, o[f]) {
 				return fmt.Sprintf("%s is %s, the selected %s has %s", f, text(o[f]), t2, text(want))
 			}
 		}

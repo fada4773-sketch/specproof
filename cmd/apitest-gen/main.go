@@ -154,7 +154,7 @@ type options struct {
 	debug, ignoreLinting      bool
 	genericIDs                string
 	// record
-	readOnly, showBodies bool
+	readOnly, showBodies, all bool
 }
 
 func flags(name string, out io.Writer) (*flag.FlagSet, *options) {
@@ -184,6 +184,7 @@ func flags(name string, out io.Writer) (*flag.FlagSet, *options) {
 	fs.BoolVar(&o.ignoreLinting, "ignorelinting", false, "apply: report records and examples that violate their schema instead of stopping")
 	if name == "record" {
 		fs.BoolVar(&o.readOnly, "read-only", false, "send only GET; build the examples of PUT, POST and DELETE from the data the GETs read")
+		fs.BoolVar(&o.all, "all", false, "send every write, none stays NOT_EXECUTED: parameters and required body fields no data has are generated, a DELETE without a POST that creates its record again is sent on its own")
 		fs.BoolVar(&o.showBodies, "show-bodies", false, "write every request with its body and answer, the findings and the summary into record-log.html in the current directory (collapsible HTML); the console shows only a short report")
 	}
 	return fs, o

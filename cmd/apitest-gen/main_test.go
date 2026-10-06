@@ -522,6 +522,9 @@ func TestRecordCommand(t *testing.T) {
 	if code, _, errOut := cli("record", "-spec", spec); code != 2 || !strings.Contains(errOut, "-base-url is required") {
 		t.Errorf("without -base-url: %d %q", code, errOut)
 	}
+	if code, _, errOut := cli(append(args, "-all")...); code != 1 || !strings.Contains(errOut, "-all sends every write; it cannot be combined with -read-only") {
+		t.Errorf("-all with -read-only: %d %q", code, errOut)
+	}
 	if err := os.WriteFile(defs, []byte(`{"$snapshot": {}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
