@@ -16,24 +16,27 @@ import (
 
 // Codes of the notes and problems.
 const (
-	CodeFetch       = "FETCH_FAILED"     // a GET failed
-	CodeParam       = "PARAM_UNKNOWN"    // a parameter no record and no config fills
-	CodeSelectNone  = "SELECT_NONE"      // no element passes "select"
-	CodeSeedMissing = "SEED_MISSING"     // a seed DTO was not read
-	CodeNotExecuted = "NOT_EXECUTED"     // a write the run cannot send nor build
-	CodeBuilt       = "BUILT"            // a write not sent, its example built from the data read
-	CodeWriteFailed = "WRITE_FAILED"     // a write the instance rejected
-	CodeChanged     = "DATA_CHANGED"     // the instance answers differently after the writes
-	CodeContainer   = "NOT_IN_CONTAINER" // apitest reads data the empty environment lacks
-	CodeDuplicate   = "DUPLICATE_CREATE" // a second POST of the same record
-	CodeVolatile    = "VOLATILE"         // a field that changes between two reads
-	CodeNoData      = "NO_DATA"          // an operation without an answer to show
-	CodeInvalid     = "EXAMPLE_INVALID"  // an example that violates its schema
-	CodeShared      = "SHARED"           // one example place needs two values
-	CodeStatus      = "STATUS"           // the instance answers with another 2xx
-	CodeRemapped    = "IDS_SHIFTED"      // ids of unchanged examples moved
-	CodeLintIgnored = "LINT_IGNORED"     // a violation reported, not stopping
-	CodeUndeclared  = "NOT_SENT"         // fields of a record the request schema does not declare
+	CodeFetch       = "FETCH_FAILED"       // a GET failed
+	CodeParam       = "PARAM_UNKNOWN"      // a parameter no record and no config fills
+	CodeSelectNone  = "SELECT_NONE"        // no element passes "select"
+	CodeSeedMissing = "SEED_MISSING"       // a seed DTO was not read
+	CodeNotExecuted = "NOT_EXECUTED"       // a write the run cannot send nor build
+	CodeBuilt       = "BUILT"              // a write not sent, its example built from the data read
+	CodeWriteFailed = "WRITE_FAILED"       // a write the instance rejected
+	CodeChanged     = "DATA_CHANGED"       // the instance answers differently after the writes
+	CodeContainer   = "NOT_IN_CONTAINER"   // apitest reads data the empty environment lacks
+	CodeDuplicate   = "DUPLICATE_CREATE"   // a second POST of the same record
+	CodeVolatile    = "VOLATILE"           // a field that changes between two reads
+	CodeNoData      = "NO_DATA"            // an operation without an answer to show
+	CodeInvalid     = "EXAMPLE_INVALID"    // an example that violates its schema
+	CodeShared      = "SHARED"             // one example place needs two values
+	CodeStatus      = "STATUS"             // the instance answers with another 2xx
+	CodeRemapped    = "IDS_SHIFTED"        // ids of unchanged examples moved
+	CodeLintIgnored = "LINT_IGNORED"       // a violation reported, not stopping
+	CodeUndeclared  = "NOT_SENT"           // fields of a record the request schema does not declare
+	CodeConflict    = "UNIQUE_CONFLICT"    // a POST that violates a unique index
+	CodeCopyLeft    = "COPY_LEFT"          // a copy the run created and could not delete
+	CodeSoftUnique  = "UNIQUE_SOFT_DELETE" // a unique index that counts soft-deleted rows
 )
 
 // Severity of a code: what a reader has to do about it.
@@ -71,6 +74,9 @@ var codeInfos = map[string]codeInfo{
 	CodeRemapped:    {Info, "ids of unchanged examples moved because records are created in another order", "nothing"},
 	CodeLintIgnored: {Info, "an example that violates its schema was written (-ignorelinting)", "fix the data or the spec"},
 	CodeUndeclared:  {Info, "a write leaves out fields of its record that its request schema does not declare", `declare them in the spec if the server needs them, or send them with "bodies"`},
+	CodeConflict:    {Problem, "a POST violates a unique index of the database", `list the unique indexes in "tables"; with soft delete make the index partial (WHERE deleted_at IS NULL)`},
+	CodeCopyLeft:    {Problem, "the run created a copy of a record and could not delete it again", "delete the copy by hand (the log shows its answer)"},
+	CodeSoftUnique:  {Warning, "a unique index counts the rows a soft delete keeps: creating a deleted record again fails", "make the index partial: WHERE deleted_at IS NULL"},
 }
 
 // Explain returns the severity of a code and what it means and what to do,
@@ -143,6 +149,10 @@ type Input struct {
 	// if there is none. The examples of unchanged operations come from it,
 	// never from Doc: every example of Doc is removed first.
 	Prev *yamldoc.Doc
+	// Token changes the unique values of the copies the run creates
+	// ("tables"); a new one per run, so a copy an earlier run left (soft
+	// delete) never collides. Empty: "run".
+	Token string
 }
 
 // Run follows the tags of the run in their order: in each tag it reads the
@@ -201,8 +211,14 @@ func Run(ctx context.Context, in Input) (*Result, error) {
 		rd.reuse = true
 		res.Stats.Reused = rd.load(old)
 	}
+	if in.Token == "" {
+		in.Token = "run"
+	}
 	w := &writes{rd: rd, in: in, res: res, needs: needs}
 	w.classify(run)
+	if in.Writes {
+		w.softUnique()
+	}
 
 	byTag := rd.byTag(tags)
 	rd.seedPhase()
@@ -337,7 +353,7 @@ func (w *writes) complete(op *spec.Operation) bool {
 // whose examples are complete (of earlier runs too), the ids the POSTs
 // create and the seed.
 func recorded(old *Recorded, fps map[string]string, needs, done map[string]bool, sm *sim) *Recorded {
-	r := &Recorded{Operations: map[string]string{}, Created: sm.created, Seed: sm.seedRecords(),
+	r := &Recorded{Operations: map[string]string{}, Created: sm.created, Seed: sm.seedRecords(), SeedOrder: sm.seedOrder(),
 		Params: paramsHash(sm.cfg), Records: sm.rd.storedRecords()}
 	if old != nil {
 		for id, fp := range old.Operations {

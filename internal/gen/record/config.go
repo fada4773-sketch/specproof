@@ -34,6 +34,11 @@ type Config struct {
 	// operationId, laid over the body the run builds: for fields no record
 	// holds, such as the filter of a table query.
 	Bodies map[string]any
+	// Tables are what the database knows about the table of a DTO: unique
+	// indexes, soft delete, references. A table with an entry is written
+	// through a copy: the run creates a copy with other unique values and
+	// deletes the copy, never the record.
+	Tables map[string]Table
 	// Run is "$apitest", the Config apitest runs with.
 	Run defaults.Run
 	// Recorded is what the last run wrote ("$recorded"); nil before the
@@ -56,6 +61,9 @@ type Recorded struct {
 	// Seed are the records the empty environment must hold, by DTO, with
 	// the ids it assigns.
 	Seed map[string]any `json:"seed,omitempty"`
+	// SeedOrder is the order to create the seed records in: a record after
+	// the ones it refers to.
+	SeedOrder []string `json:"seedOrder,omitempty"`
 	// Params is a hash of "params": with other values every record is
 	// selected again.
 	Params string `json:"params,omitempty"`
@@ -170,6 +178,59 @@ type Check struct {
 	Comment   string         `json:"$comment,omitempty"`
 }
 
+// Table is what the database knows about the table of a DTO.
+type Table struct {
+	// Name is the table in the database ("docks"), for the hints.
+	Name string `json:"name,omitempty"`
+	// SoftDelete: a DELETE only marks the row (deleted_at); it stays in
+	// every index.
+	SoftDelete bool `json:"softDelete,omitempty"`
+	// Unique are the unique indexes: the fields of the DTO they cover.
+	Unique []Unique `json:"unique,omitempty"`
+	// Refs are the fields that refer to another table: field → reference.
+	Refs    map[string]Ref `json:"refs,omitempty"`
+	Comment string         `json:"$comment,omitempty"`
+}
+
+// Unique is one unique index.
+type Unique struct {
+	Name string `json:"name,omitempty"`
+	// Fields are the fields of the DTO, as the API names them (planetId)
+	// or as columns (planet_id).
+	Fields []string `json:"fields"`
+	// Where is the condition of a partial index ("deleted_at IS NULL").
+	Where   string `json:"where,omitempty"`
+	Comment string `json:"$comment,omitempty"`
+}
+
+// Ref is a reference to another table.
+type Ref struct {
+	// To is the DTO it refers to.
+	To string `json:"to"`
+	// OnDelete is the action of the foreign key: CASCADE, SET NULL, …
+	OnDelete string `json:"onDelete,omitempty"`
+	Comment  string `json:"$comment,omitempty"`
+}
+
+// cascade reports a reference whose rows a DELETE of the target removes.
+func (r Ref) cascade() bool { return strings.EqualFold(strings.TrimSpace(r.OnDelete), "CASCADE") }
+
+// ignoresDeleted reports a partial index that leaves out deleted rows.
+func (u Unique) ignoresDeleted() bool {
+	return strings.Contains(strings.ToLower(u.Where), "deleted")
+}
+
+// table returns the entry of "tables" for a table, nil without one.
+func (c *Config) table(table string, n namer) *Table {
+	for _, name := range sortedKeys(c.Tables) {
+		if n.table(name) == table {
+			t := c.Tables[name]
+			return &t
+		}
+	}
+	return nil
+}
+
 // old are the keys of the format of "apitest-gen apply".
 var old = []string{defaults.SnapshotKey, defaults.ModelKey}
 
@@ -217,6 +278,8 @@ func Parse(b []byte) (*Config, error) {
 					delete(c.Bodies, k)
 				}
 			}
+		case key == "tables":
+			c.Tables, err = parseTables(v)
 		case key == defaults.ApitestKey:
 			if err = strict(v, &c.Run); err == nil {
 				err = defaults.CheckRun(c.Run)
@@ -227,9 +290,9 @@ func Parse(b []byte) (*Config, error) {
 			err = strict(v, c.Recorded)
 		case strings.HasPrefix(key, "$comment"):
 		case contains(old, key):
-			return nil, fmt.Errorf("%q belongs to the format of \"apitest-gen apply\"; record reads \"params\", \"seed\", \"select\", \"bodies\" and %q", key, defaults.ApitestKey)
+			return nil, fmt.Errorf("%q belongs to the format of \"apitest-gen apply\"; record reads \"params\", \"seed\", \"select\", \"bodies\", \"tables\" and %q", key, defaults.ApitestKey)
 		default:
-			return nil, fmt.Errorf("unknown key %q; record reads \"params\", \"seed\", \"select\", \"bodies\" and %q", key, defaults.ApitestKey)
+			return nil, fmt.Errorf("unknown key %q; record reads \"params\", \"seed\", \"select\", \"bodies\", \"tables\" and %q", key, defaults.ApitestKey)
 		}
 		if err != nil {
 			return nil, fmt.Errorf("%q: %w", key, err)
@@ -271,6 +334,36 @@ func parseSelect(b []byte) (map[string]Select, error) {
 			return nil, fmt.Errorf("%s: %w", name, err)
 		}
 		out[name] = sel
+	}
+	return out, nil
+}
+
+// parseTables reads "tables"; keys starting with "$" are comments.
+func parseTables(b []byte) (map[string]Table, error) {
+	var raw map[string]json.RawMessage
+	if err := strict(b, &raw); err != nil {
+		return nil, err
+	}
+	out := map[string]Table{}
+	for _, name := range sortedKeys(raw) {
+		if strings.HasPrefix(name, "$") {
+			continue
+		}
+		var t Table
+		if err := strict(raw[name], &t); err != nil {
+			return nil, fmt.Errorf("%s: %w", name, err)
+		}
+		for i, u := range t.Unique {
+			if len(u.Fields) == 0 {
+				return nil, fmt.Errorf("%s.unique[%d]: \"fields\" lists no field", name, i)
+			}
+		}
+		for f, r := range t.Refs {
+			if r.To == "" {
+				return nil, fmt.Errorf("%s.refs.%s: \"to\" names no DTO", name, f)
+			}
+		}
+		out[name] = t
 	}
 	return out, nil
 }
@@ -437,6 +530,22 @@ func (c *Config) check(s *spec.Spec, n namer) error {
 	for _, id := range sortedKeys(c.Bodies) {
 		if op := opByID(s, id); op == nil || requestSchema(op) == nil {
 			errs = append(errs, fmt.Sprintf("\"bodies\".%s: no operation %q with a JSON body in the spec", id, id))
+		}
+	}
+	known := map[string]bool{}
+	if s.Doc != nil && s.Doc.Components != nil {
+		for name := range s.Doc.Components.Schemas {
+			known[n.table(name)] = true
+		}
+	}
+	for _, name := range sortedKeys(c.Tables) {
+		if !known[n.table(name)] {
+			errs = append(errs, fmt.Sprintf("\"tables\".%s: no DTO of the spec belongs to it", name))
+		}
+		for _, f := range sortedKeys(c.Tables[name].Refs) {
+			if to := c.Tables[name].Refs[f].To; !known[n.table(to)] {
+				errs = append(errs, fmt.Sprintf("\"tables\".%s.refs.%s: no DTO %q in the spec", name, f, to))
+			}
 		}
 	}
 	errs = append(errs, c.fillEqual()...)

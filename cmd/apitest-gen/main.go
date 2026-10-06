@@ -184,7 +184,7 @@ func flags(name string, out io.Writer) (*flag.FlagSet, *options) {
 	fs.BoolVar(&o.ignoreLinting, "ignorelinting", false, "apply: report records and examples that violate their schema instead of stopping")
 	if name == "record" {
 		fs.BoolVar(&o.readOnly, "read-only", false, "send only GET; build the examples of PUT, POST and DELETE from the data the GETs read")
-		fs.BoolVar(&o.showBodies, "show-bodies", false, "print the body of every PUT, PATCH and POST the run sends, not only of failed ones")
+		fs.BoolVar(&o.showBodies, "show-bodies", false, "write every request with its body and answer, the findings and the summary into record-log.html in the current directory (collapsible HTML); the console shows only a short report")
 	}
 	return fs, o
 }

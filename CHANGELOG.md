@@ -16,8 +16,32 @@ contain breaking changes, which are listed here.
 
 ### Features
 
-- `apitest-gen record -show-bodies` prints the body of every PUT, PATCH and
-  POST it sends.
+- `apitest-gen record -show-bodies` writes every request with its body and
+  answer, the findings, what their codes mean and the summary into
+  `record-log.html` in the current directory: one HTML page with collapsible
+  tags and requests, failed requests open, a filter and "only failed". The
+  console then shows only a short report (summary, finding counts, files,
+  the path of the log).
+- `apitest-gen record`: `"tables"` in the defaults file describes the table
+  of a DTO as the database knows it: `unique` indexes (fields as the API or
+  as columns name them, `where` of a partial index), `softDelete` and
+  `refs` (`to`, `onDelete`). A table with an entry is written through a
+  copy: the POST creates a copy with other values of the unique fields and
+  of the keys the paths address the record by, the DELETE deletes that
+  copy; the records the run read stay untouched. The values of the copy
+  carry a token per run, so a copy an earlier run left behind by a soft
+  delete never collides. The examples still show the record; a POST of a
+  seed record shows the values of the copy (`-copy`), so it does not
+  collide with the seed in the empty environment.
+- `apitest-gen record` reports `UNIQUE_SOFT_DELETE` before the writes for a
+  unique index of a soft-deleted table that counts deleted rows,
+  `UNIQUE_CONFLICT` for a POST that violates a unique index (after a DELETE
+  with how to restore the row and make the index partial) and `COPY_LEFT`
+  for a copy it could not delete. A DELETE whose `onDelete: CASCADE`
+  would remove rows of another table is not sent unless its table is
+  written through a copy.
+- `apitest-gen record` writes `"$recorded".seedOrder`: the order to create
+  the seed records in, each after the records it refers to.
 - `apitest-gen record` reads the seed first, before every tag (log tag
   `seed`), in the order of `seed`, each record from its `from` list.
 - `apitest-gen record` reports `NOT_SENT` when a write leaves out filled

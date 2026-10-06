@@ -5,8 +5,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/fada4773-sketch/specproof/internal/gen/record"
 	"github.com/fada4773-sketch/specproof/internal/gen/yamldoc"
@@ -17,9 +20,14 @@ import (
 // instance and are reported only.
 var blocking = []string{record.CodeSelectNone, record.CodeSeedMissing, record.CodeShared, record.CodeInvalid}
 
+// logFile is the file -show-bodies writes, in the current directory.
+const logFile = "record-log.html"
+
 // recordCommand runs "apitest-gen record". Every request is printed when it
-// is answered, so the log shows the order of the run.
-func recordCommand(o *options, out io.Writer) error {
+// is answered, so the log shows the order of the run. With -show-bodies the
+// requests, their bodies and answers, the findings and the summary go into
+// logFile instead, and the console shows only a short report.
+func recordCommand(o *options, out io.Writer) (err error) {
 	s, err := spec.Load(context.Background(), o.spec)
 	if err != nil {
 		return err
@@ -50,19 +58,46 @@ func recordCommand(o *options, out io.Writer) error {
 		return err
 	}
 	st := newStyle(out)
-	section(out, st, fmt.Sprintf("REQUESTS to %s", o.baseURL))
-	fmt.Fprintln(out, st.paint(dim, "  in the order they are sent; per tag: GET and POSTs that read, PUT/PATCH, DELETE, then POST"))
+	full := out // the long report: requests, findings, codes
+	lg := &runLog{Spec: o.spec, BaseURL: o.baseURL, Started: time.Now()}
+	if o.showBodies {
+		full = io.Discard
+		defer func() {
+			lg.Err = err
+			path, werr := lg.write(logFile)
+			if werr != nil {
+				fmt.Fprintf(out, "  log: %v\n", werr)
+				return
+			}
+			fmt.Fprintf(out, "  log: %s\n", path)
+		}()
+	}
+	section(full, st, fmt.Sprintf("REQUESTS to %s", o.baseURL))
+	fmt.Fprintln(full, st.paint(dim, "  in the order they are sent; per tag: GET and POSTs that read, PUT/PATCH, DELETE, then POST"))
 	tag := ""
-	client := &record.Client{Opt: opt, Log: func(e record.Entry) { logEntry(out, st, e, &tag, o.showBodies) }}
+	client := &record.Client{Opt: opt, Log: func(e record.Entry) {
+		lg.Entries = append(lg.Entries, e)
+		logEntry(full, st, e, &tag)
+	}}
 	res, err := record.Run(context.Background(), record.Input{Spec: s, Doc: doc, Config: cfg, Client: client,
-		Prev: prev, Overwrite: o.overwrite, Writes: !o.readOnly && !o.dryRun, IgnoreLinting: o.ignoreLinting})
+		Prev: prev, Overwrite: o.overwrite, Writes: !o.readOnly && !o.dryRun, IgnoreLinting: o.ignoreLinting,
+		Token: strconv.FormatInt(time.Now().Unix(), 36)})
 	if err != nil {
 		return err
 	}
-	section(out, st, "SUMMARY")
-	fmt.Fprintf(out, "  record: %d operations, %d with new or changed schemas, %d unchanged; %d complete; %d records from %q; requests: %s\n",
+	rows, stop := findingRows(res, o.ignoreLinting)
+	lg.Findings = rows
+	summary := fmt.Sprintf("%d operations, %d with new or changed schemas, %d unchanged; %d complete; %d records from %q; requests: %s",
 		res.Stats.Ops, res.Stats.Written, res.Stats.Unchanged, res.Stats.Done, res.Stats.Reused, record.RecordedKey, counts(client.Count))
-	stop := findings(out, st, res, o.ignoreLinting)
+	lg.Summary = summary
+	section(full, st, "SUMMARY")
+	fmt.Fprintf(full, "  record: %s\n", summary)
+	findings(full, st, rows)
+	if o.showBodies {
+		fmt.Fprintf(out, "apitest-gen record: %s ← %s\n", o.spec, o.baseURL)
+		fmt.Fprintf(out, "  %s\n", summary)
+		fmt.Fprintf(out, "  findings: %s\n", findingCounts(st, rows))
+	}
 	if stop > 0 {
 		return fmt.Errorf("%d problems; nothing was written", stop)
 	}
@@ -71,10 +106,17 @@ func recordCommand(o *options, out io.Writer) error {
 		return err
 	}
 	defer os.Remove(tmp)
-	section(out, st, "FILES")
-	fmt.Fprintf(out, "  spec %s: %d examples written, %d operations with moved ids\n", target, res.Stats.Examples, res.Stats.Remapped)
+	file := func(format string, args ...any) {
+		line := fmt.Sprintf(format, args...)
+		lg.Files = append(lg.Files, line)
+		fmt.Fprintln(out, "  "+line)
+	}
+	if !o.showBodies {
+		section(out, st, "FILES")
+	}
+	file("spec %s: %d examples written, %d operations with moved ids", target, res.Stats.Examples, res.Stats.Remapped)
 	if o.dryRun {
-		fmt.Fprintln(out, "  dry run: nothing written, only GET was sent")
+		file("dry run: nothing written, only GET was sent")
 		return nil
 	}
 	if res.Changed || o.out != "" {
@@ -85,13 +127,13 @@ func recordCommand(o *options, out io.Writer) error {
 	if err := record.SaveRecorded(defs, res.Recorded); err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "  %s: %q updated: %d operations complete, %d seed records the empty environment must hold\n",
+	file("%s: %q updated: %d operations complete, %d seed records the empty environment must hold",
 		defs, record.RecordedKey, len(res.Recorded.Operations), len(res.Recorded.Seed))
 	if err := record.SaveSuggestions(defs, res.Suggestions); err != nil {
 		return err
 	}
 	if len(res.Suggestions) > 0 {
-		fmt.Fprintf(out, "  %s: %d suggestions in %q: merge an entry into \"params\", \"select\", \"seed\" or \"$apitest\" and run again; an entry without one explains a cause the defaults cannot fix\n",
+		file("%s: %d suggestions in %q: merge an entry into \"params\", \"select\", \"seed\" or \"$apitest\" and run again; an entry without one explains a cause the defaults cannot fix",
 			defs, len(res.Suggestions), record.SuggestionsKey)
 	}
 	if len(res.Problems) > 0 {
@@ -114,9 +156,8 @@ func counts(m map[string]int) string {
 }
 
 // logEntry writes one request as a line: a heading when the tag changes,
-// the status colored, what was sent and answered under a failed one, and
-// with -show-bodies the body of every write.
-func logEntry(out io.Writer, st style, e record.Entry, tag *string, bodies bool) {
+// the status colored, what was sent and answered under a failed one.
+func logEntry(out io.Writer, st style, e record.Entry, tag *string) {
 	if e.Tag != *tag {
 		*tag = e.Tag
 		fmt.Fprintln(out, st.paint(cyan, "  ── "+e.Tag+" "))
@@ -135,9 +176,6 @@ func logEntry(out io.Writer, st style, e record.Entry, tag *string, bodies bool)
 		fmt.Fprintln(out, "         "+st.paint(red, "error:  "+e.Err.Error()))
 		return
 	}
-	if bodies && e.Status/100 == 2 && e.Body != nil {
-		fmt.Fprintln(out, "         "+st.paint(dim, "sent:   "+record.JSON(e.Body)))
-	}
 	if e.Status/100 != 2 {
 		if e.Body != nil {
 			fmt.Fprintln(out, "         "+st.paint(dim, "sent:   "+record.Clip(e.Body)))
@@ -148,23 +186,27 @@ func logEntry(out io.Writer, st style, e record.Entry, tag *string, bodies bool)
 	}
 }
 
-// findings writes the notes and problems as a table, the most serious
-// first, then what each code means; it returns the number of problems
-// that keep the spec unchanged.
-func findings(out io.Writer, st style, res *record.Result, ignoreLinting bool) int {
-	type row struct {
-		label, code, where, msg string
-		rank                    int
-	}
-	var rows []row
-	stop := 0
+// finding is one row of the findings: a note or a problem of the run.
+type finding struct {
+	Label, Code, Where, Message string
+	rank                        int
+}
+
+// labels are the severities of the findings, the most serious first.
+var labels = []string{"FATAL", "PROBLEM", "WARN", "INFO"}
+
+var labelColors = map[string]string{"FATAL": red, "PROBLEM": red, "WARN": yellow, "INFO": blue}
+
+// findingRows are the notes and problems, the most serious first; stop
+// is the number of problems that keep the spec unchanged.
+func findingRows(res *record.Result, ignoreLinting bool) (rows []finding, stop int) {
 	for _, p := range res.Problems {
 		label, rank := "PROBLEM", 3
 		if slices.Contains(blocking, p.Code) {
 			label, rank = "FATAL", 4
 			stop++
 		}
-		rows = append(rows, row{label, p.Code, p.Where, p.Message, rank})
+		rows = append(rows, finding{label, p.Code, p.Where, p.Message, rank})
 	}
 	for _, n := range res.Notes {
 		// -ignorelinting: the violations are written anyway and not shown
@@ -179,36 +221,47 @@ func findings(out io.Writer, st style, res *record.Result, ignoreLinting bool) i
 		case record.Problem:
 			label, rank = "PROBLEM", 2
 		}
-		rows = append(rows, row{label, n.Code, n.Where, n.Message, rank})
+		rows = append(rows, finding{label, n.Code, n.Where, n.Message, rank})
 	}
-	if len(rows) == 0 {
-		fmt.Fprintln(out, "  "+st.paint(green, "no findings"))
-		return 0
-	}
-	slices.SortStableFunc(rows, func(a, b row) int { return b.rank - a.rank })
-	colors := map[string]string{"FATAL": red, "PROBLEM": red, "WARN": yellow, "INFO": blue}
+	slices.SortStableFunc(rows, func(a, b finding) int { return b.rank - a.rank })
+	return rows, stop
+}
+
+// findingCounts is "2 PROBLEM, 3 WARN", or "none".
+func findingCounts(st style, rows []finding) string {
 	count := map[string]int{}
-	var cells [][]cell
-	var codes []string
 	for _, r := range rows {
-		count[r.label]++
-		if !slices.Contains(codes, r.code) {
-			codes = append(codes, r.code)
-		}
-		cells = append(cells, []cell{{r.label, colors[r.label]}, {r.code, colors[r.label]}, {r.where, bold}, {r.msg, ""}})
+		count[r.Label]++
 	}
 	var parts []string
-	for _, l := range []string{"FATAL", "PROBLEM", "WARN", "INFO"} {
+	for _, l := range labels {
 		if count[l] > 0 {
-			parts = append(parts, st.paint(colors[l], fmt.Sprintf("%d %s", count[l], l)))
+			parts = append(parts, st.paint(labelColors[l], fmt.Sprintf("%d %s", count[l], l)))
 		}
 	}
-	fmt.Fprintln(out, "  findings: "+strings.Join(parts, ", "))
+	if len(parts) == 0 {
+		return st.paint(green, "none")
+	}
+	return strings.Join(parts, ", ")
+}
+
+// findings writes the findings as a table, then what each code means.
+func findings(out io.Writer, st style, rows []finding) {
+	if len(rows) == 0 {
+		fmt.Fprintln(out, "  "+st.paint(green, "no findings"))
+		return
+	}
+	var cells [][]cell
+	for _, r := range rows {
+		c := labelColors[r.Label]
+		cells = append(cells, []cell{{r.Label, c}, {r.Code, c}, {r.Where, bold}, {r.Message, ""}})
+	}
+	fmt.Fprintln(out, "  findings: "+findingCounts(st, rows))
 	section(out, st, "FINDINGS")
 	table(out, st, []string{"", "CODE", "WHERE", "MESSAGE"}, cells)
 	section(out, st, "WHAT THE CODES MEAN")
 	var legend [][]cell
-	for _, c := range codes {
+	for _, c := range codesOf(rows) {
 		_, meaning, fix := record.Explain(c)
 		if meaning == "" {
 			continue
@@ -216,5 +269,23 @@ func findings(out io.Writer, st style, res *record.Result, ignoreLinting bool) i
 		legend = append(legend, []cell{{c, bold}, {meaning + " → " + fix, ""}})
 	}
 	table(out, st, []string{"CODE", "MEANING → WHAT TO DO"}, legend)
-	return stop
+}
+
+// codesOf are the codes of the findings, each once, in their order.
+func codesOf(rows []finding) []string {
+	var codes []string
+	for _, r := range rows {
+		if !slices.Contains(codes, r.Code) {
+			codes = append(codes, r.Code)
+		}
+	}
+	return codes
+}
+
+// absolute is a path as the console shows it: absolute where possible.
+func absolute(path string) string {
+	if a, err := filepath.Abs(path); err == nil {
+		return a
+	}
+	return path
 }

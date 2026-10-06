@@ -529,6 +529,60 @@ func TestRecordCommand(t *testing.T) {
 	}
 }
 
+// record -show-bodies writes every request with its body and answer, the
+// findings and the summary into record-log.html in the current directory;
+// the console shows only a short report.
+func TestRecordShowBodies(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body := map[string]string{
+			"/Planet":         `[{"id": 7, "planetCode": "P1", "name": "Mars <b>"}]`,
+			"/Planet/P1":      `{"id": 7, "planetCode": "P1", "name": "Mars <b>"}`,
+			"/Planet/P1/Dock": `[{"id": 31, "dockCode": "D2", "planetId": 7, "name": "South"}]`,
+		}[r.URL.Path]
+		if body == "" || r.Method != http.MethodGet {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+	dir, spec := copySpec(t, "record.yaml")
+	defs := filepath.Join(dir, "defaults.json")
+	if err := os.WriteFile(defs, []byte(`{"params": {"planetCode": "P1"}, "seed": ["Planet"]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	code, out, errOut := cli("record", "-spec", spec, "-base-url", srv.URL, "-defaults", defs, "-read-only", "-show-bodies")
+	if code != 0 || errOut != "" {
+		t.Fatalf("record: %d\n%s\n%s", code, out, errOut)
+	}
+	for _, want := range []string{"apitest-gen record: ", "13 operations", "findings: ", "examples written", "log: " + filepath.Join(dir, "record-log.html")} {
+		if !strings.Contains(out, want) {
+			t.Errorf("console misses %q:\n%s", want, out)
+		}
+	}
+	for _, not := range []string{"REQUESTS", "#001", "FINDINGS", "FETCH_FAILED", "Mars"} {
+		if strings.Contains(out, not) {
+			t.Errorf("console shows %q:\n%s", not, out)
+		}
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "record-log.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := string(b)
+	for _, want := range []string{"<details", "#001", "/Planet/P1/Dock", "Findings", "FETCH_FAILED", "What the codes mean",
+		`<span class="j-key">&#34;name&#34;</span>: <span class="j-str">&#34;Mars \u003cb\u003e&#34;</span>`, `class="req failed" open`, "examples written"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("log misses %q", want)
+		}
+	}
+	if strings.Contains(page, "Mars <b>") {
+		t.Error("the log does not escape the answers")
+	}
+}
+
 // record -ignorelinting writes data that violates its schema and prints
 // none of the violations; without it they stop the run.
 func TestRecordIgnoreLinting(t *testing.T) {
@@ -590,13 +644,14 @@ func TestLogEntryBodies(t *testing.T) {
 	e := record.Entry{N: 3, Tag: "Dock", Method: "PUT", URL: "/Dock/D1", Why: "update", Status: 200, Body: map[string]any{"name": "North"}}
 	var b strings.Builder
 	tag := ""
-	logEntry(&b, style{}, e, &tag, false)
+	logEntry(&b, style{}, e, &tag)
 	if strings.Contains(b.String(), "sent:") || !strings.Contains(b.String(), "── Dock") || !strings.Contains(b.String(), "#003 PUT    200 /Dock/D1") {
-		t.Errorf("without -show-bodies:\n%s", b.String())
+		t.Errorf("a write that succeeded:\n%s", b.String())
 	}
 	b.Reset()
-	logEntry(&b, style{}, e, &tag, true)
-	if !strings.Contains(b.String(), `sent:   {"name":"North"}`) || strings.Contains(b.String(), "── Dock") {
-		t.Errorf("with -show-bodies:\n%s", b.String())
+	e.Status, e.Resp = 409, map[string]any{"message": "exists"}
+	logEntry(&b, style{}, e, &tag)
+	if !strings.Contains(b.String(), `sent:   {"name":"North"}`) || !strings.Contains(b.String(), `answer: {"message":"exists"}`) || strings.Contains(b.String(), "── Dock") {
+		t.Errorf("a write that failed:\n%s", b.String())
 	}
 }

@@ -104,6 +104,62 @@ func (s *sim) seedRecords() map[string]any {
 	return out
 }
 
+// seedOrder is the order to create the seed records in: each after the
+// seed records it refers to ("tables" refs, else fields like planetId),
+// otherwise in the order of "seed".
+func (s *sim) seedOrder() []string {
+	deps := map[string][]string{}
+	for _, name := range s.cfg.Seed {
+		r := s.rd.recs[s.rd.n.table(name)]
+		if r == nil {
+			continue
+		}
+		tb := s.cfg.table(r.table, s.rd.n)
+		for _, k := range sortedKeys(r.data) {
+			target := refTable(k)
+			if tb != nil {
+				for f, ref := range tb.Refs {
+					if norm(f) == norm(k) {
+						target = s.rd.n.table(ref.To)
+					}
+				}
+			}
+			for _, other := range s.cfg.Seed {
+				if other != name && s.rd.n.table(other) == target && !contains(deps[name], other) {
+					deps[name] = append(deps[name], other)
+				}
+			}
+		}
+	}
+	var out []string
+	for len(out) < len(s.cfg.Seed) {
+		next := ""
+		for _, name := range s.cfg.Seed {
+			if contains(out, name) {
+				continue
+			}
+			ready := true
+			for _, d := range deps[name] {
+				ready = ready && contains(out, d)
+			}
+			if ready {
+				next = name
+				break
+			}
+		}
+		if next == "" { // a cycle: the rest in the order of "seed"
+			for _, name := range s.cfg.Seed {
+				if !contains(out, name) {
+					out = append(out, name)
+				}
+			}
+			break
+		}
+		out = append(out, next)
+	}
+	return out
+}
+
 // step follows one case and returns its example; nil if there is none to
 // write.
 func (s *sim) step(c *cases.Case) *example {

@@ -39,6 +39,7 @@ type wop struct {
 	sent     bool      // sent and answered with 2xx (a DELETE also with 404)
 	seq      int       // the number of its request in the log
 	failed   bool      // sent and rejected
+	held     bool      // not sent on purpose: no copy of its record can be made
 	why      string    // why it has no record, for the notes
 }
 
@@ -381,7 +382,7 @@ func (w *writes) writeAll(xs []*wop) {
 		}
 	}
 	for _, d := range kindOf(xs, kindDelete) {
-		if !w.needs[d.c.Op.ID] || d.sent || d.failed {
+		if !w.needs[d.c.Op.ID] || d.sent || d.failed || d.held {
 			continue
 		}
 		w.resolve(d)
@@ -394,15 +395,25 @@ func (w *writes) writeAll(xs []*wop) {
 			continue
 		}
 		cr := w.creator(d.table, d.rec)
-		if cr == nil {
+		switch {
+		case cr == nil && w.copied(d.table):
+			w.res.note(CodeBuilt, d.c.Op.ID, "DELETE %s is not sent: no POST of the spec creates a copy of the %s to delete; its example is built from the %s of %s",
+				d.c.Op.Path, d.table, d.table, d.rec.from)
+		case cr == nil:
 			w.res.note(CodeBuilt, d.c.Op.ID, "DELETE %s is not sent: no POST of the spec creates the %s again, its data would be lost; its example is built from the %s of %s",
 				d.c.Op.Path, d.table, d.table, d.rec.from)
-			continue
+		case w.copied(d.table):
+			w.cycle(d, cr, d.rec)
+		case w.cascades(d.table) != "":
+			w.res.note(CodeBuilt, d.c.Op.ID, "DELETE %s is not sent: it would also delete the %s rows of the %s (\"tables\": ON DELETE CASCADE), which no POST creates again; "+
+				"give the %s an entry in \"tables\" so the run deletes a copy; its example is built from the %s of %s",
+				d.c.Op.Path, w.cascades(d.table), d.table, w.rd.dto(d.table), d.table, d.rec.from)
+		default:
+			w.recreate(d, d.url, d.vals, cr, d.rec)
 		}
-		w.recreate(d, d.url, d.vals, cr, d.rec)
 	}
 	for _, cr := range kindOf(xs, kindCreate) {
-		if !w.needs[cr.c.Op.ID] || cr.sent || cr.failed {
+		if !w.needs[cr.c.Op.ID] || cr.sent || cr.failed || cr.held {
 			continue
 		}
 		w.resolve(cr)
@@ -415,12 +426,22 @@ func (w *writes) writeAll(xs []*wop) {
 			continue
 		}
 		d, u, vals := w.remover(cr.table, cr.rec)
-		if d == nil {
+		switch {
+		case d == nil && w.copied(cr.table):
+			w.res.note(CodeBuilt, cr.c.Op.ID, "POST %s is not sent: no DELETE of the spec removes the copy it would create; its body is the answer of %s",
+				cr.c.Op.Path, cr.rec.from)
+		case d == nil:
 			w.res.note(CodeBuilt, cr.c.Op.ID, "POST %s is not sent: no DELETE of the spec removes a %s, so the POST would conflict with it; its body is the answer of %s",
 				cr.c.Op.Path, cr.table, cr.rec.from)
-			continue
+		case w.copied(cr.table):
+			w.cycle(d, cr, cr.rec)
+		case w.cascades(cr.table) != "":
+			w.res.note(CodeBuilt, cr.c.Op.ID, "POST %s is not sent: the DELETE before it would also delete the %s rows of the %s (\"tables\": ON DELETE CASCADE); "+
+				"give the %s an entry in \"tables\" so the run creates and deletes a copy; its body is the answer of %s",
+				cr.c.Op.Path, w.cascades(cr.table), cr.table, w.rd.dto(cr.table), cr.rec.from)
+		default:
+			w.recreate(d, u, vals, cr, cr.rec)
 		}
-		w.recreate(d, u, vals, cr, cr.rec)
 	}
 	for _, x := range kindOf(xs, kindAction) {
 		if w.needs[x.c.Op.ID] {
@@ -518,6 +539,7 @@ func (w *writes) recreate(d *wop, u string, vals map[string]pval, cr *wop, r *re
 	if resp, ok := w.send(post, http.MethodPost, fmt.Sprintf("create the %s again that #%d deleted (%s)", r.table, del.seq, cr.c.Op.ID)); !ok {
 		w.res.problem(CodeWriteFailed, cr.c.Op.ID, "the %s deleted by #%d is missing in the instance now; create it again with the body of #%d (%s)",
 			r.table, del.seq, resp.Seq, clip(text(post.body)))
+		w.conflict(post, resp, r, true)
 		return
 	}
 	w.newID(r, post)

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -37,6 +38,20 @@ type starport struct {
 	gone     map[string]bool // GET paths that answer 404
 	revision bool            // a PUT of a dock config sets its "revision"
 	bodies   map[string]any  // the last body per "METHOD path"
+	// soft makes DELETE of a ship only mark it: it stays in the unique
+	// check of shipCode, as a soft delete with a unique index does
+	soft bool
+}
+
+// live are the ships that are not marked as deleted.
+func (sp *starport) live() []map[string]any {
+	var out []map[string]any
+	for _, s := range sp.ships {
+		if s["_deleted"] == nil {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 func newStarport() *starport {
@@ -139,7 +154,7 @@ func (sp *starport) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		reply(404, nil)
 	case len(seg) == 2 && seg[1] == "search":
 		out := []any{}
-		for _, s := range sp.ships {
+		for _, s := range sp.live() {
 			out = append(out, ship(s))
 		}
 		reply(200, out)
@@ -149,7 +164,7 @@ func (sp *starport) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if d["dockCode"] != seg[3] {
 				continue
 			}
-			for _, s := range sp.ships {
+			for _, s := range sp.live() {
 				if fmt.Sprint(s["dockId"]) == fmt.Sprint(d["id"]) {
 					out = append(out, ship(s))
 				}
@@ -169,18 +184,22 @@ func (sp *starport) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		reply(201, ship(s))
 	case len(seg) == 3 && seg[2] == "Ship":
 		out := []any{}
-		for _, s := range sp.ships {
+		for _, s := range sp.live() {
 			out = append(out, ship(s))
 		}
 		reply(200, out)
 	case len(seg) == 3 && seg[0] == "Ship":
 		for i, s := range sp.ships {
-			if fmt.Sprint(s["id"]) != seg[2] {
+			if fmt.Sprint(s["id"]) != seg[2] || s["_deleted"] != nil {
 				continue
 			}
 			switch r.Method {
 			case http.MethodDelete:
-				sp.ships = append(sp.ships[:i], sp.ships[i+1:]...)
+				if sp.soft {
+					s["_deleted"] = true
+				} else {
+					sp.ships = append(sp.ships[:i], sp.ships[i+1:]...)
+				}
 				reply(204, nil)
 			case http.MethodPut:
 				for k, v := range body {
@@ -236,7 +255,7 @@ func runConfig(t *testing.T, sp *starport, specPath, config string, old *Recorde
 	}
 	var log []string
 	c := &Client{Opt: discover.Options{BaseURL: srv.URL}, Log: func(e Entry) { log = append(log, e.String()) }}
-	res, err := Run(context.Background(), Input{Spec: s, Doc: doc, Config: cfg, Client: c, Writes: writes, Prev: prev})
+	res, err := Run(context.Background(), Input{Spec: s, Doc: doc, Config: cfg, Client: c, Writes: writes, Prev: prev, Token: "t1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1517,5 +1536,199 @@ func TestRecordNotSent(t *testing.T) {
 	sent, _ := sp.bodies["PUT /Ship/id/101"].(map[string]any)
 	if sent["shipCode"] != "S1" || sent["name"] != "Falcon" {
 		t.Errorf("PUT body %v", sent)
+	}
+}
+
+const copyConfig = `{
+  "params": {"planetCode": "P1"},
+  "seed": ["Dock", "Planet"],
+  "select": {"Dock": {"details": {"/Planet/{planetCode}/Dock/{dockCode}/Config": {"mandatory": ["settings.mode"]}}}},
+  "tables": {"Ship": {"name": "ships", "softDelete": true, "unique": [{"name": "uidx_code", "fields": ["ship_code"]}],
+                      "refs": {"dockId": {"to": "Dock", "onDelete": "CASCADE"}}}},
+  "$apitest": {"DeleteLast": true}
+}`
+
+// A table in "tables" is written through a copy: the run creates a copy
+// with another shipCode and deletes the copy; the ships it read stay as
+// they are, also with a soft delete that keeps deleted rows in the unique
+// index. The examples are the same as without the copy.
+func TestRecordCopy(t *testing.T) {
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "record.yaml")
+	b, err := os.ReadFile("../../../testdata/gen/record.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(specPath, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sp := newStarport()
+	sp.soft = true
+	res, doc, _ := runConfig(t, sp, specPath, copyConfig, nil, true)
+	all := notes(res)
+	if len(res.Problems) > 0 {
+		t.Fatalf("problems:\n%s", all)
+	}
+	want := "PUT /Planet/P1/Dock/D2/Config, POST /Ship/search, PUT /Ship/id/101, POST /Planet/P1/Ship, DELETE /Ship/id/104, POST /Planet/P1/Dock/D2/Ship, DELETE /Ship/id/105"
+	if got := strings.Join(sp.sent, ", "); got != want {
+		t.Errorf("writes:\n got %s\nwant %s", got, want)
+	}
+	if got := sp.bodies["POST /Planet/P1/Ship"].(map[string]any)["shipCode"]; got != "S1-t1" {
+		t.Errorf("the copy has shipCode %v", got)
+	}
+	var live []string
+	for _, s := range sp.live() {
+		live = append(live, fmt.Sprint(s["id"], s["shipCode"]))
+	}
+	if strings.Join(live, ",") != "100S2,101S1,103S3" {
+		t.Errorf("ships after the run: %v", live)
+	}
+	resp := func(path, method, code string) []string {
+		return []string{"paths", path, method, "responses", code, "content", "application/json"}
+	}
+	equal(t, "CreateDockShip body", exampleAt(t, doc, "paths", "/Planet/{planetCode}/Dock/{dockCode}/Ship", "post", "requestBody", "content", "application/json"),
+		`{"shipCode":"S3","dockId":1,"name":"Hawk"}`)
+	equal(t, "CreateShip body", exampleAt(t, doc, "paths", "/Planet/{planetCode}/Ship", "post", "requestBody", "content", "application/json"),
+		`{"shipCode":"S1","dockId":1,"name":"Falcon"}`)
+	created := exampleAt(t, doc, resp("/Planet/{planetCode}/Ship", "post", "201")...).(map[string]any)
+	delete(created, "updatedAt")
+	equal(t, "CreateShip answer", created, `{"id":2,"shipCode":"S1","dockId":1,"name":"Falcon"}`)
+	equal(t, "{id}", exampleAt(t, doc, "paths", "/Ship/id/{id}", "parameters", "0"), `2`)
+	for _, want := range []string{"UNIQUE_SOFT_DELETE Ship: the unique index uidx_code (ship_code)"} {
+		if !strings.Contains(all, want) {
+			t.Errorf("notes lack %q:\n%s", want, all)
+		}
+	}
+	for _, not := range []string{"DATA_CHANGED", "UNIQUE_CONFLICT", "COPY_LEFT"} {
+		if strings.Contains(all, not) {
+			t.Errorf("notes have %s:\n%s", not, all)
+		}
+	}
+	// a Dock refers to its planet: the planet is created first
+	if got := strings.Join(res.Recorded.SeedOrder, ","); got != "Planet,Dock" {
+		t.Errorf("seed order %s", got)
+	}
+}
+
+// Without "tables" a POST after a soft delete violates the unique index:
+// the run names the cause and how to restore the row.
+func TestRecordSoftDeleteConflict(t *testing.T) {
+	sp := newStarport()
+	sp.soft = true
+	res, _, _ := runRecord(t, sp, "../../../testdata/gen/record.yaml", nil, true)
+	all := notes(res)
+	for _, want := range []string{"UNIQUE_CONFLICT CreateShip: ", "answers 409: it violates a unique index", "UPDATE ship SET deleted_at = NULL WHERE id = 101",
+		`"tables": {"ShipRead": {"unique"`} {
+		if !strings.Contains(all, want) {
+			t.Errorf("notes lack %q:\n%s", want, all)
+		}
+	}
+}
+
+// A copy needs a field it can change: an index of references only stops
+// the copy, and the writes are built instead of sent.
+func TestRecordCopyOnlyRefs(t *testing.T) {
+	sp := newStarport()
+	config := strings.Replace(copyConfig, `"fields": ["ship_code"]`, `"fields": ["dockId"]`, 1)
+	res, _, _ := runConfig(t, sp, "../../../testdata/gen/record.yaml", config, nil, true)
+	all := notes(res)
+	if slices.Contains(sp.sent, "DELETE /Ship/id/101") || slices.Contains(sp.sent, "POST /Planet/P1/Ship") {
+		t.Errorf("writes: %v", sp.sent)
+	}
+	if !strings.Contains(all, "BUILT CreateShip: POST /Planet/{planetCode}/Ship and DELETE /Ship/id/{id} are not sent: its unique index (dockId) holds only references") ||
+		strings.Count(all, "BUILT CreateShip") != 1 {
+		t.Errorf("notes:\n%s", all)
+	}
+}
+
+func TestVary(t *testing.T) {
+	limit := uint64(4)
+	for _, c := range []struct {
+		v    any
+		s    *openapi3.Schema
+		want any
+	}{
+		{"S1", &openapi3.Schema{Type: &openapi3.Types{"string"}}, "S1-t1"},
+		{"ABCD", &openapi3.Schema{Type: &openapi3.Types{"string"}, MaxLength: &limit}, "A-t1"},
+		{"AB12", &openapi3.Schema{Type: &openapi3.Types{"string"}, Pattern: "^[A-Z]{2}[0-9]{2}$"}, nil},
+		{"x", &openapi3.Schema{Type: &openapi3.Types{"string"}, Enum: []any{"x", "y"}}, nil},
+	} {
+		got, ok := vary(c.v, c.s, "t1")
+		if c.want == nil {
+			if c.s.Pattern != "" {
+				if !ok || got == c.v || !regexp.MustCompile(c.s.Pattern).MatchString(got.(string)) {
+					t.Errorf("vary(%v) = %v, %v; want a value of the pattern", c.v, got, ok)
+				}
+				continue
+			}
+			if ok {
+				t.Errorf("vary(%v) = %v; want none", c.v, got)
+			}
+			continue
+		}
+		if !ok || got != c.want {
+			t.Errorf("vary(%v) = %v, %v; want %v", c.v, got, ok, c.want)
+		}
+	}
+	n, ok := vary(json.Number("7"), &openapi3.Schema{Type: &openapi3.Types{"integer"}}, "t1")
+	if !ok || n == json.Number("7") {
+		t.Errorf("vary(7) = %v, %v", n, ok)
+	}
+	if a, _ := vary(json.Number("7"), nil, "t1"); a != n {
+		t.Errorf("vary is not stable: %v, %v", a, n)
+	}
+	u, ok := vary("6f1c3a52-1f0e-4c39-9a51-2b5b3c1d9e10", &openapi3.Schema{Type: &openapi3.Types{"string"}, Format: "uuid"}, "t1")
+	if !ok || u == "6f1c3a52-1f0e-4c39-9a51-2b5b3c1d9e10" {
+		t.Errorf("vary(uuid) = %v, %v", u, ok)
+	}
+}
+
+func TestConfigTables(t *testing.T) {
+	s, err := spec.Load(context.Background(), "../../../testdata/gen/record.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for in, want := range map[string]string{
+		`{"tables": {"Ship": {"unique": [{"fields": []}]}}}`:           `Ship.unique[0]: "fields" lists no field`,
+		`{"tables": {"Ship": {"refs": {"dockId": {}}}}}`:               `Ship.refs.dockId: "to" names no DTO`,
+		`{"tables": {"Ship": {"uniq": []}}}`:                           `unknown field "uniq"`,
+		`{"tables": {"Moon": {}}}`:                                     `"tables".Moon: no DTO of the spec belongs to it`,
+		`{"tables": {"Ship": {"refs": {"dockId": {"to": "Garden"}}}}}`: `"tables".Ship.refs.dockId: no DTO "Garden" in the spec`,
+	} {
+		c, err := Parse([]byte(in))
+		if err == nil {
+			err = c.check(s, newNamer(s))
+		}
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: %v, want %q", in, err, want)
+		}
+	}
+	c, err := Parse([]byte(`{"tables": {"$comment": "x", "ShipRead": {"$comment": "y", "softDelete": true}}}`))
+	if err != nil || c.check(s, newNamer(s)) != nil || c.table("ship", newNamer(s)) == nil || c.table("dock", newNamer(s)) != nil {
+		t.Errorf("tables: %v %+v", err, c)
+	}
+}
+
+// A POST of a record of the seed would collide with the seed in the empty
+// environment too: its example shows the copy's values ("-copy"), and the
+// environment gives it the next id.
+func TestRecordCopySeed(t *testing.T) {
+	sp := newStarport()
+	config := strings.Replace(copyConfig, `"seed": ["Dock", "Planet"]`, `"seed": ["Planet", "Dock", "Ship"]`, 1)
+	res, doc, _ := runConfig(t, sp, "../../../testdata/gen/record.yaml", config, nil, true)
+	all := notes(res)
+	if len(res.Problems) > 0 {
+		t.Fatalf("problems:\n%s", all)
+	}
+	if strings.Contains(all, "DUPLICATE_CREATE CreateShip") {
+		t.Errorf("notes:\n%s", all)
+	}
+	equal(t, "CreateShip body", exampleAt(t, doc, "paths", "/Planet/{planetCode}/Ship", "post", "requestBody", "content", "application/json"),
+		`{"shipCode":"S1-copy","dockId":1,"name":"Falcon"}`)
+	created := exampleAt(t, doc, "paths", "/Planet/{planetCode}/Ship", "post", "responses", "201", "content", "application/json").(map[string]any)
+	delete(created, "updatedAt")
+	equal(t, "CreateShip answer", created, `{"id":3,"shipCode":"S1-copy","dockId":1,"name":"Falcon"}`)
+	if got := strings.Join(res.Recorded.SeedOrder, ","); got != "Planet,Dock,Ship" {
+		t.Errorf("seed order %s", got)
 	}
 }
