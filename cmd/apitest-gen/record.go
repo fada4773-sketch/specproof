@@ -86,17 +86,19 @@ func recordCommand(o *options, out io.Writer) (err error) {
 		return err
 	}
 	rows, stop := findingRows(res, o.ignoreLinting)
-	lg.Findings, lg.Probes = rows, res.Probes
+	lg.Findings, lg.Probes, lg.Coverage = rows, res.Probes, res.Coverage
 	summary := fmt.Sprintf("%d operations, %d with new or changed schemas, %d unchanged; %d complete; %d records from %q; requests: %s",
 		res.Stats.Ops, res.Stats.Written, res.Stats.Unchanged, res.Stats.Done, res.Stats.Reused, record.RecordedKey, counts(client.Count))
 	lg.Summary = summary
 	section(full, st, "SUMMARY")
 	fmt.Fprintf(full, "  record: %s\n", summary)
 	findings(full, st, rows)
+	coverage(full, st, res.Coverage)
 	if o.showBodies {
 		fmt.Fprintf(out, "apitest-gen record: %s ← %s\n", o.spec, o.baseURL)
 		fmt.Fprintf(out, "  %s\n", summary)
 		fmt.Fprintf(out, "  findings: %s\n", findingCounts(st, rows))
+		fmt.Fprintf(out, "  examples: %s\n", coverageLine(st, res.Coverage))
 	}
 	if stop > 0 {
 		return fmt.Errorf("%d problems; nothing was written", stop)
@@ -277,6 +279,33 @@ func findings(out io.Writer, st style, rows []finding) {
 		legend = append(legend, []cell{{c, bold}, {meaning + " → " + fix, ""}})
 	}
 	table(out, st, []string{"CODE", "MEANING → WHAT TO DO"}, legend)
+}
+
+// coverageLine is "41 of 44 places have an example (30 written, 11 kept),
+// 3 without; 2 values generated".
+func coverageLine(st style, c record.Coverage) string {
+	without := st.paint(green, "0 without")
+	if c.Without() > 0 {
+		without = st.paint(yellow, fmt.Sprintf("%d without", c.Without()))
+	}
+	return fmt.Sprintf("%d of %d places have an example (%d written by this run, %d kept from the last output), %s; %d values generated (required, no data read)",
+		c.Run+c.Kept, c.Places, c.Run, c.Kept, without, c.Generated)
+}
+
+// coverage writes how many places have an example, then the places
+// without one and why.
+func coverage(out io.Writer, st style, c record.Coverage) {
+	section(out, st, "EXAMPLES")
+	fmt.Fprintln(out, "  "+coverageLine(st, c))
+	fmt.Fprintln(out, st.paint(dim, "  places: path and required query parameters, the request body, the first 2xx response with JSON content"))
+	if c.Without() == 0 {
+		return
+	}
+	var cells [][]cell
+	for _, g := range c.Missing {
+		cells = append(cells, []cell{{g.Op, bold}, {g.Place, yellow}, {g.Why, ""}})
+	}
+	table(out, st, []string{"OPERATION", "PLACE", "WHY IT HAS NO EXAMPLE"}, cells)
 }
 
 // codesOf are the codes of the findings, each once, in their order.

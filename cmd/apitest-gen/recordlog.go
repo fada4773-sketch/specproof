@@ -27,6 +27,8 @@ type runLog struct {
 	// Probes are the verdicts on the requests that checked a candidate for
 	// "select", by request number.
 	Probes map[int]string
+	// Coverage tells which places hold an example after the run.
+	Coverage record.Coverage
 }
 
 // write renders the log as one HTML page and returns its absolute path.
@@ -56,6 +58,7 @@ type (
 		Tags                                        []tagView
 		Files                                       []string
 		Requests                                    int
+		Examples                                    record.Coverage
 	}
 	countView struct {
 		Label, Class string
@@ -86,7 +89,7 @@ type (
 
 func (l *runLog) view() logView {
 	v := logView{Title: "apitest-gen record", Spec: l.Spec, BaseURL: l.BaseURL, Started: l.Started.Format("2006-01-02 15:04:05"),
-		Summary: l.Summary, Files: l.Files, Requests: len(l.Entries)}
+		Summary: l.Summary, Files: l.Files, Requests: len(l.Entries), Examples: l.Coverage}
 	if l.Err != nil {
 		v.Err = l.Err.Error()
 	}
@@ -280,6 +283,14 @@ ul.files{margin:0;padding-left:20px}
 <p class="mono">{{.Summary}}</p>
 {{if .Files}}<ul class="files mono">{{range .Files}}<li>{{.}}</li>{{end}}</ul>{{end}}
 </div></details></section>
+
+{{with .Examples}}<section><details open><summary><h2>Examples</h2><span class="meta">{{.Places}} places</span></summary><div class="body">
+<div class="chips"><span class="chip ok">{{.Run}} written by this run</span><span class="chip info">{{.Kept}} kept from the last output</span>{{if .Missing}}<span class="chip warn">{{len .Missing}} without example</span>{{else}}<span class="chip ok">every place has one</span>{{end}}<span class="chip probe">{{.Generated}} values generated</span></div>
+<p class="meta">Places: path and required query parameters, the request body, the first 2xx response with JSON content. Generated: required fields no data read has.</p>
+{{if .Missing}}<table><tr><th>Operation</th><th>Place</th><th>Why it has no example</th></tr>
+{{range .Missing}}<tr><td class="mono">{{.Op}}</td><td class="mono">{{.Place}}</td><td class="msg">{{.Why}}</td></tr>
+{{end}}</table>{{end}}
+</div></details></section>{{end}}
 
 {{if .Findings}}<section><details open><summary><h2>Findings</h2><span class="meta">{{len .Findings}}</span></summary>
 <table><tr><th></th><th>Code</th><th>Where</th><th>Message</th></tr>

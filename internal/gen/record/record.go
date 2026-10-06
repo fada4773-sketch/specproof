@@ -108,6 +108,9 @@ type Result struct {
 	// Probes are the verdicts on the requests that checked a candidate for
 	// "select", by request number: why it was rejected, or that it passes.
 	Probes map[int]string
+	// Coverage tells which places of the spec hold an example now and why
+	// the others have none.
+	Coverage Coverage
 }
 
 // verdict keeps what a request that checked a candidate of t decided.
@@ -323,6 +326,8 @@ func Run(ctx context.Context, in Input) (*Result, error) {
 	}
 	res.Stats.Written = len(ops) - res.Stats.Unchanged
 	res.Stats.Done = len(done)
+	res.Coverage = ex.coverage(in.Spec, res, ops, needs)
+	res.Coverage.Generated = len(w.generated)
 	return res, nil
 }
 

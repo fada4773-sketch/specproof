@@ -16,6 +16,14 @@ contain breaking changes, which are listed here.
 
 ### Features
 
+- `apitest-gen record` shows how many places of the spec hold an example:
+  path and required query parameters, the request body and the first 2xx
+  response with JSON content of every operation. The console (`EXAMPLES`)
+  and `record-log.html` (section "Examples") show how many this run wrote,
+  how many were kept from the last output, how many values were generated
+  because no data read had them, and every place without example with the
+  reason (the note of the run, an operation not in the run, an unchanged
+  operation whose last output lacks it).
 - `apitest-gen record -show-bodies` writes every request with its body and
   answer, the findings, what their codes mean and the summary into
   `record-log.html` in the current directory: one HTML page with collapsible

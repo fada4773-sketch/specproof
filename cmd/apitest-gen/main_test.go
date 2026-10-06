@@ -502,7 +502,8 @@ func TestRecordCommand(t *testing.T) {
 		t.Fatalf("record: %d\n%s\n%s", code, out, errOut)
 	}
 	for _, want := range []string{"REQUESTS to " + srv.URL, "── Dock", "#001 GET", "record: 13 operations, 13 with new or changed schemas",
-		"FINDINGS", "WHAT THE CODES MEAN", "examples written", `"$recorded" updated`, "2 seed records"} {
+		"FINDINGS", "WHAT THE CODES MEAN", "examples written", `"$recorded" updated`, "2 seed records",
+		"EXAMPLES", "places have an example", "WHY IT HAS NO EXAMPLE"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output misses %q:\n%s", want, out)
 		}
@@ -557,7 +558,8 @@ func TestRecordShowBodies(t *testing.T) {
 	if code != 0 || errOut != "" {
 		t.Fatalf("record: %d\n%s\n%s", code, out, errOut)
 	}
-	for _, want := range []string{"apitest-gen record: ", "13 operations", "findings: ", "examples written", "log: " + filepath.Join(dir, "record-log.html")} {
+	for _, want := range []string{"apitest-gen record: ", "13 operations", "findings: ", "examples written", "log: " + filepath.Join(dir, "record-log.html"),
+		"examples: ", "places have an example", " without; "} {
 		if !strings.Contains(out, want) {
 			t.Errorf("console misses %q:\n%s", want, out)
 		}
@@ -573,7 +575,8 @@ func TestRecordShowBodies(t *testing.T) {
 	}
 	page := string(b)
 	for _, want := range []string{"<details", "#001", "/Planet/P1/Dock", "Findings", "FETCH_FAILED", "What the codes mean",
-		`<span class="j-key">&#34;name&#34;</span>: <span class="j-str">&#34;Mars \u003cb\u003e&#34;</span>`, `class="req failed" open`, "examples written"} {
+		`<span class="j-key">&#34;name&#34;</span>: <span class="j-str">&#34;Mars \u003cb\u003e&#34;</span>`, `class="req failed" open`, "examples written",
+		"<h2>Examples</h2>", "without example</span>", "Why it has no example", "<td class=\"mono\">GetShips</td><td class=\"mono\">response 200</td><td class=\"msg\">NO_DATA: "} {
 		if !strings.Contains(page, want) {
 			t.Errorf("log misses %q", want)
 		}

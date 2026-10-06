@@ -72,6 +72,8 @@ type writes struct {
 	// filled tells, per operation, where the parts of its last body that
 	// its record lacks come from
 	filled map[string][]string
+	// generated are the parts the assembler generated: "operation pointer"
+	generated map[string]bool
 }
 
 // classify takes the writing cases of the run, in its order.

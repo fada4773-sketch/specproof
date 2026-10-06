@@ -2478,3 +2478,36 @@ func TestAssemblerParts(t *testing.T) {
 		t.Errorf("a dock other than dockId 99: %v", got)
 	}
 }
+
+// The coverage counts the places apitest needs an example at: those this
+// run wrote, those kept from the last output, and those without one with
+// the reason.
+func TestRecordCoverage(t *testing.T) {
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "record.yaml")
+	b, err := os.ReadFile("../../../testdata/gen/record.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(specPath, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sp := newStarport()
+	sp.gone = map[string]bool{"/Planet/P1": true}
+	res, doc, _ := runRecord(t, sp, specPath, nil, true)
+	c := res.Coverage
+	if c.Places != 32 || c.Run != 31 || c.Kept != 0 || c.Without() != 1 {
+		t.Fatalf("coverage: %+v", c)
+	}
+	if g := c.Missing[0]; g.Op != "GetPlanet" || g.Place != "response 200" || !strings.HasPrefix(g.Why, "NO_DATA: not read (status 404") {
+		t.Errorf("gap: %+v", g)
+	}
+	if err := doc.Save(specPath); err != nil {
+		t.Fatal(err)
+	}
+	sp.gone = nil
+	res2, _, _ := runRecord(t, sp, specPath, res.Recorded, true)
+	if c := res2.Coverage; c.Places != 32 || c.Run != 2 || c.Kept != 30 || c.Without() != 0 {
+		t.Errorf("second run: %+v", c)
+	}
+}

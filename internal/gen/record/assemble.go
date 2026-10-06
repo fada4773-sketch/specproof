@@ -290,6 +290,10 @@ func (a *assembler) generate(s *openapi3.Schema, name, path string) (any, bool) 
 		return nil, false
 	}
 	a.note(path, "generated: the schema requires it, no data read has it")
+	if a.w.generated == nil {
+		a.w.generated = map[string]bool{}
+	}
+	a.w.generated[a.seed+" "+path] = true
 	return spec.Normalize(r.Value), true
 }
 
