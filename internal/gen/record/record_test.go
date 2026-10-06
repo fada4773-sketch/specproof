@@ -1837,3 +1837,288 @@ func TestRecordOrigin(t *testing.T) {
 		t.Errorf("origin of {id}: %+v", update)
 	}
 }
+
+// crewPort is an instance whose docks hold their crew: a POST of a dock
+// creates its crew rows, a DELETE only marks the dock as deleted (GORM soft
+// delete), its crew rows stay and GET /Crew lists them.
+type crewPort struct {
+	mu     sync.Mutex
+	docks  []map[string]any
+	crew   []map[string]any
+	nextID int
+	sent   []string
+	bodies map[string]any
+	// audit makes a POST of a dock add a crew row its answer does not show
+	audit bool
+}
+
+func newCrewPort() *crewPort {
+	n := func(i int) json.Number { return json.Number(strconv.Itoa(i)) }
+	cp := &crewPort{nextID: 100, bodies: map[string]any{}}
+	cp.docks = []map[string]any{
+		{"id": n(30), "dockCode": "D1", "name": "North"},
+		{"id": n(31), "dockCode": "D2", "name": "South"},
+	}
+	cp.crew = []map[string]any{
+		{"id": n(1), "dockId": n(30), "name": "Ann"},
+		{"id": n(2), "dockId": n(31), "name": "Ben"},
+		{"id": n(3), "dockId": n(31), "name": "Cid"},
+	}
+	return cp
+}
+
+func (cp *crewPort) withCrew(d map[string]any) map[string]any {
+	out := map[string]any{}
+	for k, v := range d {
+		if k != "_deleted" {
+			out[k] = v
+		}
+	}
+	crew := []any{}
+	for _, c := range cp.crew {
+		if fmt.Sprint(c["dockId"]) == fmt.Sprint(d["id"]) {
+			crew = append(crew, c)
+		}
+	}
+	out["crew"] = crew
+	return out
+}
+
+func (cp *crewPort) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	cp.mu.Lock()
+	defer cp.mu.Unlock()
+	reply := func(status int, v any) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		if v != nil {
+			_ = json.NewEncoder(w).Encode(v)
+		}
+	}
+	var body map[string]any
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+	}
+	if r.Method != http.MethodGet {
+		cp.sent = append(cp.sent, r.Method+" "+r.URL.Path)
+		cp.bodies[r.Method+" "+r.URL.Path] = body
+	}
+	seg := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	switch {
+	case r.URL.Path == "/Dock" && r.Method == http.MethodGet:
+		out := []any{}
+		for _, d := range cp.docks {
+			if d["_deleted"] == nil {
+				out = append(out, cp.withCrew(d))
+			}
+		}
+		reply(200, out)
+	case r.URL.Path == "/Dock" && r.Method == http.MethodPost:
+		for _, d := range cp.docks { // the unique index counts deleted rows
+			if d["dockCode"] == body["dockCode"] {
+				reply(409, map[string]any{"message": "duplicate key value violates unique constraint"})
+				return
+			}
+		}
+		cp.nextID++
+		d := map[string]any{"id": json.Number(strconv.Itoa(cp.nextID)), "dockCode": body["dockCode"], "name": body["name"]}
+		cp.docks = append(cp.docks, d)
+		if crew, ok := body["crew"].([]any); ok {
+			for _, c := range crew {
+				cp.nextID++
+				m, _ := c.(map[string]any)
+				cp.crew = append(cp.crew, map[string]any{"id": json.Number(strconv.Itoa(cp.nextID)), "dockId": d["id"], "name": m["name"]})
+			}
+		}
+		answer := cp.withCrew(d)
+		if cp.audit {
+			cp.nextID++
+			cp.crew = append(cp.crew, map[string]any{"id": json.Number(strconv.Itoa(cp.nextID)), "dockId": d["id"], "name": "audit"})
+		}
+		reply(201, answer)
+	case len(seg) == 3 && seg[0] == "Crew" && seg[1] == "id" && r.Method == http.MethodDelete:
+		for i, c := range cp.crew {
+			if fmt.Sprint(c["id"]) == seg[2] {
+				cp.crew = append(cp.crew[:i], cp.crew[i+1:]...)
+				reply(204, nil)
+				return
+			}
+		}
+		reply(404, nil)
+	case len(seg) == 3 && seg[0] == "Dock" && seg[1] == "id" && r.Method == http.MethodDelete:
+		for _, d := range cp.docks {
+			if fmt.Sprint(d["id"]) == seg[2] && d["_deleted"] == nil {
+				d["_deleted"] = true // soft delete: the crew rows stay
+				reply(204, nil)
+				return
+			}
+		}
+		reply(404, nil)
+	case len(seg) == 4 && seg[1] == "pilot" && seg[2] == "id":
+		switch seg[3] {
+		case "30":
+			reply(200, map[string]any{"PilotCode": "b2"})
+		case "31":
+			reply(200, map[string]any{"PilotCode": "a1"})
+		default:
+			reply(404, nil)
+		}
+	case r.URL.Path == "/Crew":
+		out := []any{}
+		for _, c := range cp.crew {
+			out = append(out, c)
+		}
+		reply(200, out)
+	default:
+		reply(404, nil)
+	}
+}
+
+const crewConfig = `{
+  "select": {"Dock": {"details": {"/Dock/pilot/id/{id}": {"mandatory": ["PilotCode"], "equal": {"PilotCode": "a1"}}}}},
+  "tables": {"Dock": {"softDelete": true, "unique": [{"fields": ["dockCode"], "where": "deleted_at IS NULL"}]}}
+}`
+
+func runCrew(t *testing.T, cp *crewPort, config string) (*Result, []Entry, *yamldoc.Doc) {
+	t.Helper()
+	return runCrewSpec(t, cp, config, "../../../testdata/gen/record-crew.yaml")
+}
+
+func runCrewSpec(t *testing.T, cp *crewPort, config, path string) (*Result, []Entry, *yamldoc.Doc) {
+	t.Helper()
+	srv := httptest.NewServer(cp)
+	t.Cleanup(srv.Close)
+	s, err := spec.Load(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := yamldoc.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Parse([]byte(config))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var entries []Entry
+	c := &Client{Opt: discover.Options{BaseURL: srv.URL}, Log: func(e Entry) { entries = append(entries, e) }}
+	res, err := Run(context.Background(), Input{Spec: s, Doc: doc, Config: cfg, Client: c, Writes: true, Token: "t1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if testing.Verbose() {
+		for _, e := range entries {
+			t.Log(e.String())
+		}
+	}
+	return res, entries, doc
+}
+
+// A detail with a generic parameter ({id} after /pilot/id/) takes the field
+// of the candidate it checks, and both "mandatory" and "equal" decide: dock
+// D1 (pilot b2) is rejected, D2 (pilot a1) selected.
+func TestRecordDetailsGenericParam(t *testing.T) {
+	cp := newCrewPort()
+	res, entries, _ := runCrew(t, cp, crewConfig)
+	for _, p := range res.Problems {
+		if p.Code != CodeCopyLeft {
+			t.Fatalf("problems:\n%s", notes(res))
+		}
+	}
+	var urls []string
+	for _, e := range entries {
+		if e.Probe {
+			urls = append(urls, e.URL+" "+res.Probes[e.N])
+		}
+	}
+	if len(urls) < 2 || !strings.HasPrefix(urls[0], "/Dock/pilot/id/30 the dock is rejected") || !strings.Contains(urls[0], `PilotCode is not "a1"`) ||
+		urls[1] != `/Dock/pilot/id/31 the dock passes "select"` {
+		t.Errorf("select checks:\n%s", strings.Join(urls, "\n"))
+	}
+	// the GET itself takes the id of the selected dock too
+	if res.Probes == nil || strings.Contains(notes(res), "PARAM_UNKNOWN") {
+		t.Errorf("notes:\n%s", notes(res))
+	}
+	if got := cp.bodies["POST /Dock"].(map[string]any)["dockCode"]; got != "D2-t1" {
+		t.Errorf("the copy of %v", got)
+	}
+}
+
+// The copy of a dock goes with its crew. Without a DELETE of a crew
+// member the crew rows of the copy stay after the DELETE that only marks
+// the copy: one COPY_LEFT names them, and the check after the writes
+// leaves them out (no DATA_CHANGED for GET /Crew).
+func TestRecordCopyChildren(t *testing.T) {
+	cp := newCrewPort()
+	res, _, doc := runCrew(t, cp, crewConfig)
+	all := notes(res)
+	if strings.Contains(all, "DATA_CHANGED") || !strings.Contains(all, "COPY_LEFT CreateDock: #") || !strings.Contains(all, "so they stay: crew 102, crew 103; delete them by hand") {
+		t.Errorf("notes:\n%s", all)
+	}
+	if crew, _ := cp.bodies["POST /Dock"].(map[string]any)["crew"].([]any); len(crew) != 2 {
+		t.Errorf("the copy was sent without its crew: %v", cp.bodies["POST /Dock"])
+	}
+	body := exampleAt(t, doc, "paths", "/Dock", "post", "requestBody", "content", "application/json").(map[string]any)
+	if crew, _ := body["crew"].([]any); len(crew) != 2 || body["dockCode"] != "D2" {
+		t.Errorf("CreateDock body: %v", body)
+	}
+}
+
+// crewSpec is record-crew.yaml with a DELETE of a crew member by its id.
+func crewSpec(t *testing.T) string {
+	t.Helper()
+	b, err := os.ReadFile("../../../testdata/gen/record-crew.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	del := `  /Crew/id/{id}:
+    delete:
+      operationId: DeleteCrew
+      tags: [Crew]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: deleted
+components:`
+	path := filepath.Join(t.TempDir(), "record-crew.yaml")
+	if err := os.WriteFile(path, []byte(strings.Replace(string(b), "components:", del, 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// With a DELETE of a crew member by its id the run deletes the crew the
+// copy created, then the copy: nothing stays.
+func TestRecordCopyDeletesChildren(t *testing.T) {
+	cp := newCrewPort()
+	res, _, _ := runCrewSpec(t, cp, crewConfig, crewSpec(t))
+	all := notes(res)
+	if strings.Contains(all, "DATA_CHANGED") || strings.Contains(all, "COPY_LEFT") || len(cp.crew) != 3 {
+		t.Errorf("crew %v\n%s", cp.crew, all)
+	}
+	if got := strings.Join(cp.sent, ", "); got != "POST /Dock, DELETE /Crew/id/102, DELETE /Crew/id/103, DELETE /Dock/id/101" {
+		t.Errorf("writes: %s", got)
+	}
+}
+
+// A row the server adds for the copy that its answer does not show stays;
+// DATA_CHANGED names it as an element of the copy.
+func TestRecordCopyHiddenRows(t *testing.T) {
+	cp := newCrewPort()
+	cp.audit = true
+	res, entries, _ := runCrewSpec(t, cp, crewConfig, crewSpec(t))
+	post := 0
+	for _, e := range entries {
+		if e.Method == http.MethodPost {
+			post = e.N
+		}
+	}
+	all := notes(res)
+	if !strings.Contains(all, "DATA_CHANGED GetCrew: #") || !strings.Contains(all, fmt.Sprintf("new elements of copies: id 104 (dockId 101: the copy #%d created)", post)) {
+		t.Errorf("notes:\n%s", all)
+	}
+}

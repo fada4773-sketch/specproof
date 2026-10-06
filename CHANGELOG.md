@@ -27,6 +27,23 @@ contain breaking changes, which are listed here.
   error answer only rejects the candidate. The log shows them dim and
   marked "select check", with what each one decided (rejected and why, or
   passes); they count in no "failed".
+- `apitest-gen record`: the copy of a record goes with its nested records
+  (`crew: [{…}]`); the server creates them for the copy, and a DELETE that
+  only marks the copy (soft delete) left them, so the lists of them grew
+  after the writes (`DATA_CHANGED`, n → 2n). The run now deletes them
+  first, with a DELETE of the spec that addresses each one by the id the
+  answer of the copy shows. Those it cannot delete are named once
+  (`COPY_LEFT`) and left out of the check after the writes. A list that
+  grows by rows the answer did not show names its new elements that refer
+  to a copy.
+- `apitest-gen record`: looking for the POST that creates a record again no
+  longer resolves the POSTs of other tables before their tag read its
+  records (a POST at the path of its own list got no record).
+- `apitest-gen record`: a path parameter whose segment in front names no
+  table (`/Dock/pilot/id/{id}`) takes the field of a table a segment
+  further left names (`Dock.id`); in `select.<DTO>.details` that is the
+  candidate being checked. Before, such a detail had no value and rejected
+  every candidate.
 - `apitest-gen record`: every request carries where its values come from:
   each parameter (`"params".<key>`, the field of a selected record and the
   request it was selected from, the example or default of the spec) and

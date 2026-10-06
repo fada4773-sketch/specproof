@@ -123,6 +123,143 @@ func (w *writes) copyOf(op *spec.Operation, r *rec) (map[string]any, []variant, 
 	return cp, out, ""
 }
 
+// child is a record the POST of a copy created below it (a crew member in
+// its "crew"), as its answer shows it.
+type child struct {
+	table string
+	id    any
+	data  map[string]any
+}
+
+// childrenOf are the records with an id below the top level of the answer
+// to the POST of a copy: the elements of its lists and its objects.
+func (w *writes) childrenOf(op *spec.Operation, status int, body any) []child {
+	o, ok := body.(map[string]any)
+	if !ok {
+		return nil
+	}
+	props := responseProps(op, status)
+	var out []child
+	for _, k := range sortedKeys(o) {
+		var elems []any
+		var ref *openapi3.SchemaRef
+		p := propOf(props, k)
+		switch x := o[k].(type) {
+		case []any:
+			elems = x
+			if p != nil && p.Value != nil {
+				ref = p.Value.Items
+			}
+		case map[string]any:
+			elems, ref = []any{x}, p
+		}
+		t := w.rd.n.of(ref)
+		if t == "" {
+			t = tableName(strings.TrimSuffix(k, "s"))
+		}
+		for _, e := range elems {
+			if m, ok := e.(map[string]any); ok {
+				if _, id := idOf(m); id != nil {
+					out = append(out, child{table: t, id: id, data: m})
+				}
+			}
+		}
+	}
+	return out
+}
+
+// deleteChild deletes a record a copy created below it with a DELETE of
+// the spec that addresses it by its id; a key it shares with a record of
+// the instance (a name) could delete that one. It reports whether the
+// record is gone.
+func (w *writes) deleteChild(ch child, copySeq int, tag string) bool {
+	r := &rec{table: ch.table, data: ch.data, id: ch.id, keys: map[string]bool{},
+		note: fmt.Sprintf("the %s %s the copy #%d created", ch.table, text(ch.id), copySeq)}
+	for _, op := range w.rd.s.Ops {
+		if op.Method != http.MethodDelete || !names(op.Path, ch.table) {
+			continue
+		}
+		u, vals, ok := w.urlFor(op, r)
+		if !ok {
+			continue
+		}
+		byID := false
+		for _, v := range vals {
+			byID = byID || (v.table == ch.table && strings.EqualFold(v.field, "id") && same(v.v, ch.id))
+		}
+		if !byID {
+			continue
+		}
+		resp, err := w.rd.c.do(w.rd.ctx, http.MethodDelete, u, nil, tag,
+			fmt.Sprintf("delete the %s %s the copy #%d created below it (%s)", ch.table, text(ch.id), copySeq, op.ID), origin(vals)...)
+		return err == nil && (resp.ok() || resp.Status == http.StatusNotFound)
+	}
+	return false
+}
+
+// leave marks a record the run created and could not delete: the check
+// after the writes leaves it out of the lists.
+func (w *writes) leave(t string, id any) {
+	if w.left == nil {
+		w.left = map[string]map[string]bool{}
+	}
+	if w.left[t] == nil {
+		w.left[t] = map[string]bool{}
+	}
+	w.left[t][text(id)] = true
+}
+
+// dropLeft leaves out of an answer the elements of its lists that are
+// records the run created and could not delete.
+func (w *writes) dropLeft(v any, ref *openapi3.SchemaRef) any {
+	if len(w.left) == 0 {
+		return v
+	}
+	var s *openapi3.Schema
+	if ref != nil {
+		s = ref.Value
+	}
+	switch x := v.(type) {
+	case map[string]any:
+		var props openapi3.Schemas
+		if s != nil {
+			props, _ = dict.Properties(s)
+		}
+		out := make(map[string]any, len(x))
+		for k, e := range x {
+			out[k] = w.dropLeft(e, propOf(props, k))
+		}
+		return out
+	case []any:
+		var items *openapi3.SchemaRef
+		if s != nil {
+			items = s.Items
+		}
+		t := w.rd.n.of(items)
+		out := []any{}
+		for _, e := range x {
+			if m, ok := e.(map[string]any); ok && t != "" {
+				if _, id := idOf(m); id != nil && w.left[t][text(id)] {
+					continue
+				}
+			}
+			out = append(out, w.dropLeft(e, items))
+		}
+		return out
+	}
+	return v
+}
+
+// responseProps are the properties of the response of an operation.
+func responseProps(op *spec.Operation, status int) openapi3.Schemas {
+	ref := responseSchema(op, status)
+	if ref == nil || ref.Value == nil {
+		return nil
+	}
+	props, _ := dict.Properties(ref.Value)
+	return props
+}
+
 // ref reports a field that refers to another record: one of "refs", an id,
 // or a field like planetId.
 func (t *Table) ref(field string) bool {
@@ -254,15 +391,19 @@ func (w *writes) cycle(d, cr *wop, r *rec) {
 		w.conflict(post, resp, r, false)
 		return
 	}
-	made := &rec{table: r.table, data: cp, keys: r.keys, note: fmt.Sprintf("the copy #%d POST %s created", resp.Seq, post.url)}
+	made := &rec{table: r.table, data: cp, keys: r.keys, note: fmt.Sprintf("the copy #%d POST %s created", resp.Seq, post.url), seq: resp.Seq}
 	if o, ok := resp.Body.(map[string]any); ok {
 		made.data, _ = fillIn(o, cp).(map[string]any)
 	}
 	if _, id := idOf(made.data); id != nil {
 		made.id = id
 	}
+	w.copies = append(w.copies, made)
 	if post == cr {
 		w.asRecord(post, r, cp, vars)
+	}
+	if made.id != nil {
+		w.leave(r.table, made.id) // a list that shows deleted rows shows the copy
 	}
 	u, vals, ok := w.urlFor(d.c.Op, made)
 	orig, realVals, _ := w.urlFor(d.c.Op, r)
@@ -270,6 +411,20 @@ func (w *writes) cycle(d, cr *wop, r *rec) {
 		w.res.problem(CodeCopyLeft, d.c.Op.ID, "#%d created a copy of the %s, but %s cannot address it apart from the record; delete the copy by hand: %s",
 			resp.Seq, r.table, d.c.Op.Path, clip(text(resp.Body)))
 		return
+	}
+	// the records the copy created below it (its crew) go first: a DELETE
+	// that only marks the copy (soft delete) leaves them
+	var left []string
+	for _, ch := range w.childrenOf(cr.c.Op, resp.Status, resp.Body) {
+		if !w.deleteChild(ch, resp.Seq, post.tag) {
+			w.leave(ch.table, ch.id)
+			left = append(left, ch.table+" "+text(ch.id))
+		}
+	}
+	if tb := w.in.Config.table(r.table, w.rd.n); len(left) > 0 && tb != nil && tb.SoftDelete {
+		w.res.problem(CodeCopyLeft, cr.c.Op.ID, "#%d created a copy of the %s with records below it that no DELETE of the spec removes by their id, "+
+			"and the DELETE of the copy only marks it (soft delete), so they stay: %s; delete them by hand, or let the service delete them with the copy. "+
+			"The check after the writes leaves them out", resp.Seq, r.table, strings.Join(left, ", "))
 	}
 	del := d
 	if d.sent {

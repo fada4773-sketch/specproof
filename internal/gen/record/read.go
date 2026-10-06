@@ -140,7 +140,13 @@ func origin(vals map[string]pval) []string {
 // field finds a field for a parameter: in the table the path segment in
 // front of it names, in a table its name starts with (dockNumber), or
 // by name alone unless the name is generic (id, code).
-func (k *known) field(seg, name string) (pval, bool) {
+func (k *known) field(seg, name string) (pval, bool) { return k.fieldAt([]string{seg}, name) }
+
+// fieldAt is field for the literal segments in front of a parameter, the
+// nearest first: the first one names its table; if it names none
+// (/Dock/pilot/id/{id}), a table its name starts with comes next, then
+// the segments further left (Dock), then the name alone.
+func (k *known) fieldAt(segs []string, name string) (pval, bool) {
 	ln := strings.ToLower(name)
 	try := func(t string, names ...string) (pval, bool) {
 		for _, n := range names {
@@ -150,7 +156,10 @@ func (k *known) field(seg, name string) (pval, bool) {
 		}
 		return pval{}, false
 	}
-	if seg != "" {
+	bySegment := func(seg string) (pval, bool) {
+		if seg == "" {
+			return pval{}, false
+		}
 		ls := strings.ToLower(seg)
 		for _, t := range []string{ls, strings.TrimSuffix(ls, "s"), strings.TrimSuffix(ls, "es")} {
 			names := []string{ln}
@@ -161,12 +170,23 @@ func (k *known) field(seg, name string) (pval, bool) {
 				return v, true
 			}
 		}
+		return pval{}, false
+	}
+	if len(segs) > 0 {
+		if v, ok := bySegment(segs[0]); ok {
+			return v, true
+		}
 	}
 	for _, t := range k.tables {
 		if rest := strings.TrimPrefix(ln, t); rest != ln && rest != "" {
 			if v, ok := try(t, ln, rest); ok {
 				return v, true
 			}
+		}
+	}
+	for _, seg := range segs[min(1, len(segs)):] {
+		if v, ok := bySegment(seg); ok {
+			return v, true
 		}
 	}
 	if !generic(ln) {
@@ -179,6 +199,22 @@ func (k *known) field(seg, name string) (pval, bool) {
 		}
 	}
 	return pval{}, false
+}
+
+// segmentsBefore are the literal segments in front of a path parameter:
+// the one that names its resource first (model.SegmentBefore), then the
+// others from right to left.
+func segmentsBefore(path, param string) []string {
+	first := model.SegmentBefore(path, param)
+	out := []string{first}
+	segs := strings.Split(strings.Trim(path, "/"), "/")
+	i := slices.Index(segs, "{"+param+"}")
+	for j := i - 1; j >= 0; j-- {
+		if seg := segs[j]; !strings.HasPrefix(seg, "{") && seg != first {
+			out = append(out, seg)
+		}
+	}
+	return out
 }
 
 func generic(name string) bool {
@@ -310,9 +346,13 @@ func (rd *reader) url(op *spec.Operation, k *known) (string, map[string]pval, bo
 // selected records, then (query only) the example, default or first enum
 // value of the spec, as apitest would send them.
 func (rd *reader) value(op *spec.Operation, p *openapi3.Parameter, k *known) (pval, bool) {
-	seg := ""
+	var segs []string
 	if p.In == openapi3.ParameterInPath {
-		seg = model.SegmentBefore(op.Path, p.Name)
+		segs = segmentsBefore(op.Path, p.Name)
+	}
+	seg := ""
+	if len(segs) > 0 {
+		seg = segs[0]
 	}
 	if e, key, ok := rd.cfg.paramEntry(op.ID, p.Name); ok {
 		where := fmt.Sprintf("\"params\".%s", key)
@@ -343,7 +383,7 @@ func (rd *reader) value(op *spec.Operation, p *openapi3.Parameter, k *known) (pv
 		}
 		return v, ok
 	}
-	if v, ok := k.field(seg, p.Name); ok {
+	if v, ok := k.fieldAt(segs, p.Name); ok {
 		return v, true
 	}
 	if p.In != openapi3.ParameterInQuery {

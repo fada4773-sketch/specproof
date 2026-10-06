@@ -56,7 +56,12 @@ type writes struct {
 	byOp  map[string]*wop
 	retry map[*rec][]*wop // updates answered 404, sent again after the POST
 	later []*wop          // writes without a value for a parameter yet
-	late  bool            // the late reads are done: nothing waits any more
+	// copies are the records the run created as copies ("tables")
+	copies []*rec
+	// left are the records the run created and could not delete: table →
+	// ids; the check after the writes leaves them out
+	left map[string]map[string]bool
+	late bool // the late reads are done: nothing waits any more
 }
 
 // classify takes the writing cases of the run, in its order.
@@ -215,12 +220,13 @@ func (w *writes) remover(t string, r *rec) (*wop, string, map[string]pval) {
 func (w *writes) creator(t string, r *rec) *wop {
 	var other *wop
 	for _, x := range w.ops {
-		if x.kind != kindCreate || x.c.Example != cases.DefaultExample {
+		// a POST of another table is not resolved here: its tag may not
+		// have read its records yet
+		if x.kind != kindCreate || x.c.Example != cases.DefaultExample || x.table != t {
 			continue
 		}
 		w.resolve(x)
 		switch {
-		case x.table != t:
 		case x.rec == r:
 			return x
 		case other == nil && r.path == "" && w.rd.forPath[x.c.Op.Path] == nil:
@@ -992,13 +998,20 @@ func (w *writes) verify() {
 			continue
 		}
 		ref := responseSchema(f.op, f.resp.Status)
-		before, after := w.canon(w.newIDs(f.resp.Body, ref)), w.canon(resp.Body)
+		before, after := w.canon(w.newIDs(f.resp.Body, ref)), w.canon(w.dropLeft(resp.Body, ref))
 		if _, l1, _, ok := listOf(ref, before); ok {
 			if _, l2, _, ok := listOf(ref, after); ok && len(l1) != len(l2) {
 				msg := fmt.Sprintf("#%d GET %s lists %d elements, #%d before the writes listed %d", resp.Seq, u, len(l2), f.resp.Seq, len(l1))
+				hint := "the writes removed or added elements: a DELETE also removed records below the deleted one, which no POST creates again, " +
+					"or a POST created one more; restore the data in the instance, then let \"select\" take a record without such records below it"
+				if of := w.ofCopies(l1, l2); of != "" {
+					msg += "; " + of
+					hint = "the POST of a copy created these records below it (a required list of records in its body, or the server adds them), " +
+						"and the DELETE of the copy left them (soft delete does not delete the rows below); delete them in the instance, " +
+						"or let the service delete them with the copy"
+				}
 				w.res.problem(CodeChanged, id, "%s", msg)
-				w.res.suggest(CodeChanged, id, msg, "the writes removed or added elements: a DELETE also removed records below the deleted one, which no POST creates again, "+
-					"or a POST created one more; restore the data in the instance, then let \"select\" take a record without such records below it", nil)
+				w.res.suggest(CodeChanged, id, msg, hint, nil)
 				continue
 			}
 		}
@@ -1037,6 +1050,44 @@ func (w *writes) verify() {
 		}
 		w.res.suggestIgnore(w.in.Config, CodeChanged, id, msg, hint, fields)
 	}
+}
+
+// ofCopies names the new elements of a list that refer to a copy the run
+// created ("id 102 (dockId 101: the copy #9 created)"), "" if none does.
+func (w *writes) ofCopies(before, after []any) string {
+	seen := map[string]bool{}
+	for _, e := range before {
+		if o, ok := e.(map[string]any); ok {
+			if _, id := idOf(o); id != nil {
+				seen[text(id)] = true
+			}
+		}
+	}
+	var found []string
+	for _, e := range after {
+		o, ok := e.(map[string]any)
+		if !ok {
+			continue
+		}
+		_, id := idOf(o)
+		if id == nil || seen[text(id)] {
+			continue
+		}
+		for _, k := range sortedKeys(o) {
+			for _, c := range w.copies {
+				if c.id != nil && refTable(k) == c.table && same(o[k], c.id) {
+					found = append(found, fmt.Sprintf("id %s (%s %s: the copy #%d created)", text(id), k, text(o[k]), c.seq))
+				}
+			}
+		}
+	}
+	if len(found) == 0 {
+		return ""
+	}
+	if len(found) > 5 {
+		found = append(found[:5], fmt.Sprintf("… %d more", len(found)-5))
+	}
+	return "new elements of copies: " + strings.Join(found, ", ")
 }
 
 // unsettable are the fields no body the run sent can set: fields of no
