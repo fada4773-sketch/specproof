@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -210,9 +211,11 @@ func (w *writes) leave(t string, id any) {
 }
 
 // dropLeft leaves out of an answer the elements of its lists that are
-// records the run created and could not delete.
+// records the run created and could not delete, and rows that refer to a
+// copy the run created (dockId of the copy): they are no data the writes
+// changed, the copy left them. Those not named yet are kept in stray.
 func (w *writes) dropLeft(v any, ref *openapi3.SchemaRef) any {
-	if len(w.left) == 0 {
+	if len(w.left) == 0 && len(w.copies) == 0 {
 		return v
 	}
 	var s *openapi3.Schema
@@ -242,12 +245,33 @@ func (w *writes) dropLeft(v any, ref *openapi3.SchemaRef) any {
 				if _, id := idOf(m); id != nil && w.left[t][text(id)] {
 					continue
 				}
+				if of := w.ofCopy(m); of != "" {
+					if w.stray == nil {
+						w.stray = map[string]string{}
+					}
+					_, id := idOf(m)
+					w.stray[t+" "+text(id)] = fmt.Sprintf("%s %s (%s)", t, text(id), of)
+					continue
+				}
 			}
 			out = append(out, w.dropLeft(e, items))
 		}
 		return out
 	}
 	return v
+}
+
+// ofCopy names the copy a row refers to ("dockId 101: the copy #8
+// created"), "" if it refers to none.
+func (w *writes) ofCopy(o map[string]any) string {
+	for _, k := range sortedKeys(o) {
+		for _, c := range w.copies {
+			if c.id != nil && refTable(k) == c.table && same(o[k], c.id) {
+				return fmt.Sprintf("%s %s: the copy #%d created", k, text(o[k]), c.seq)
+			}
+		}
+	}
+	return ""
 }
 
 // responseProps are the properties of the response of an operation.
@@ -373,7 +397,8 @@ func (w *writes) cycle(d, cr *wop, r *rec) {
 		post.rec = r
 		post.url, post.vals, _ = w.urlFor(cr.c.Op, r)
 	}
-	post.body = w.requestBody(cr.c.Op, cp)
+	send, dropped := w.withoutChildren(cr.c.Op, cp)
+	post.body = w.requestBody(cr.c.Op, send)
 	var names []string
 	for _, v := range vars {
 		names = append(names, v.field)
@@ -381,6 +406,14 @@ func (w *writes) cycle(d, cr *wop, r *rec) {
 	post.bodySrc = "a copy of " + r.origin()
 	if len(names) > 0 {
 		post.bodySrc += fmt.Sprintf(" with other %s (token %q)", strings.Join(names, ", "), w.in.Token)
+	}
+	if len(dropped) > 0 {
+		var what []string
+		for _, f := range sortedKeys(dropped) {
+			what = append(what, dropped[f])
+		}
+		post.bodySrc += fmt.Sprintf(", without %s: the server would create them for the copy, and a DELETE that only marks the copy leaves them",
+			strings.Join(what, ", "))
 	}
 	reason := fmt.Sprintf("create a copy of the %s, %s deletes it", r.table, d.c.Op.ID)
 	if len(names) > 0 {
@@ -423,7 +456,7 @@ func (w *writes) cycle(d, cr *wop, r *rec) {
 	}
 	w.copies = append(w.copies, made)
 	if post == cr {
-		w.asRecord(post, r, cp, vars)
+		w.asRecord(post, r, cp, vars, dropped)
 	}
 	if made.id != nil {
 		w.leave(r.table, made.id) // a list that shows deleted rows shows the copy
@@ -438,7 +471,7 @@ func (w *writes) cycle(d, cr *wop, r *rec) {
 	// the records the copy created below it (its crew) go first: a DELETE
 	// that only marks the copy (soft delete) leaves them
 	var left []string
-	for _, ch := range w.childrenOf(cr.c.Op, resp.Status, resp.Body) {
+	for _, ch := range w.rowsOf(made, w.childrenOf(cr.c.Op, resp.Status, resp.Body), post.tag) {
 		if !w.deleteChild(ch, resp.Seq, post.tag) {
 			w.leave(ch.table, ch.id)
 			left = append(left, ch.table+" "+text(ch.id))
@@ -473,7 +506,7 @@ func (w *writes) cycle(d, cr *wop, r *rec) {
 // asRecord turns the answer to the copy into the example of the POST: the
 // body and the answer show the record (a seed record: the example values
 // of the copy), with the id of the record.
-func (w *writes) asRecord(x *wop, r *rec, cp map[string]any, vars []variant) {
+func (w *writes) asRecord(x *wop, r *rec, cp map[string]any, vars []variant, dropped map[string]string) {
 	data := make(map[string]any, len(cp))
 	for k, v := range cp {
 		data[k] = v
@@ -496,6 +529,10 @@ func (w *writes) asRecord(x *wop, r *rec, cp map[string]any, vars []variant) {
 		if f := fieldName(out, v.field); f != "" && same(out[f], v.sent) {
 			out[f] = v.example
 		}
+	}
+	// the lists the copy was sent without: the POST of apitest sends them
+	for f := range dropped {
+		out[f] = r.data[f]
 	}
 	resp := *x.resp
 	resp.Body = out
@@ -560,4 +597,95 @@ func (w *writes) softUnique() {
 				idx, name, name)
 		}
 	}
+}
+
+// withoutChildren leaves out of the data of a copy the lists of records
+// its request schema does not require (crew): the server would create them
+// for the copy too, n more rows, and a DELETE that only marks the copy
+// (soft delete) leaves them. A required list keeps its first minItems
+// elements, at least one. It returns the data to send and the lists cut:
+// field → what was left out.
+func (w *writes) withoutChildren(op *spec.Operation, data map[string]any) (map[string]any, map[string]string) {
+	ref := requestSchema(op)
+	if ref == nil || ref.Value == nil {
+		return data, nil
+	}
+	props, req := dict.Properties(ref.Value)
+	out := make(map[string]any, len(data))
+	dropped := map[string]string{}
+	for _, k := range sortedKeys(data) {
+		out[k] = data[k]
+		l, ok := data[k].([]any)
+		p := propOf(props, k)
+		if !ok || len(l) == 0 || p == nil || p.Value == nil || p.Value.Items == nil || p.Value.Items.Value == nil || isPrimitive(p.Value.Items.Value) {
+			continue
+		}
+		required := slices.ContainsFunc(req, func(r string) bool { return strings.EqualFold(r, k) })
+		if !required && p.Value.MinItems == 0 {
+			delete(out, k)
+			dropped[k] = fmt.Sprintf("its %s (%d)", k, len(l))
+			continue
+		}
+		if n := max(1, int(p.Value.MinItems)); n < len(l) {
+			out[k] = l[:n]
+			dropped[k] = fmt.Sprintf("%d of its %d %s", len(l)-n, len(l), k)
+		}
+	}
+	return out, dropped
+}
+
+// rowsOf adds to the records the answer to the POST of a copy shows below
+// it the rows the server created for the copy without showing them (an
+// audit row): the elements of every list read that refer to the copy
+// (dockId of the copy), read again now.
+func (w *writes) rowsOf(made *rec, shown []child, tag string) []child {
+	if made.id == nil {
+		return shown
+	}
+	seen := map[string]bool{}
+	for _, ch := range shown {
+		seen[ch.table+" "+text(ch.id)] = true
+	}
+	urls := map[string]bool{}
+	ids := sortedKeys(w.rd.gets)
+	slices.SortStableFunc(ids, func(a, b string) int { return w.rd.gets[a].resp.Seq - w.rd.gets[b].resp.Seq })
+	for _, id := range ids {
+		f := w.rd.gets[id]
+		items, _, ok := listShape(responseSchema(f.op, f.resp.Status))
+		if !ok || items == nil || items.Value == nil || urls[f.url] {
+			continue
+		}
+		t := w.rd.n.of(items)
+		props, _ := dict.Properties(items.Value)
+		refers := ""
+		for _, k := range sortedKeys(props) {
+			if refTable(k) == made.table {
+				refers = k
+			}
+		}
+		if t == "" || t == made.table || refers == "" {
+			continue
+		}
+		urls[f.url] = true
+		resp, err := w.rd.c.do(w.rd.ctx, http.MethodGet, f.url, nil, tag,
+			fmt.Sprintf("find the %s rows the copy #%d created without showing them", t, made.seq))
+		if err != nil || !resp.ok() {
+			continue
+		}
+		_, elems, _, _ := listOf(responseSchema(f.op, resp.Status), resp.Body)
+		for _, e := range elems {
+			o, ok := e.(map[string]any)
+			if !ok {
+				continue
+			}
+			k := fieldName(o, refers)
+			_, cid := idOf(o)
+			if k == "" || cid == nil || !same(o[k], made.id) || seen[t+" "+text(cid)] {
+				continue
+			}
+			seen[t+" "+text(cid)] = true
+			shown = append(shown, child{table: t, id: cid, data: o})
+		}
+	}
+	return shown
 }

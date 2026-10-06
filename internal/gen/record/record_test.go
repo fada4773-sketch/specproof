@@ -2050,23 +2050,31 @@ func TestRecordDetailsGenericParam(t *testing.T) {
 	}
 }
 
-// The copy of a dock goes with its crew. Without a DELETE of a crew
-// member the crew rows of the copy stay after the DELETE that only marks
-// the copy: one COPY_LEFT names them, and the check after the writes
-// leaves them out (no DATA_CHANGED for GET /Crew).
+// The copy is sent without its crew: the server would create n more crew
+// rows for it, which a DELETE that only marks the copy leaves (n → 2n).
+// The examples show the record with its crew, as apitest sends it.
 func TestRecordCopyChildren(t *testing.T) {
 	cp := newCrewPort()
-	res, _, doc := runCrew(t, cp, crewConfig)
+	res, entries, doc := runCrew(t, cp, crewConfig)
 	all := notes(res)
-	if strings.Contains(all, "DATA_CHANGED") || !strings.Contains(all, "COPY_LEFT CreateDock: #") || !strings.Contains(all, "so they stay: crew 102, crew 103; delete them by hand") {
-		t.Errorf("notes:\n%s", all)
+	if strings.Contains(all, "DATA_CHANGED") || strings.Contains(all, "COPY_LEFT") || len(cp.crew) != 3 {
+		t.Errorf("crew %v\n%s", cp.crew, all)
 	}
-	if crew, _ := cp.bodies["POST /Dock"].(map[string]any)["crew"].([]any); len(crew) != 2 {
-		t.Errorf("the copy was sent without its crew: %v", cp.bodies["POST /Dock"])
+	if _, ok := cp.bodies["POST /Dock"].(map[string]any)["crew"]; ok {
+		t.Errorf("the copy was sent with its crew: %v", cp.bodies["POST /Dock"])
+	}
+	for _, e := range entries {
+		if e.Method == http.MethodPost && !slices.ContainsFunc(e.Origin, func(o string) bool { return strings.Contains(o, "without its crew (2): the server would create them") }) {
+			t.Errorf("origin of the POST: %v", e.Origin)
+		}
 	}
 	body := exampleAt(t, doc, "paths", "/Dock", "post", "requestBody", "content", "application/json").(map[string]any)
 	if crew, _ := body["crew"].([]any); len(crew) != 2 || body["dockCode"] != "D2" {
 		t.Errorf("CreateDock body: %v", body)
+	}
+	answer := exampleAt(t, doc, "paths", "/Dock", "post", "responses", "201", "content", "application/json").(map[string]any)
+	if crew, _ := answer["crew"].([]any); len(crew) != 2 {
+		t.Errorf("CreateDock answer: %v", answer)
 	}
 }
 
@@ -2098,35 +2106,70 @@ components:`
 	return path
 }
 
-// With a DELETE of a crew member by its id the run deletes the crew the
-// copy created, then the copy: nothing stays.
+// A required list of records keeps one element in the copy; the crew row
+// the server created for it is deleted by its id before the copy.
 func TestRecordCopyDeletesChildren(t *testing.T) {
+	path := crewSpec(t)
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b = []byte(strings.Replace(string(b), "      required: [dockCode]\n      properties:\n        dockCode: {type: string}\n        name: {type: string}\n        crew:",
+		"      required: [dockCode, crew]\n      properties:\n        dockCode: {type: string}\n        name: {type: string}\n        crew:", 1))
+	if err := os.WriteFile(path, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	cp := newCrewPort()
+	res, _, _ := runCrewSpec(t, cp, crewConfig, path)
+	all := notes(res)
+	if strings.Contains(all, "DATA_CHANGED") || strings.Contains(all, "COPY_LEFT") || len(cp.crew) != 3 {
+		t.Errorf("crew %v\n%s", cp.crew, all)
+	}
+	if got := strings.Join(cp.sent, ", "); got != "POST /Dock, DELETE /Crew/id/102, DELETE /Dock/id/101" {
+		t.Errorf("writes: %s", got)
+	}
+	if crew, _ := cp.bodies["POST /Dock"].(map[string]any)["crew"].([]any); len(crew) != 1 {
+		t.Errorf("the copy: %v", cp.bodies["POST /Dock"])
+	}
+}
+
+// A row the server adds for the copy that its answer does not show is
+// found in its list and deleted by its id; without such a DELETE it stays
+// as COPY_LEFT, never as DATA_CHANGED.
+func TestRecordCopyHiddenRows(t *testing.T) {
+	cp := newCrewPort()
+	cp.audit = true
 	res, _, _ := runCrewSpec(t, cp, crewConfig, crewSpec(t))
 	all := notes(res)
 	if strings.Contains(all, "DATA_CHANGED") || strings.Contains(all, "COPY_LEFT") || len(cp.crew) != 3 {
 		t.Errorf("crew %v\n%s", cp.crew, all)
 	}
-	if got := strings.Join(cp.sent, ", "); got != "POST /Dock, DELETE /Crew/id/102, DELETE /Crew/id/103, DELETE /Dock/id/101" {
+	if got := strings.Join(cp.sent, ", "); got != "POST /Dock, DELETE /Crew/id/102, DELETE /Dock/id/101" {
 		t.Errorf("writes: %s", got)
+	}
+
+	cp = newCrewPort()
+	cp.audit = true
+	res, _, _ = runCrew(t, cp, crewConfig)
+	all = notes(res)
+	if strings.Contains(all, "DATA_CHANGED") || !strings.Contains(all, "COPY_LEFT CreateDock: #") || !strings.Contains(all, "so they stay: crew 102;") {
+		t.Errorf("without DELETE of a crew member:\n%s", all)
 	}
 }
 
-// A row the server adds for the copy that its answer does not show stays;
-// DATA_CHANGED names it as an element of the copy.
-func TestRecordCopyHiddenRows(t *testing.T) {
-	cp := newCrewPort()
-	cp.audit = true
-	res, entries, _ := runCrewSpec(t, cp, crewConfig, crewSpec(t))
-	post := 0
-	for _, e := range entries {
-		if e.Method == http.MethodPost {
-			post = e.N
-		}
-	}
-	all := notes(res)
-	if !strings.Contains(all, "DATA_CHANGED GetCrew: #") || !strings.Contains(all, fmt.Sprintf("new elements of copies: id 104 (dockId 101: the copy #%d created)", post)) {
-		t.Errorf("notes:\n%s", all)
+// The check after the writes leaves out the rows that refer to a copy and
+// names them once.
+func TestDropLeftCopies(t *testing.T) {
+	crew := &openapi3.SchemaRef{Ref: "#/components/schemas/CrewRead", Value: &openapi3.Schema{Type: &openapi3.Types{"object"},
+		Properties: openapi3.Schemas{"id": {Value: &openapi3.Schema{Type: &openapi3.Types{"integer"}}}, "dockId": {Value: &openapi3.Schema{Type: &openapi3.Types{"integer"}}}}}}
+	list := &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"array"}, Items: crew}}
+	w := &writes{rd: &reader{n: namer{"crew": true, "dock": true}}, copies: []*rec{{table: "dock", id: json.Number("101"), seq: 8}}}
+	got := w.dropLeft([]any{
+		map[string]any{"id": json.Number("1"), "dockId": json.Number("30")},
+		map[string]any{"id": json.Number("104"), "dockId": json.Number("101")},
+	}, list)
+	if l := got.([]any); len(l) != 1 || w.stray["crew 104"] != "crew 104 (dockId 101: the copy #8 created)" {
+		t.Errorf("dropLeft: %v, stray %v", got, w.stray)
 	}
 }
 
@@ -2212,7 +2255,7 @@ func TestRecordCopyWithoutID(t *testing.T) {
 	if strings.Contains(notes(res), CodeCopyLeft) {
 		t.Fatalf("notes:\n%s", notes(res))
 	}
-	if got := strings.Join(cp.sent, ", "); got != "POST /Dock, DELETE /Crew/id/102, DELETE /Crew/id/103, DELETE /Dock/id/101" {
+	if got := strings.Join(cp.sent, ", "); got != "POST /Dock, DELETE /Dock/id/101" {
 		t.Errorf("writes: %s", got)
 	}
 	for _, e := range entries {
@@ -2330,5 +2373,108 @@ func TestMoved(t *testing.T) {
 	}
 	if !dock.hasID(n(30)) || !dock.hasID(n(31)) || dock.hasID(n(32)) {
 		t.Errorf("ids: %v", dock.ids())
+	}
+}
+
+// A POST whose body joins several DTOs and fields of its own, which no GET
+// answers as a whole, gets a valid example: each part from the data read
+// (the selected ship, its dock, the config of the dock, the planet), the
+// required field no data has generated.
+func TestRecordAssembled(t *testing.T) {
+	b, err := os.ReadFile("../../../testdata/gen/record.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	launch := `  /Ship/launch:
+    post:
+      operationId: LaunchShip
+      tags: [Ship]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/ShipCreate"
+                - type: object
+                  required: [dock, config, launchCode]
+                  properties:
+                    dock: {$ref: "#/components/schemas/DockRead"}
+                    config: {$ref: "#/components/schemas/DockConfig"}
+                    planetId: {type: integer}
+                    launchCode: {type: string, pattern: "^L[0-9]{3}$"}
+                    remark: {type: string}
+      responses:
+        "202":
+          description: launched
+components:`
+	specPath := filepath.Join(t.TempDir(), "record.yaml")
+	if err := os.WriteFile(specPath, []byte(strings.Replace(string(b), "components:", launch, 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, doc, _ := runRecord(t, newStarport(), specPath, nil, true)
+	all := notes(res)
+	if strings.Contains(all, CodeInvalid) || !strings.Contains(all, "BUILT LaunchShip") {
+		t.Fatalf("notes:\n%s", all)
+	}
+	body := exampleAt(t, doc, "paths", "/Ship/launch", "post", "requestBody", "content", "application/json").(map[string]any)
+	code, _ := body["launchCode"].(string)
+	if !regexp.MustCompile(`^L[0-9]{3}$`).MatchString(code) {
+		t.Errorf("launchCode %v", body["launchCode"])
+	}
+	delete(body, "launchCode")
+	equal(t, "LaunchShip body", body, `{"shipCode":"S1","dockId":1,"name":"Falcon","planetId":1,
+		"dock":{"id":1,"dockCode":"D2","planetId":1,"name":"South"},"config":{"settings":{"mode":"auto"}}}`)
+}
+
+// The assembler fills only what a schema requires for a write that is no
+// POST, takes a oneOf part with its discriminator and repairs a part taken
+// from other data that violates its schema.
+func TestAssemblerParts(t *testing.T) {
+	str := &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"string"}}}
+	code := &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"string"}, Pattern: "^[A-Z]{2}$"}}
+	obj := func(req []string, props openapi3.Schemas) *openapi3.Schema {
+		return &openapi3.Schema{Type: &openapi3.Types{"object"}, Required: req, Properties: props}
+	}
+	k := newKnown()
+	k.addRec(&rec{table: "planet", data: map[string]any{"id": json.Number("7"), "moonCode": "abc"}, from: "GetPlanets /Planet", seq: 2})
+	w := &writes{rd: &reader{n: namer{}, k: k, gets: map[string]*fetched{}, recs: map[string]*rec{}}}
+	ref := &openapi3.SchemaRef{Value: obj([]string{"name", "planetId"}, openapi3.Schemas{"name": str, "planetId": {Value: &openapi3.Schema{Type: &openapi3.Types{"integer"}}},
+		"note": str, "moonCode": code})}
+
+	put := &assembler{w: w, mode: spec.ModeRequest, seed: "UpdateGarden", from: map[string]string{}}
+	got := put.build(ref, map[string]any{"name": "Rose"}).(map[string]any)
+	if got["planetId"] != json.Number("7") || got["note"] != nil || got["moonCode"] != nil {
+		t.Errorf("update: %v", got)
+	}
+	post := &assembler{w: w, mode: spec.ModeRequest, create: true, seed: "CreateGarden", from: map[string]string{}}
+	got = post.build(ref, map[string]any{"name": "Rose"}).(map[string]any)
+	if m, _ := got["moonCode"].(string); !regexp.MustCompile("^[A-Z]{2}$").MatchString(m) {
+		t.Errorf("moonCode of another record that violates its schema is not generated again: %v (%v)", got, post.origins("body"))
+	}
+
+	cat := &openapi3.SchemaRef{Ref: "#/components/schemas/Moon", Value: obj([]string{"kind", "orbit"}, openapi3.Schemas{"kind": str, "orbit": str})}
+	sun := &openapi3.SchemaRef{Ref: "#/components/schemas/Sun", Value: obj([]string{"kind", "heat"}, openapi3.Schemas{"kind": str, "heat": str})}
+	one := &openapi3.SchemaRef{Value: &openapi3.Schema{OneOf: openapi3.SchemaRefs{sun, cat}, Discriminator: &openapi3.Discriminator{PropertyName: "kind",
+		Mapping: map[string]openapi3.MappingRef{"moon": {Ref: "#/components/schemas/Moon"}, "sun": {Ref: "#/components/schemas/Sun"}}}}}
+	got = post.build(one, map[string]any{"orbit": "low"}).(map[string]any)
+	if got["kind"] != "moon" || got["orbit"] != "low" {
+		t.Errorf("oneOf: %v", got)
+	}
+
+	// a part next to its reference is the record it refers to, or none
+	dockRef := &openapi3.SchemaRef{Ref: "#/components/schemas/DockRead", Value: obj(nil, openapi3.Schemas{"id": {Value: &openapi3.Schema{Type: &openapi3.Types{"integer"}}}, "name": str})}
+	d30 := &rec{table: "dock", id: json.Number("30"), data: map[string]any{"id": json.Number("30"), "name": "North"}, from: "GetDocks /Dock", seq: 3}
+	d31 := &rec{table: "dock", id: json.Number("31"), data: map[string]any{"id": json.Number("31"), "name": "South"}, from: "GetDocks /Dock", seq: 3}
+	w.rd.n = namer{"dock": true}
+	w.rd.recs["dock"], w.rd.all = d30, map[string][]*rec{"dock": {d30, d31}}
+	ship := &openapi3.SchemaRef{Value: obj(nil, openapi3.Schemas{"dockId": {Value: &openapi3.Schema{Type: &openapi3.Types{"integer"}}}, "dock": dockRef})}
+	got = post.build(ship, map[string]any{"dockId": json.Number("31")}).(map[string]any)
+	if d, _ := got["dock"].(map[string]any); d["name"] != "South" {
+		t.Errorf("the dock of dockId 31: %v", got)
+	}
+	got = post.build(ship, map[string]any{"dockId": json.Number("99")}).(map[string]any)
+	if _, ok := got["dock"]; ok {
+		t.Errorf("a dock other than dockId 99: %v", got)
 	}
 }

@@ -27,15 +27,32 @@ contain breaking changes, which are listed here.
   error answer only rejects the candidate. The log shows them dim and
   marked "select check", with what each one decided (rejected and why, or
   passes); they count in no "failed".
-- `apitest-gen record`: the copy of a record goes with its nested records
-  (`crew: [{…}]`); the server creates them for the copy, and a DELETE that
-  only marks the copy (soft delete) left them, so the lists of them grew
-  after the writes (`DATA_CHANGED`, n → 2n). The run now deletes them
-  first, with a DELETE of the spec that addresses each one by the id the
-  answer of the copy shows. Those it cannot delete are named once
-  (`COPY_LEFT`) and left out of the check after the writes. A list that
-  grows by rows the answer did not show names its new elements that refer
-  to a copy.
+- `apitest-gen record`: the copy of a record is sent without its lists of
+  nested records (`crew: [{…}]`) unless the request schema requires them;
+  a required one keeps `minItems` elements, at least one. Sent with them,
+  the server created n more rows for the copy, which a DELETE that only
+  marks the copy (soft delete) left, so the lists of them grew after the
+  writes (`DATA_CHANGED`, n → 2n). The examples still show the record with
+  its list. Rows the copy created anyway (shown in its answer, or found
+  in the lists read that refer to it, e.g. an audit row) are deleted first
+  with a DELETE of the spec that addresses each one by its id; those it
+  cannot delete are named once (`COPY_LEFT`). The check after the writes
+  leaves every row that refers to a copy out and names it as `COPY_LEFT`,
+  never as `DATA_CHANGED`.
+- `apitest-gen record`: bodies and built answers are assembled part by
+  part along their schema, so a POST whose body joins several DTOs
+  (`allOf`, `$ref`, properties of its own) gets a valid example although no
+  GET answers that structure. A part with the DTO of a table takes the
+  selected record (the one its `…Id` next to it refers to); a DTO without
+  a table takes the object an answer holds (one of a selected record
+  first); an inline object takes the object read with most of its fields;
+  `oneOf`/`anyOf` take the part the data fits best and set the
+  discriminator; a required field without data gets a generated value
+  (default, enum, format, pattern). A POST that creates fills its optional
+  parts too, other writes only what the schema requires; lists of records
+  are filled only if required. A value of the data that violates its schema
+  stays (`EXAMPLE_INVALID`). The log names where each added part comes
+  from (`body.dock ← the dock selected from #12 …`).
 - `apitest-gen record`: looking for the POST that creates a record again no
   longer resolves the POSTs of other tables before their tag read its
   records (a POST at the path of its own list got no record).

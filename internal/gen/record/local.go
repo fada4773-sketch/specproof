@@ -61,7 +61,17 @@ type writes struct {
 	// left are the records the run created and could not delete: table →
 	// ids; the check after the writes leaves them out
 	left map[string]map[string]bool
-	late bool // the late reads are done: nothing waits any more
+	// stray are the rows the check after the writes found referring to a
+	// copy: "table id" → description
+	stray map[string]string
+	late  bool // the late reads are done: nothing waits any more
+	// idx are the objects the GETs answered, by DTO; idxN the number of
+	// GETs it was built from
+	idx  map[string][]indexed
+	idxN int
+	// filled tells, per operation, where the parts of its last body that
+	// its record lacks come from
+	filled map[string][]string
 }
 
 // classify takes the writing cases of the run, in its order.
@@ -593,6 +603,9 @@ func (w *writes) origin(x *wop) []string {
 	if x.body != nil && x.bodySrc != "" {
 		out = append(out, "body ← "+x.bodySrc)
 	}
+	if x.body != nil {
+		out = append(out, w.filled[x.c.Op.ID]...)
+	}
 	if w.in.Config != nil {
 		if _, ok := w.in.Config.Bodies[x.c.Op.ID]; ok && x.body != nil {
 			out = append(out, fmt.Sprintf("body: %q.%s laid over it", "bodies", x.c.Op.ID))
@@ -780,13 +793,19 @@ func fillIn(top, base any) any {
 }
 
 // requestBody is the body of a write built from data the run read: the
-// fields of the request schema, with the body "bodies" sets laid over it.
+// fields of the request schema, the parts its data lacks from the other
+// data of the run (assembler), with the body "bodies" sets laid over it.
 // Fields of the data the schema does not declare are not sent; they are
 // reported once per operation, so a field the server needs but the spec
 // lacks shows up (and "bodies" can send it: "{Field}").
 func (w *writes) requestBody(op *spec.Operation, src any) any {
 	ref := requestSchema(op)
-	body := project(src, ref, spec.ModeRequest)
+	a := w.assembler(op, spec.ModeRequest)
+	body := a.build(ref, src)
+	if w.filled == nil {
+		w.filled = map[string][]string{}
+	}
+	w.filled[op.ID] = a.origins("body")
 	if lost := undeclared(src, ref, "", 0); len(lost) > 0 && !w.noted[op.ID] {
 		if w.noted == nil {
 			w.noted = map[string]bool{}
@@ -936,13 +955,14 @@ func (w *writes) offline() {
 				continue
 			}
 			x.body = w.requestBody(x.c.Op, r.data)
-			x.resp = &response{Status: successStatus(x.c.Op), Body: project(r.data, responseSchema(x.c.Op, 0), spec.ModeResponse)}
+			// the answer shows the record, and what the body sent beyond it
+			x.resp = &response{Status: successStatus(x.c.Op), Body: w.assembler(x.c.Op, spec.ModeResponse).build(responseSchema(x.c.Op, 0), fillIn(r.data, x.body))}
 		case kindUpdate:
 			if r == nil {
 				continue
 			}
 			x.body = w.bodyFor(x)
-			body := project(r.data, responseSchema(x.c.Op, 0), spec.ModeResponse)
+			body := w.assembler(x.c.Op, spec.ModeResponse).build(responseSchema(x.c.Op, 0), r.data)
 			if x.part {
 				body = x.body
 			}
@@ -1105,6 +1125,15 @@ func (w *writes) verify() {
 				"if the server sets them (time, user, version) let apitest ignore them; else the run lost data: restore it in the instance", strings.Join(lost, ", "))
 		}
 		w.res.suggestIgnore(w.in.Config, CodeChanged, id, msg, hint, fields)
+	}
+	if len(w.stray) > 0 {
+		var rows []string
+		for _, k := range sortedKeys(w.stray) {
+			rows = append(rows, w.stray[k])
+		}
+		w.res.problem(CodeCopyLeft, "copies", "rows that refer to a copy the run created stay in the instance: %s; "+
+			"the server created them for the copy and no DELETE of the spec removed them by their id; delete them by hand, or let the service delete them with the copy. "+
+			"The check after the writes leaves them out", strings.Join(rows, ", "))
 	}
 }
 

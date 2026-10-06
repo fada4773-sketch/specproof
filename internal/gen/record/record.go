@@ -75,7 +75,7 @@ var codeInfos = map[string]codeInfo{
 	CodeLintIgnored: {Info, "an example that violates its schema was written (-ignorelinting)", "fix the data or the spec"},
 	CodeUndeclared:  {Info, "a write leaves out fields of its record that its request schema does not declare", `declare them in the spec if the server needs them, or send them with "bodies"`},
 	CodeConflict:    {Problem, "a POST violates a unique index of the database", `list the unique indexes in "tables"; with soft delete make the index partial (WHERE deleted_at IS NULL)`},
-	CodeCopyLeft:    {Problem, "the run created a copy of a record and could not delete it again", "delete the copy by hand (the log shows its answer)"},
+	CodeCopyLeft:    {Problem, "the run created a copy of a record, or rows the copy created, and could not delete them again", "delete them by hand (the message names them, the log shows the answer of the copy)"},
 	CodeSoftUnique:  {Warning, "a unique index counts the rows a soft delete keeps: creating a deleted record again fails", "make the index partial: WHERE deleted_at IS NULL"},
 }
 
