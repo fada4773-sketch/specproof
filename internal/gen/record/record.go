@@ -105,6 +105,24 @@ type Result struct {
 	// NOT_IN_CONTAINER: they go into "$suggestions".
 	Suggestions []Suggestion
 	Stats       Stats
+	// Probes are the verdicts on the requests that checked a candidate for
+	// "select", by request number: why it was rejected, or that it passes.
+	Probes map[int]string
+}
+
+// verdict keeps what a request that checked a candidate of t decided.
+func (r *Result) verdict(seq int, t, reason string) {
+	if seq == 0 {
+		return
+	}
+	if r.Probes == nil {
+		r.Probes = map[int]string{}
+	}
+	if reason == "" {
+		r.Probes[seq] = fmt.Sprintf("the %s passes \"select\"", t)
+		return
+	}
+	r.Probes[seq] = fmt.Sprintf("the %s is rejected, the next one is checked: %s", t, reason)
 }
 
 // Stats count what a run did.

@@ -241,6 +241,10 @@ func (w *writes) cycle(d, cr *wop, r *rec) {
 	for _, v := range vars {
 		names = append(names, v.field)
 	}
+	post.bodySrc = "a copy of " + r.origin()
+	if len(names) > 0 {
+		post.bodySrc += fmt.Sprintf(" with other %s (token %q)", strings.Join(names, ", "), w.in.Token)
+	}
 	reason := fmt.Sprintf("create a copy of the %s, %s deletes it", r.table, d.c.Op.ID)
 	if len(names) > 0 {
 		reason = fmt.Sprintf("create a copy of the %s with other %s, %s deletes it", r.table, strings.Join(names, ", "), d.c.Op.ID)
@@ -250,7 +254,7 @@ func (w *writes) cycle(d, cr *wop, r *rec) {
 		w.conflict(post, resp, r, false)
 		return
 	}
-	made := &rec{table: r.table, data: cp, keys: r.keys}
+	made := &rec{table: r.table, data: cp, keys: r.keys, note: fmt.Sprintf("the copy #%d POST %s created", resp.Seq, post.url)}
 	if o, ok := resp.Body.(map[string]any); ok {
 		made.data, _ = fillIn(o, cp).(map[string]any)
 	}
@@ -272,8 +276,11 @@ func (w *writes) cycle(d, cr *wop, r *rec) {
 		c := *d
 		del = &c
 	}
-	del.url = u
-	if _, ok := w.send(del, http.MethodDelete, fmt.Sprintf("delete the copy #%d created", resp.Seq)); !ok {
+	keep := del.vals
+	del.url, del.vals = u, vals // the log shows the values that address the copy
+	_, ok = w.send(del, http.MethodDelete, fmt.Sprintf("delete the copy #%d created", resp.Seq))
+	del.vals = keep
+	if !ok {
 		w.res.problem(CodeCopyLeft, d.c.Op.ID, "#%d DELETE %s did not delete the copy #%d created; delete it by hand", del.seq, u, resp.Seq)
 		return
 	}

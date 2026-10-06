@@ -418,19 +418,25 @@ func parseParams(b []byte) (map[string]Param, error) {
 // param returns the entry for a parameter of an operation: the one of the
 // operation first, names ignore case.
 func (c *Config) param(opID, name string) (Param, bool) {
-	var plain *Param
-	for k, p := range c.Params {
+	p, _, ok := c.paramEntry(opID, name)
+	return p, ok
+}
+
+// paramEntry is param with the key of the entry ("GetShip.id", "planetCode").
+func (c *Config) paramEntry(opID, name string) (Param, string, bool) {
+	plain := ""
+	for _, k := range sortedKeys(c.Params) {
 		switch {
 		case strings.EqualFold(k, opID+"."+name):
-			return p, true
+			return c.Params[k], k, true
 		case strings.EqualFold(k, name):
-			plain = &p
+			plain = k
 		}
 	}
-	if plain != nil {
-		return *plain, true
+	if plain != "" {
+		return c.Params[plain], plain, true
 	}
-	return Param{}, false
+	return Param{}, "", false
 }
 
 // selection returns the entry of "select" for a table.

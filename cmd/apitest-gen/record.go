@@ -86,7 +86,7 @@ func recordCommand(o *options, out io.Writer) (err error) {
 		return err
 	}
 	rows, stop := findingRows(res, o.ignoreLinting)
-	lg.Findings = rows
+	lg.Findings, lg.Probes = rows, res.Probes
 	summary := fmt.Sprintf("%d operations, %d with new or changed schemas, %d unchanged; %d complete; %d records from %q; requests: %s",
 		res.Stats.Ops, res.Stats.Written, res.Stats.Unchanged, res.Stats.Done, res.Stats.Reused, record.RecordedKey, counts(client.Count))
 	lg.Summary = summary
@@ -156,7 +156,9 @@ func counts(m map[string]int) string {
 }
 
 // logEntry writes one request as a line: a heading when the tag changes,
-// the status colored, what was sent and answered under a failed one.
+// the status colored, what was sent and answered under a failed one and
+// where its values come from. A request that only checked a candidate for
+// "select" is no failure: its status stays dim.
 func logEntry(out io.Writer, st style, e record.Entry, tag *string) {
 	if e.Tag != *tag {
 		*tag = e.Tag
@@ -171,18 +173,24 @@ func logEntry(out io.Writer, st style, e record.Entry, tag *string) {
 	case e.Status/100 != 2:
 		color = red
 	}
+	if e.Probe && color != green {
+		color = dim
+	}
 	fmt.Fprintf(out, "  %s %-6s %s %s  %s\n", st.paint(dim, fmt.Sprintf("#%03d", e.N)), e.Method, st.paint(color, fmt.Sprintf("%-3s", status)), e.URL, st.paint(dim, e.Why))
-	if e.Err != nil {
-		fmt.Fprintln(out, "         "+st.paint(red, "error:  "+e.Err.Error()))
+	if !e.Failed() {
 		return
 	}
-	if e.Status/100 != 2 {
-		if e.Body != nil {
-			fmt.Fprintln(out, "         "+st.paint(dim, "sent:   "+record.Clip(e.Body)))
-		}
-		if e.Resp != nil {
-			fmt.Fprintln(out, "         "+st.paint(dim, "answer: "+record.Clip(e.Resp)))
-		}
+	if e.Err != nil {
+		fmt.Fprintln(out, "         "+st.paint(red, "error:  "+e.Err.Error()))
+	}
+	if e.Body != nil {
+		fmt.Fprintln(out, "         "+st.paint(dim, "sent:   "+record.Clip(e.Body)))
+	}
+	if e.Resp != nil {
+		fmt.Fprintln(out, "         "+st.paint(dim, "answer: "+record.Clip(e.Resp)))
+	}
+	for _, o := range e.Origin {
+		fmt.Fprintln(out, "         "+st.paint(dim, "from:   "+o))
 	}
 }
 

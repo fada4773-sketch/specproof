@@ -24,6 +24,9 @@ type runLog struct {
 	Summary       string
 	Files         []string
 	Err           error
+	// Probes are the verdicts on the requests that checked a candidate for
+	// "select", by request number.
+	Probes map[int]string
 }
 
 // write renders the log as one HTML page and returns its absolute path.
@@ -73,6 +76,11 @@ type (
 		Sent, Answer        template.HTML
 		HasSent, HasAnswer  bool
 		Error               string
+		// Probe checked a candidate for "select"; Verdict is what it decided
+		Probe   bool
+		Verdict string
+		// Origin tells where the parameters and the body come from
+		Origin []string
 	}
 )
 
@@ -102,7 +110,8 @@ func (l *runLog) view() logView {
 			v.Tags = append(v.Tags, tagView{Name: e.Tag})
 		}
 		t := &v.Tags[len(v.Tags)-1]
-		r := requestView{N: fmt.Sprintf("#%03d", e.N), Method: e.Method, URL: e.URL, Why: e.Why, Status: fmt.Sprint(e.Status), StatusClass: "ok"}
+		r := requestView{N: fmt.Sprintf("#%03d", e.N), Method: e.Method, URL: e.URL, Why: e.Why, Status: fmt.Sprint(e.Status), StatusClass: "ok",
+			Probe: e.Probe, Verdict: l.Probes[e.N], Origin: e.Origin}
 		switch {
 		case e.Err != nil:
 			r.Status, r.StatusClass, r.Error = "ERR", "fail", e.Err.Error()
@@ -111,7 +120,10 @@ func (l *runLog) view() logView {
 		case e.Status/100 != 2:
 			r.StatusClass = "fail"
 		}
-		r.Failed = r.StatusClass != "ok"
+		if e.Probe && r.StatusClass != "ok" {
+			r.StatusClass = "probe" // an answer that only rejects a candidate
+		}
+		r.Failed = e.Failed()
 		if e.Body != nil {
 			r.Sent, r.HasSent = jsonHTML(e.Body), true
 		}
@@ -219,6 +231,7 @@ h2{font-size:15px;margin:0}
 .warn{color:var(--warn);background:var(--warn-bg)}
 .info{color:var(--info);background:var(--info-bg)}
 .ok{color:var(--ok);background:var(--ok-bg)}
+.probe{color:var(--dim);background:var(--code)}
 section{background:var(--panel);border:1px solid var(--line);border-radius:10px;margin:16px 0;overflow:hidden}
 section>details>summary,section>.head{padding:12px 16px;cursor:pointer;display:flex;gap:10px;align-items:center}
 section>details[open]>summary{border-bottom:1px solid var(--line)}
@@ -241,6 +254,9 @@ td.msg{white-space:pre-wrap;word-break:break-word}
 .req .m{width:4.5em;font-weight:700}
 .req .url{word-break:break-all}
 .req .why{color:var(--dim);margin-left:auto;text-align:right}
+.req .tagline{color:var(--dim);border:1px solid var(--line);border-radius:6px;padding:0 6px;font-size:11px;white-space:nowrap}
+.verdict{color:var(--dim);font-style:italic;white-space:pre-wrap}
+ul.origin{margin:0;padding-left:18px;font-size:12.5px}
 .req .pane{padding:4px 16px 12px 40px;display:grid;gap:8px}
 .label{color:var(--dim);font-size:12px;text-transform:uppercase;letter-spacing:.04em}
 pre{margin:0;background:var(--code);border:1px solid var(--line);border-radius:8px;padding:10px;overflow:auto;max-height:480px}
@@ -283,9 +299,11 @@ ul.files{margin:0;padding-left:20px}
 </div>
 
 {{range .Tags}}<section class="tag"><details open><summary><h2>{{.Name}}</h2><span class="meta">{{len .Requests}} requests</span>{{if .Failed}}<span class="chip fail">{{.Failed}} failed</span>{{end}}</summary>
-{{range .Requests}}<details class="req{{if .Failed}} failed{{end}}"{{if .Failed}} open{{end}}><summary class="mono"><span class="n">{{.N}}</span><span class="m">{{.Method}}</span><span class="badge {{.StatusClass}}">{{.Status}}</span><span class="url">{{.URL}}</span><span class="why">{{.Why}}</span></summary>
+{{range .Requests}}<details class="req{{if .Failed}} failed{{end}}"{{if .Failed}} open{{end}}><summary class="mono"><span class="n">{{.N}}</span><span class="m">{{.Method}}</span><span class="badge {{.StatusClass}}">{{.Status}}</span><span class="url">{{.URL}}</span>{{if .Probe}}<span class="tagline">select check</span>{{end}}<span class="why">{{.Why}}</span></summary>
 <div class="pane">
 {{if .Error}}<div class="error">{{.Error}}</div>{{end}}
+{{if .Verdict}}<div class="verdict">{{.Verdict}}</div>{{end}}
+{{if .Origin}}<div class="label">where the values come from</div><ul class="origin mono">{{range .Origin}}<li>{{.}}</li>{{end}}</ul>{{end}}
 {{if .HasSent}}<div class="label">sent</div><pre>{{.Sent}}</pre>{{end}}
 {{if .HasAnswer}}<div class="label">answer</div><pre>{{.Answer}}</pre>{{else}}<div class="label">no answer body</div>{{end}}
 </div></details>

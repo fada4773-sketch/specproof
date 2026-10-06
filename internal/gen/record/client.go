@@ -36,7 +36,18 @@ type Entry struct {
 	Status int // 0 if there was no answer
 	Resp   any
 	Err    error
+	// Probe marks a request that checks a candidate for "select" (its
+	// details, the records below it): an error answer only rejects the
+	// candidate, it is no failure of the run.
+	Probe bool
+	// Origin tells where the values of the request come from: one line
+	// per parameter and one for the body.
+	Origin []string
 }
+
+// Failed reports a request that failed: an error or a status other than
+// 2xx, unless it only checked a candidate for "select".
+func (e Entry) Failed() bool { return !e.Probe && (e.Err != nil || e.Status/100 != 2) }
 
 // String is the line of the request in the log; a failed one shows what was
 // sent and what came back.
@@ -46,16 +57,20 @@ func (e Entry) String() string {
 		status = "ERR"
 	}
 	line := fmt.Sprintf("#%03d %-14s %-6s %s → %s  %s", e.N, "["+e.Tag+"]", e.Method, e.URL, status, e.Why)
-	if e.Err != nil {
-		return line + "\n       error:  " + e.Err.Error()
+	if !e.Failed() {
+		return line
 	}
-	if e.Status/100 != 2 {
-		if e.Body != nil {
-			line += "\n       sent:   " + clip(text(e.Body))
-		}
-		if e.Resp != nil {
-			line += "\n       answer: " + clip(text(e.Resp))
-		}
+	if e.Err != nil {
+		line += "\n       error:  " + e.Err.Error()
+	}
+	if e.Body != nil {
+		line += "\n       sent:   " + clip(text(e.Body))
+	}
+	if e.Resp != nil {
+		line += "\n       answer: " + clip(text(e.Resp))
+	}
+	for _, o := range e.Origin {
+		line += "\n       from:   " + o
 	}
 	return line
 }
@@ -83,9 +98,21 @@ type response struct {
 func (r response) ok() bool { return r.Status/100 == 2 }
 
 // do sends one request and logs it; a status other than 2xx is no error.
-func (c *Client) do(ctx context.Context, method, path string, body any, tag, why string) (resp response, err error) {
+// origin tells where its values come from.
+func (c *Client) do(ctx context.Context, method, path string, body any, tag, why string, origin ...string) (response, error) {
+	return c.call(ctx, Entry{Tag: tag, Why: why, Method: method, URL: path, Body: body, Origin: origin})
+}
+
+// probe sends a GET that checks a candidate for "select"; an error answer
+// rejects the candidate.
+func (c *Client) probe(ctx context.Context, path, tag, why string, origin []string) (response, error) {
+	return c.call(ctx, Entry{Tag: tag, Why: why, Method: http.MethodGet, URL: path, Probe: true, Origin: origin})
+}
+
+func (c *Client) call(ctx context.Context, e Entry) (resp response, err error) {
 	c.n++
-	e := Entry{N: c.n, Tag: tag, Why: why, Method: method, URL: path, Body: body}
+	e.N = c.n
+	method, path, body := e.Method, e.URL, e.Body
 	defer func() {
 		resp.Seq = e.N
 		e.Status, e.Resp, e.Err = resp.Status, resp.Body, err

@@ -22,6 +22,17 @@ contain breaking changes, which are listed here.
   tags and requests, failed requests open, a filter and "only failed". The
   console then shows only a short report (summary, finding counts, files,
   the path of the log).
+- `apitest-gen record`: the GETs `select` sends to check a candidate (its
+  `details`, the records below it) are select checks, not failures: an
+  error answer only rejects the candidate. The log shows them dim and
+  marked "select check", with what each one decided (rejected and why, or
+  passes); they count in no "failed".
+- `apitest-gen record`: every request carries where its values come from:
+  each parameter (`"params".<key>`, the field of a selected record and the
+  request it was selected from, the example or default of the spec) and
+  the body (the answer of the GET of the same path, the record, a copy,
+  the fields of the selected records, `"bodies"`). The console shows it
+  under a failed request (`from:`), the HTML log under every request.
 - `apitest-gen record`: `"tables"` in the defaults file describes the table
   of a DTO as the database knows it: `unique` indexes (fields as the API or
   as columns name them, `where` of a partial index), `softDelete` and

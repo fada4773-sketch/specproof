@@ -25,6 +25,20 @@ type rec struct {
 	keys  map[string]bool
 	ops   []string // the GETs whose answers the data holds
 	path  string   // the POST path whose list it was selected from, "" for the first of a table
+	seq   int      // the request it was selected from; 0 for a stored record
+	note  string   // where it comes from, if not from a list: a copy the run created
+}
+
+// origin names the record and the request it comes from, for the log.
+func (r *rec) origin() string {
+	op, u, _ := strings.Cut(r.from, " ")
+	if r.note != "" {
+		return r.note
+	}
+	if r.seq == 0 {
+		return fmt.Sprintf("the %s stored in %q (%s %s)", r.table, RecordedKey, op, u)
+	}
+	return fmt.Sprintf("the %s selected from #%d GET %s (%s)", r.table, r.seq, u, op)
 }
 
 // known are the values the parameters can take: the fields of the
@@ -33,11 +47,12 @@ type known struct {
 	scoped map[string]any    // "table.field" (lower case) → value
 	plain  map[string]any    // "field" → value of the first table that has it
 	names  map[string]string // "table.field" → field name as the record writes it
+	from   map[string]string // table → the record its fields come from, for the log
 	tables []string
 }
 
 func newKnown() *known {
-	return &known{scoped: map[string]any{}, plain: map[string]any{}, names: map[string]string{}}
+	return &known{scoped: map[string]any{}, plain: map[string]any{}, names: map[string]string{}, from: map[string]string{}}
 }
 
 func (k *known) clone() *known {
@@ -51,8 +66,31 @@ func (k *known) clone() *known {
 	for x, v := range k.names {
 		c.names[x] = v
 	}
+	for x, v := range k.from {
+		c.from[x] = v
+	}
 	c.tables = append(c.tables, k.tables...)
 	return c
+}
+
+// addRec takes the simple fields of a record and where they come from.
+func (k *known) addRec(r *rec) {
+	k.from[r.table] = r.origin()
+	k.add(r.table, r.data)
+}
+
+// value is a field of table t as a parameter value, with its origin.
+func (k *known) value(t, lf string) (pval, bool) {
+	v, ok := k.scoped[t+"."+lf]
+	if !ok {
+		return pval{}, false
+	}
+	f := k.names[t+"."+lf]
+	src := t + "." + f
+	if from := k.from[t]; from != "" {
+		src += " of " + from
+	}
+	return pval{v: v, table: t, field: f, src: src}, true
 }
 
 // add takes the simple fields of a record of table t.
@@ -85,6 +123,18 @@ type pval struct {
 	// fields ("format" in "params")
 	format string
 	parts  []pval
+	// src tells where the value comes from, for the log
+	src string
+}
+
+// origin is one line per parameter: its value and where it comes from.
+func origin(vals map[string]pval) []string {
+	var out []string
+	for _, name := range sortedKeys(vals) {
+		v := vals[name]
+		out = append(out, fmt.Sprintf("{%s} = %s ← %s", name, text(v.v), v.src))
+	}
+	return out
 }
 
 // field finds a field for a parameter: in the table the path segment in
@@ -94,8 +144,8 @@ func (k *known) field(seg, name string) (pval, bool) {
 	ln := strings.ToLower(name)
 	try := func(t string, names ...string) (pval, bool) {
 		for _, n := range names {
-			if v, ok := k.scoped[t+"."+n]; ok {
-				return pval{v: v, table: t, field: k.names[t+"."+n]}, true
+			if v, ok := k.value(t, n); ok {
+				return v, true
 			}
 		}
 		return pval{}, false
@@ -123,7 +173,7 @@ func (k *known) field(seg, name string) (pval, bool) {
 		if v, ok := k.plain[ln]; ok {
 			for _, t := range k.tables {
 				if x, ok := k.scoped[t+"."+ln]; ok && same(x, v) {
-					return pval{v: v, table: t, field: k.names[t+"."+ln]}, true
+					return k.value(t, ln)
 				}
 			}
 		}
@@ -187,12 +237,19 @@ type reader struct {
 }
 
 // get sends a GET once; a second request for the same URL takes the answer
-// of the first.
-func (rd *reader) get(u, why string) (response, error) {
+// of the first. A probe checks a candidate for "select": an error answer
+// only rejects it.
+func (rd *reader) get(u, why string, vals map[string]pval, probe bool) (response, error) {
 	if r, ok := rd.cache[u]; ok {
 		return r, nil
 	}
-	r, err := rd.c.do(rd.ctx, http.MethodGet, u, nil, rd.tag, why)
+	var r response
+	var err error
+	if probe {
+		r, err = rd.c.probe(rd.ctx, u, rd.tag, why, origin(vals))
+	} else {
+		r, err = rd.c.do(rd.ctx, http.MethodGet, u, nil, rd.tag, why, origin(vals)...)
+	}
 	if err != nil {
 		return r, err
 	}
@@ -257,21 +314,34 @@ func (rd *reader) value(op *spec.Operation, p *openapi3.Parameter, k *known) (pv
 	if p.In == openapi3.ParameterInPath {
 		seg = model.SegmentBefore(op.Path, p.Name)
 	}
-	if e, ok := rd.cfg.param(op.ID, p.Name); ok {
+	if e, key, ok := rd.cfg.paramEntry(op.ID, p.Name); ok {
+		where := fmt.Sprintf("\"params\".%s", key)
+		var v pval
 		switch {
 		case e.Format != "":
-			return rd.format(e.Format, k)
+			v, ok = rd.format(e.Format, k)
+			if ok {
+				var parts []string
+				for _, x := range v.parts {
+					parts = append(parts, x.src)
+				}
+				v.src = fmt.Sprintf("%s (format %q: %s)", where, e.Format, strings.Join(parts, "; "))
+			}
 		case e.Field != "":
 			if dto, f, scoped := strings.Cut(e.Field, "."); scoped {
 				// "Ship.id": the field of the record of that DTO, also for
 				// generic names a path segment does not name
-				t, lf := rd.n.table(dto), strings.ToLower(f)
-				x, ok := k.scoped[t+"."+lf]
-				return pval{v: x, table: t, field: k.names[t+"."+lf]}, ok
+				v, ok = k.value(rd.n.table(dto), strings.ToLower(f))
+			} else {
+				v, ok = k.field(seg, e.Field)
 			}
-			return k.field(seg, e.Field)
+			if ok {
+				v.src = fmt.Sprintf("%s (field %q): %s", where, e.Field, v.src)
+			}
+		default:
+			v = pval{v: e.Value, src: where}
 		}
-		return pval{v: e.Value}, true
+		return v, ok
 	}
 	if v, ok := k.field(seg, p.Name); ok {
 		return v, true
@@ -281,11 +351,11 @@ func (rd *reader) value(op *spec.Operation, p *openapi3.Parameter, k *known) (pv
 	}
 	switch {
 	case p.Example != nil:
-		return pval{v: spec.Normalize(p.Example)}, true
+		return pval{v: spec.Normalize(p.Example), src: "the example of the parameter in the spec"}, true
 	case p.Schema != nil && p.Schema.Value != nil && p.Schema.Value.Default != nil:
-		return pval{v: spec.Normalize(p.Schema.Value.Default)}, true
+		return pval{v: spec.Normalize(p.Schema.Value.Default), src: "the default of the parameter in the spec"}, true
 	case p.Required && p.Schema != nil && p.Schema.Value != nil && len(p.Schema.Value.Enum) > 0:
-		return pval{v: spec.Normalize(p.Schema.Value.Enum[0])}, true
+		return pval{v: spec.Normalize(p.Schema.Value.Enum[0]), src: "the first enum value of the parameter in the spec"}, true
 	}
 	return pval{}, false
 }
@@ -300,11 +370,7 @@ func (rd *reader) format(format string, k *known) (pval, bool) {
 		var v pval
 		var ok bool
 		if dto, f, scoped := strings.Cut(name, "."); scoped {
-			t, lf := rd.n.table(dto), strings.ToLower(f)
-			var x any
-			if x, ok = k.scoped[t+"."+lf]; ok {
-				v = pval{v: x, table: t, field: k.names[t+"."+lf]}
-			}
+			v, ok = k.value(rd.n.table(dto), strings.ToLower(f))
 		} else {
 			v, ok = k.field("", name)
 		}
@@ -359,7 +425,7 @@ func (rd *reader) readOps(ops []*spec.Operation) {
 				continue
 			}
 			progress = true
-			r, err := rd.get(u, "read "+op.ID)
+			r, err := rd.get(u, "read "+op.ID, vals, false)
 			if err != nil && len(rd.cache) == 0 {
 				rd.down = err
 				return
@@ -412,7 +478,7 @@ func (rd *reader) seedPhase() {
 // again reads a GET a second time; fields with another value are listed
 // for IgnoreFields.
 func (rd *reader) again(f *fetched) {
-	r, err := rd.c.do(rd.ctx, http.MethodGet, f.url, nil, rd.tag, "read "+f.op.ID+" again: do fields change?")
+	r, err := rd.c.do(rd.ctx, http.MethodGet, f.url, nil, rd.tag, "read "+f.op.ID+" again: do fields change?", origin(f.vals)...)
 	if err != nil || !r.ok() {
 		return
 	}
@@ -553,7 +619,7 @@ func (rd *reader) selectRec(t string, o map[string]any, f *fetched) *rec {
 	for k, v := range o {
 		data[k] = v
 	}
-	r := &rec{table: t, data: data, from: f.op.ID + " " + f.url, keys: map[string]bool{}, ops: []string{f.op.ID}}
+	r := &rec{table: t, data: data, from: f.op.ID + " " + f.url, keys: map[string]bool{}, ops: []string{f.op.ID}, seq: f.resp.Seq}
 	if k, id := idOf(o); id != nil {
 		r.id = id
 		r.keys[strings.ToLower(k)] = true
@@ -573,7 +639,7 @@ func (rd *reader) addRec(r *rec) {
 	opID, _, _ := strings.Cut(r.from, " ")
 	if rd.recs[t] == nil && (from == "" || strings.EqualFold(from, opID)) {
 		rd.recs[t] = r
-		rd.k.add(t, r.data)
+		rd.k.addRec(r)
 	}
 }
 
@@ -687,27 +753,34 @@ func (rd *reader) check(t string, o map[string]any, k *known, in []string, depth
 	}
 	k2 := k.clone()
 	k2.add(t, o)
+	k2.from[t] = fmt.Sprintf("the %s checked for \"select\"", t)
 	for _, path := range sortedKeys(sel.Details) {
 		op := rd.byPath(path)
 		if op == nil {
 			return fmt.Sprintf("details: no GET of the spec has the path %s", path)
 		}
-		u, _, ok := rd.url(op, k2)
+		u, vals, ok := rd.url(op, k2)
 		if !ok {
 			return fmt.Sprintf("details: no value for the parameters of %s", path)
 		}
-		r, err := rd.get(u, fmt.Sprintf("details of a %s for \"select\" (%s)", t, op.ID))
+		r, err := rd.get(u, fmt.Sprintf("details of a %s for \"select\" (%s)", t, op.ID), vals, true)
+		reason := ""
 		switch {
 		case err != nil:
-			return fmt.Sprintf("GET %s: %v", u, err)
+			reason = fmt.Sprintf("GET %s: %v", u, err)
 		case !r.ok():
-			return fmt.Sprintf("#%d GET %s answers %d", r.Seq, u, r.Status)
+			reason = fmt.Sprintf("#%d GET %s answers %d", r.Seq, u, r.Status)
 		case !filled(r.Body):
-			return fmt.Sprintf("#%d GET %s answers without data", r.Seq, u)
+			reason = fmt.Sprintf("#%d GET %s answers without data", r.Seq, u)
+		default:
+			c := sel.Details[path]
+			if why := passes(r.Body, c.Equal, c.Mandatory); why != "" {
+				reason = fmt.Sprintf("#%d GET %s: %s", r.Seq, u, why)
+			}
 		}
-		c := sel.Details[path]
-		if reason := passes(r.Body, c.Equal, c.Mandatory); reason != "" {
-			return fmt.Sprintf("#%d GET %s: %s", r.Seq, u, reason)
+		rd.res.verdict(r.Seq, t, reason)
+		if reason != "" {
+			return reason
 		}
 	}
 	if depth < 8 {
@@ -739,19 +812,24 @@ func (rd *reader) below(t string, k, k2 *known, depth int) string {
 		if _, _, before := rd.url(op, k); before {
 			continue
 		}
-		u, _, ok := rd.url(op, k2)
+		u, vals, ok := rd.url(op, k2)
 		if !ok {
 			continue
 		}
 		seen[s] = true
-		r, err := rd.get(u, fmt.Sprintf("does a %s below this %s pass \"select\"? (%s)", s, t, op.ID))
+		r, err := rd.get(u, fmt.Sprintf("does a %s below this %s pass \"select\"? (%s)", s, t, op.ID), vals, true)
 		if err != nil || !r.ok() {
-			return fmt.Sprintf("#%d GET %s fails, so no %s can be selected", r.Seq, u, s)
+			reason := fmt.Sprintf("#%d GET %s fails, so no %s can be selected", r.Seq, u, s)
+			rd.res.verdict(r.Seq, t, reason)
+			return reason
 		}
 		_, elems, _, _ := listOf(responseSchema(op, r.Status), r.Body)
 		if i, reasons := rd.choose(s, elems, k2, k2.tables, depth+1); i < 0 {
-			return fmt.Sprintf("no %s below it passes (#%d GET %s, %d elements%s)", s, r.Seq, u, len(elems), list(reasons))
+			reason := fmt.Sprintf("no %s below it passes (#%d GET %s, %d elements%s)", s, r.Seq, u, len(elems), list(reasons))
+			rd.res.verdict(r.Seq, t, reason)
+			return reason
 		}
+		rd.res.verdict(r.Seq, t, "")
 	}
 	return ""
 }

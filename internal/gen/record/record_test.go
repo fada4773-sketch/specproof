@@ -1411,19 +1411,22 @@ paths:
 	}
 	op := &spec.Operation{ID: "GetShipsAsTable", Method: http.MethodPost, Path: "/Ship/table", Op: doc.Paths.Value("/Ship/table").Post}
 	k := newKnown()
-	k.add("dock", map[string]any{"dockCode": "D1"})
+	k.addRec(&rec{table: "dock", data: map[string]any{"dockCode": "D1"}, from: "GetDocks /Planet/P1/Dock", seq: 3})
 	k.add("planet", map[string]any{"planetCode": "P1"})
 	w := &writes{rd: &reader{k: k}, in: Input{Config: &Config{}}}
-	body, missing := w.queryBody(op)
+	body, from, missing := w.queryBody(op)
 	if text(body) != `{"dockCodes":["D1"],"planetCode":"P1"}` || !slices.Equal(missing, []string{"filters"}) {
 		t.Errorf("without bodies: %s, missing %v", text(body), missing)
+	}
+	if want := "dockCodes ← dock.dockCode of the dock selected from #3 GET /Planet/P1/Dock (GetDocks)"; len(from) != 2 || from[0] != want {
+		t.Errorf("from: %q", from)
 	}
 	c, err := Parse([]byte(`{"bodies": {"$comment": "x", "GetShipsAsTable": {"filters": [{"field": "name"}], "planetCode": "P2"}}}`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	w.in.Config = c
-	body, missing = w.queryBody(op)
+	body, _, missing = w.queryBody(op)
 	if text(body) != `{"dockCodes":["D1"],"filters":[{"field":"name"}],"planetCode":"P2"}` || len(missing) > 0 {
 		t.Errorf("with bodies: %s, missing %v", text(body), missing)
 	}
@@ -1730,5 +1733,107 @@ func TestRecordCopySeed(t *testing.T) {
 	equal(t, "CreateShip answer", created, `{"id":3,"shipCode":"S1-copy","dockId":1,"name":"Falcon"}`)
 	if got := strings.Join(res.Recorded.SeedOrder, ","); got != "Planet,Dock,Ship" {
 		t.Errorf("seed order %s", got)
+	}
+}
+
+// runEntries runs record and returns the requests as the log gets them.
+func runEntries(t *testing.T, sp *starport, config string) (*Result, []Entry) {
+	t.Helper()
+	srv := httptest.NewServer(sp)
+	t.Cleanup(srv.Close)
+	path := "../../../testdata/gen/record.yaml"
+	s, err := spec.Load(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := yamldoc.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Parse([]byte(config))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var entries []Entry
+	c := &Client{Opt: discover.Options{BaseURL: srv.URL}, Log: func(e Entry) { entries = append(entries, e) }}
+	res, err := Run(context.Background(), Input{Spec: s, Doc: doc, Config: cfg, Client: c, Writes: true, Token: "t1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return res, entries
+}
+
+// The GETs "select" sends to check a candidate are probes: an error answer
+// only rejects the candidate, it is no failure; the result keeps what each
+// one decided.
+func TestRecordProbes(t *testing.T) {
+	sp := newStarport()
+	sp.gone = map[string]bool{"/Planet/P1/Dock/D1/Config": true}
+	res, entries := runEntries(t, sp, recordConfig)
+	var d1, d2 *Entry
+	for i, e := range entries {
+		switch {
+		case e.URL == "/Planet/P1/Dock/D1/Config" && d1 == nil:
+			d1 = &entries[i]
+		case e.URL == "/Planet/P1/Dock/D2/Config" && d2 == nil:
+			d2 = &entries[i]
+		}
+	}
+	if d1 == nil || d2 == nil {
+		t.Fatalf("no details read: %v", entries)
+	}
+	if !d1.Probe || d1.Status != 404 || d1.Failed() || strings.Contains(d1.String(), "from:") {
+		t.Errorf("D1 details: probe %v status %d failed %v\n%s", d1.Probe, d1.Status, d1.Failed(), d1.String())
+	}
+	if v := res.Probes[d1.N]; !strings.Contains(v, "the dock is rejected, the next one is checked: #") || !strings.Contains(v, "answers 404") {
+		t.Errorf("verdict D1: %q", v)
+	}
+	if v := res.Probes[d2.N]; v != `the dock passes "select"` {
+		t.Errorf("verdict D2: %q", v)
+	}
+	if want := `{planetCode} = P1 ← "params".planetCode`; !slices.Contains(d1.Origin, want) {
+		t.Errorf("origin of D1: %q", d1.Origin)
+	}
+	if want := `{dockCode} = D1 ← dock.dockCode of the dock checked for "select"`; !slices.Contains(d1.Origin, want) {
+		t.Errorf("origin of D1: %q", d1.Origin)
+	}
+	if strings.Contains(notes(res), "/Planet/P1/Dock/D1/Config") {
+		t.Errorf("a rejected candidate is reported:\n%s", notes(res))
+	}
+}
+
+// A write that fails shows where its parameters and its body come from.
+func TestRecordOrigin(t *testing.T) {
+	sp := newStarport()
+	sp.soft = true
+	_, entries := runEntries(t, sp, recordConfig)
+	var post *Entry
+	for i, e := range entries {
+		if e.Method == http.MethodPost && e.URL == "/Planet/P1/Ship" {
+			post = &entries[i]
+		}
+	}
+	if post == nil || !post.Failed() {
+		t.Fatalf("POST /Planet/P1/Ship: %+v", post)
+	}
+	line := post.String()
+	for _, want := range []string{`from:   {planetCode} = P1 ← "params".planetCode`, "from:   body ← the ship selected from #", "GET /Planet/P1/Ship (GetShips)"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("log misses %q:\n%s", want, line)
+		}
+	}
+	var update *Entry
+	for i, e := range entries {
+		if e.Method == http.MethodPut && e.URL == "/Ship/id/101" {
+			update = &entries[i]
+		}
+	}
+	if update == nil || !slices.ContainsFunc(update.Origin, func(o string) bool {
+		return strings.HasPrefix(o, "body ← the answer of #") && strings.Contains(o, "GET /Ship/id/101 (the same path), the fields it lacks from the ship selected from #")
+	}) {
+		t.Errorf("origin of the PUT: %+v", update)
+	}
+	if update == nil || !slices.ContainsFunc(update.Origin, func(o string) bool { return strings.HasPrefix(o, "{id} = 101 ← ship.id of the ship selected from #") }) {
+		t.Errorf("origin of {id}: %+v", update)
 	}
 }

@@ -40,6 +40,7 @@ type wop struct {
 	seq      int       // the number of its request in the log
 	failed   bool      // sent and rejected
 	held     bool      // not sent on purpose: no copy of its record can be made
+	bodySrc  string    // where the body comes from, for the log
 	why      string    // why it has no record, for the notes
 }
 
@@ -126,7 +127,7 @@ func (w *writes) resolve(x *wop) {
 	k := w.rd.k
 	if x.rec != nil && x.rec != w.rd.recs[x.table] {
 		k = k.clone()
-		k.add(x.table, x.rec.data)
+		k.addRec(x.rec)
 	}
 	x.url, x.vals, _ = w.rd.url(op, k)
 	if x.why == "" && x.url == "" {
@@ -171,7 +172,7 @@ func (w *writes) urlFor(op *spec.Operation, r *rec) (string, map[string]pval, bo
 	k := w.rd.k
 	if r != w.rd.recs[r.table] {
 		k = k.clone()
-		k.add(r.table, r.data)
+		k.addRec(r)
 	}
 	return w.rd.url(op, k)
 }
@@ -313,29 +314,35 @@ func (w *writes) queries(tag string) {
 		if x.url == "" {
 			continue
 		}
-		body, missing := w.queryBody(x.c.Op)
+		body, from, missing := w.queryBody(x.c.Op)
 		if len(missing) > 0 {
 			w.res.note(CodeNotExecuted, x.c.Op.ID, "POST %s is not sent: no value read for its required fields %s", x.c.Op.Path, strings.Join(missing, ", "))
 			continue
 		}
 		x.body = body
+		x.bodySrc = "fields of the selected records: " + strings.Join(from, "; ")
+		if len(from) == 0 {
+			x.bodySrc = "no field of a selected record fits it"
+		}
 		w.send(x, http.MethodPost, "read "+x.c.Op.ID+" (a POST that only reads)")
 	}
 }
 
 // queryBody fills the fields of the body of a query with the values of the
-// selected records (planetCode, dockCode); it returns the required
-// fields without a value.
-func (w *writes) queryBody(op *spec.Operation) (map[string]any, []string) {
+// selected records (planetCode, dockCode); it returns where each value
+// comes from and the required fields without a value.
+func (w *writes) queryBody(op *spec.Operation) (map[string]any, []string, []string) {
 	body := map[string]any{}
 	ref := requestSchema(op)
 	if ref == nil || ref.Value == nil {
-		return body, nil
+		return body, nil, nil
 	}
+	var from []string
 	props, req := dict.Properties(ref.Value)
 	for _, k := range sortedKeys(props) {
 		if v, ok := w.rd.k.field("", k); ok {
 			body[k] = v.v
+			from = append(from, k+" ← "+v.src)
 			continue
 		}
 		// a list of simple values named in the plural: dockCodes takes
@@ -343,6 +350,7 @@ func (w *writes) queryBody(op *spec.Operation) (map[string]any, []string) {
 		if p := props[k].Value; p != nil && value.Type(p) == "array" && p.Items != nil && p.Items.Value != nil && isPrimitive(p.Items.Value) && strings.HasSuffix(k, "s") {
 			if v, ok := w.rd.k.field("", strings.TrimSuffix(k, "s")); ok {
 				body[k] = []any{v.v}
+				from = append(from, k+" ← "+v.src)
 			}
 		}
 	}
@@ -355,7 +363,7 @@ func (w *writes) queryBody(op *spec.Operation) (map[string]any, []string) {
 			missing = append(missing, k)
 		}
 	}
-	return body, missing
+	return body, from, missing
 }
 
 // tagWrites sends the writes of one tag: first every PUT and PATCH, then the
@@ -536,6 +544,7 @@ func (w *writes) recreate(d *wop, u string, vals map[string]pval, cr *wop, r *re
 		post.url, post.vals, _ = w.urlFor(cr.c.Op, r)
 	}
 	post.body = w.requestBody(cr.c.Op, r.data)
+	post.bodySrc = r.origin()
 	if resp, ok := w.send(post, http.MethodPost, fmt.Sprintf("create the %s again that #%d deleted (%s)", r.table, del.seq, cr.c.Op.ID)); !ok {
 		w.res.problem(CodeWriteFailed, cr.c.Op.ID, "the %s deleted by #%d is missing in the instance now; create it again with the body of #%d (%s)",
 			r.table, del.seq, resp.Seq, clip(text(post.body)))
@@ -553,7 +562,7 @@ func (w *writes) recreate(d *wop, u string, vals map[string]pval, cr *wop, r *re
 
 // send sends one write and keeps the answer.
 func (w *writes) send(x *wop, method, why string) (response, bool) {
-	resp, err := w.rd.c.do(w.rd.ctx, method, x.url, x.body, x.tag, why)
+	resp, err := w.rd.c.do(w.rd.ctx, method, x.url, x.body, x.tag, why, w.origin(x)...)
 	x.seq = resp.Seq
 	if err != nil {
 		x.failed = true
@@ -569,6 +578,21 @@ func (w *writes) send(x *wop, method, why string) (response, bool) {
 	}
 	x.resp, x.sent, x.failed = &resp, true, false
 	return resp, true
+}
+
+// origin tells where the values of a write come from: its parameters, its
+// body and the body "bodies" lays over it.
+func (w *writes) origin(x *wop) []string {
+	out := origin(x.vals)
+	if x.body != nil && x.bodySrc != "" {
+		out = append(out, "body ← "+x.bodySrc)
+	}
+	if w.in.Config != nil {
+		if _, ok := w.in.Config.Bodies[x.c.Op.ID]; ok && x.body != nil {
+			out = append(out, fmt.Sprintf("body: %q.%s laid over it", "bodies", x.c.Op.ID))
+		}
+	}
+	return out
 }
 
 func short(v any) string {
@@ -650,11 +674,18 @@ func (w *writes) sameGet(u *wop) *fetched {
 // is used.
 func (w *writes) bodyFor(u *wop) any {
 	src := u.rec.dataOrNil()
+	if u.rec != nil {
+		u.bodySrc = u.rec.origin()
+	}
 	if f := w.sameGet(u); f != nil {
 		if _, isList := f.resp.Body.([]any); !isList || isArray(requestSchema(u.c.Op)) {
 			// the GET wins, the record keeps what it lacks: a detail GET
 			// may leave out fields its list has (DockCode next to a Dock object)
 			src = fillIn(f.resp.Body, src)
+			u.bodySrc = fmt.Sprintf("the answer of #%d GET %s (the same path)", f.resp.Seq, f.url)
+			if u.rec != nil {
+				u.bodySrc += ", the fields it lacks from " + u.rec.origin()
+			}
 		}
 	}
 	return w.requestBody(u.c.Op, src)

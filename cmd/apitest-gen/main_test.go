@@ -654,4 +654,43 @@ func TestLogEntryBodies(t *testing.T) {
 	if !strings.Contains(b.String(), `sent:   {"name":"North"}`) || !strings.Contains(b.String(), `answer: {"message":"exists"}`) || strings.Contains(b.String(), "── Dock") {
 		t.Errorf("a write that failed:\n%s", b.String())
 	}
+	b.Reset()
+	e.Origin = []string{`{dockCode} = D1 ← "params".dockCode`, "body ← the dock selected from #2 GET /Planet/P1/Dock (GetDocks)"}
+	logEntry(&b, style{}, e, &tag)
+	if !strings.Contains(b.String(), `from:   {dockCode} = D1 ← "params".dockCode`) || !strings.Contains(b.String(), "from:   body ← the dock selected from #2") {
+		t.Errorf("a write that failed, with its origin:\n%s", b.String())
+	}
+	b.Reset()
+	probe := record.Entry{N: 4, Tag: "Dock", Method: "GET", URL: "/Dock/D1/Config", Why: "details", Status: 404, Resp: map[string]any{"message": "none"}, Probe: true, Origin: e.Origin}
+	logEntry(&b, style{}, probe, &tag)
+	if strings.Contains(b.String(), "answer:") || strings.Contains(b.String(), "from:") || !strings.Contains(b.String(), "#004 GET    404 /Dock/D1/Config") {
+		t.Errorf("a select check that rejects a candidate:\n%s", b.String())
+	}
+}
+
+// In the HTML log a select check that rejects a candidate is no failure:
+// it stays closed, shows its verdict and counts in no "failed".
+func TestRunLogProbe(t *testing.T) {
+	l := &runLog{Entries: []record.Entry{
+		{N: 1, Tag: "Dock", Method: "GET", URL: "/Dock/D1/Config", Status: 404, Probe: true, Origin: []string{"{dockCode} = D1 ← x"}},
+		{N: 2, Tag: "Dock", Method: "PUT", URL: "/Dock/D2", Status: 500, Origin: []string{"body ← the dock selected from #3"}},
+	}, Probes: map[int]string{1: "the dock is rejected, the next one is checked: #1 GET /Dock/D1/Config answers 404"}}
+	v := l.view()
+	if len(v.Tags) != 1 || v.Tags[0].Failed != 1 {
+		t.Fatalf("tags: %+v", v.Tags)
+	}
+	p, w := v.Tags[0].Requests[0], v.Tags[0].Requests[1]
+	if p.Failed || p.StatusClass != "probe" || !strings.Contains(p.Verdict, "rejected") || !w.Failed || w.StatusClass != "fail" {
+		t.Errorf("probe %+v, write %+v", p, w)
+	}
+	path, err := l.write(filepath.Join(t.TempDir(), "log.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(path)
+	for _, want := range []string{"select check", "where the values come from", "body ← the dock selected from #3", "the next one is checked"} {
+		if !strings.Contains(string(b), want) {
+			t.Errorf("log misses %q", want)
+		}
+	}
 }
