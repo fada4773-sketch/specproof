@@ -99,6 +99,7 @@ func Analyse(s *spec.Spec, f *File, run defaults.Run, seed uint64) (*Analysis, e
 			an.Notes = append(an.Notes, Note{CodeSkipped, method(c.Op), "left out: " + c.NotBuildable})
 			continue
 		}
+		a.cur = i
 		st := a.entry(c, section)
 		a.index[st] = i
 		a.place(st, i)
@@ -128,15 +129,10 @@ func (a *analyser) producible() {
 	seen := map[string]bool{}
 	for _, op := range a.s.Ops {
 		for _, b := range a.binds.By(op) {
-			if b.Source.HasConst || b.Source.FromRequest {
+			if b.Source.HasConst {
 				continue
 			}
-			from := b.Source.Pointer
-			if b.Source.Header != "" {
-				from = "header " + b.Source.Header
-			} else if from == "" {
-				from = "/"
-			}
+			from := source(b.Source)
 			name := b.Param.Name
 			if slices.Contains(genericParams, strings.ToLower(name)) {
 				name = lowerFirst(word(singular(b.Producer.Group()))) + "Id"
@@ -150,6 +146,22 @@ func (a *analyser) producible() {
 	}
 	// longer names first: "originDockId" is a dock id, not an "id"
 	slices.SortStableFunc(a.products, func(x, y produced) int { return len(y.name) - len(x.name) })
+}
+
+// source is the save source of a binding: a pointer into the answer, a
+// header, or a pointer into the request the producer sent.
+func source(src bind.Source) string {
+	switch {
+	case src.Header != "":
+		return "header " + src.Header
+	case src.FromRequest && src.Pointer == "":
+		return "request /"
+	case src.FromRequest:
+		return "request " + src.Pointer
+	case src.Pointer == "":
+		return "/"
+	}
+	return src.Pointer
 }
 
 // refers returns what a body field refers to, if anything.
@@ -273,6 +285,8 @@ type analyser struct {
 	// names unique
 	saved    map[string]string
 	products []produced
+	// cur is the position of the case an entry is built for
+	cur int
 }
 
 // entry builds the entry of a case.
@@ -333,15 +347,20 @@ func (a *analyser) entry(c *cases.Case, section string) *Step {
 // apitest binds it to an earlier answer, else its example or a generated
 // value.
 func (a *analyser) paramValue(c *cases.Case, p *openapi3.Parameter) *yaml.Node {
-	if b := a.binds.For(c.Op, p); b != nil && !b.Source.HasConst && !b.Source.FromRequest {
+	if b := a.binds.For(c.Op, p); b != nil && !b.Source.HasConst {
 		if prod := a.producer(b.Producer); prod != nil {
-			from := b.Source.Pointer
-			if b.Source.Header != "" {
-				from = "header " + b.Source.Header
+			return scalarNode("{{" + a.save(prod, source(b.Source), p.Name) + "}}")
+		}
+	}
+	// no binding: a value saved under its name, else the latest entry
+	// before it that has a field of that name
+	if !slices.Contains(genericParams, strings.ToLower(p.Name)) {
+		for _, name := range sortedKeys(a.saved) {
+			if strings.EqualFold(name, p.Name) {
+				return scalarNode("{{" + name + "}}")
 			}
-			if b.Source.Pointer == "" && b.Source.Header == "" {
-				from = "/"
-			}
+		}
+		if prod, from := a.earlier(p.Name); prod != nil {
 			return scalarNode("{{" + a.save(prod, from, p.Name) + "}}")
 		}
 	}
@@ -421,12 +440,73 @@ func (a *analyser) linked(field string) string {
 			return a.save(prod, p.from, p.name)
 		}
 	}
-	for name := range a.saved {
+	for _, name := range sortedKeys(a.saved) {
 		if matches(field, name) {
 			return name
 		}
 	}
+	if reference(field) {
+		if prod, from := a.earlier(field); prod != nil {
+			return a.save(prod, from, field)
+		}
+	}
 	return ""
+}
+
+// reference reports whether a field name says it refers to another record:
+// "dockId", "pilotCode", "orderNumber", but not "id" alone.
+func reference(field string) bool {
+	lower := strings.ToLower(field)
+	for _, suffix := range []string{"id", "code", "key", "number", "uuid"} {
+		if strings.HasSuffix(lower, suffix) && len(lower) > len(suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+// earlier finds the entry apitest runs last before the current case whose
+// answer (an object) or request body has a field of this name, ignoring
+// case: the source of a value no binding names. The answer wins over the
+// request of the same entry.
+func (a *analyser) earlier(field string) (*Step, string) {
+	var best *Step
+	from, at := "", -1
+	for _, st := range a.f.Steps {
+		i, ok := a.index[st]
+		if !ok || i >= a.cur || i < at || st.Op == nil {
+			continue
+		}
+		if m := responseMedia(st.Op, lowestSuccess(st.Op)); m != nil && m.Schema != nil {
+			if f, ok := objectField(m.Schema.Value, field); ok {
+				best, from, at = st, "/"+f, i
+				continue
+			}
+		}
+		if m := requestMedia(st.Op); m != nil && st.Body != nil && m.Schema != nil {
+			if f, ok := objectField(m.Schema.Value, field); ok {
+				best, from, at = st, "request /"+f, i
+			}
+		}
+	}
+	return best, from
+}
+
+// objectField finds a field of an object schema by name, ignoring case.
+func objectField(s *openapi3.Schema, name string) (string, bool) {
+	if s == nil || value.Type(s) == "array" {
+		return "", false
+	}
+	props := properties(s)
+	if props[name] != nil {
+		return name, true
+	}
+	for _, k := range sortedKeys(props) {
+		if strings.EqualFold(k, name) {
+			return k, true
+		}
+	}
+	return "", false
 }
 
 func scalar(v any) bool {

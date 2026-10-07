@@ -39,6 +39,18 @@ contain breaking changes, which are listed here.
   `"seed"`, `"select"`, `"tables"`, `"bodies"`, `"$recorded"`,
   `"$suggestions"`, `-read-only`, `-all`, `-show-bodies` and
   `record-log.html` are gone.
+- `apitest-gen record`: `save` also takes values from the request an entry
+  sent (`request /pilotCode`, `request /`, `request path <name>`,
+  `request query <name>`), for keys the client chooses. `-analyse` adds to
+  each entry the saves later entries need: bindings that read the request
+  of the producer, and parameters and id fields no binding names, matched
+  by name to a value saved before or to the latest earlier entry with such a
+  field.
+- `apitest-gen record`: `filter: {field: value}` keeps only the elements of a
+  list answer (an array, or the one array field of an object) that match;
+  keys are field names or JSON pointers, values may use placeholders. The
+  response gets `x-apitest-compare-unordered: true`, so apitest finds the
+  elements anywhere in the list.
 - The resource model of `apitest-gen` tells more shapes of a spec apart:
   - a DTO with a longer stem that a path names (`DockDetailRead` with
     `/DockDetail/{id}`) is a resource of its own instead of part of `Dock`,
@@ -244,6 +256,11 @@ contain breaking changes, which are listed here.
 
 ### Fixed
 
+- `apitest-gen`: a key longer than 128 characters (a long path) is written in
+  its usual form also as the key of a list item (`- GET /long/path:`), with a
+  mapping or list as its value, and as the first key of a mapping value.
+  Before, the explicit form `? key` / `: value` stayed in these places or was
+  turned into invalid YAML ("Invalid child element in a block mapping").
 - `apitest-gen`: a request body or list item written inline as `allOf` of
   several `$ref`s (as code generators write a type with `x-go-type`, e.g.
   `[{$ref: ShipBase}, {$ref: ShipExtra}, {x-go-type: ShipCreate}]`)

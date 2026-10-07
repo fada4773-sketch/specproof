@@ -73,13 +73,14 @@ func Run(ctx context.Context, in Input) (*Result, error) {
 	// the requests must fit the schema before anything is sent
 	vars := map[string]any{}
 	for _, st := range f.Steps {
-		if r, missing := st.request(vars); len(missing) == 0 {
+		r, missing := st.request(vars)
+		if len(missing) == 0 {
 			if msg := requestFits(v, st, r); msg != "" {
 				res.problem(CodeRequest, st.where(), "%s; fix the entry in the record file", msg)
 			}
 		}
 		if st.Response != nil {
-			st.saveStored(vars)
+			st.saveFrom(st.Response, nil, r, vars)
 		}
 	}
 	if len(res.Problems) > 0 {
@@ -184,6 +185,17 @@ func send(ctx context.Context, in Input, res *Result, needs map[*Step]string, la
 				res.note(CodeSchema, st.where(), "the answer is not JSON; no body is stored")
 			}
 		}
+		if st.Filter != nil && ans.Status/100 == 2 {
+			if msg := st.filter(got, vars); msg != "" {
+				res.problem(CodeFilter, st.where(), "%s", msg)
+				sr.State, failed = StateFailed, true
+				res.Steps = append(res.Steps, sr)
+				continue
+			}
+			if got.Body != nil && len(listOf(got.Body).Content) == 0 {
+				res.note(CodeFilter, st.where(), "no element of the list matches the filter; the example is an empty list")
+			}
+		}
 		rejected := ans.Status/100 != 2 && (needs[st] != "" || st.Response == nil || st.Response.Status != ans.Status)
 		if rejected {
 			sr.State, sr.Sent, sr.Answer = StateFailed, r.body, clip(strings.TrimSpace(string(ans.Raw)))
@@ -206,8 +218,8 @@ func send(ctx context.Context, in Input, res *Result, needs map[*Step]string, la
 				res.note(CodeDiffers, st.where(), "sent again, the instance answers otherwise than stored (%s); is the instance empty? A field that changes on every run belongs under \"ignore\"", d)
 			}
 		}
-		if miss := st.saveFrom(got, ans.Header, vars); len(miss) > 0 {
-			res.problem(CodeSave, st.where(), "the answer has no value at %s; fix \"save\"", strings.Join(miss, ", "))
+		if miss := st.saveFrom(got, ans.Header, r, vars); len(miss) > 0 {
+			res.problem(CodeSave, st.where(), "no value at %s; fix \"save\"", strings.Join(miss, ", "))
 			failed = true
 		}
 		res.Steps = append(res.Steps, sr)
@@ -289,35 +301,13 @@ func (r *request) url(op *spec.Operation) (string, error) {
 	return path, nil
 }
 
-// saveStored keeps the saved values of a stored answer.
-func (st *Step) saveStored(vars map[string]any) {
-	st.saveFrom(st.Response, nil, vars)
-}
-
-// saveFrom keeps the values a step saves from an answer; missing lists the
-// sources the answer lacks. The headers of a stored answer are the ones
-// it stored.
-func (st *Step) saveFrom(r *Response, header http.Header, vars map[string]any) (missing []string) {
+// saveFrom keeps the values a step saves, from its answer or from the
+// request it sent; missing lists the sources without value. A stored
+// answer (header nil) gives the headers it stored.
+func (st *Step) saveFrom(r *Response, header http.Header, req *request, vars map[string]any) (missing []string) {
 	body := decode(r.Body)
 	for _, sv := range st.Save {
-		var v any
-		var ok bool
-		if name, isHeader := strings.CutPrefix(sv.From, "header "); isHeader {
-			h := header.Get(name)
-			if header == nil {
-				h = r.Headers[http.CanonicalHeaderKey(name)]
-			}
-			if h != "" {
-				v, ok = h, true
-				if strings.EqualFold(name, "Location") {
-					v = bind.LastSegment(h)
-				}
-			}
-		} else if sv.From == "/" {
-			v, ok = body, body != nil
-		} else {
-			v, ok = bind.Pointer(body, sv.From)
-		}
+		v, ok := st.source(sv.From, body, r, header, req)
 		if !ok {
 			missing = append(missing, sv.From)
 			continue
@@ -325,6 +315,60 @@ func (st *Step) saveFrom(r *Response, header http.Header, vars map[string]any) (
 		vars[sv.Name] = v
 	}
 	return missing
+}
+
+// source reads the value of a save source.
+func (st *Step) source(from string, body any, r *Response, header http.Header, req *request) (any, bool) {
+	if rest, ok := strings.CutPrefix(from, "request "); ok {
+		if req == nil {
+			return nil, false
+		}
+		if name, ok := strings.CutPrefix(rest, "path "); ok {
+			v, found := req.path[name]
+			return v, found
+		}
+		if name, ok := strings.CutPrefix(rest, "query "); ok {
+			v, found := req.query[name]
+			return v, found
+		}
+		if rest == "/" {
+			return req.body, req.hasBody
+		}
+		return bind.Pointer(req.body, rest)
+	}
+	if name, ok := strings.CutPrefix(from, "header "); ok {
+		h := r.Headers[http.CanonicalHeaderKey(name)]
+		if header != nil {
+			h = header.Get(name)
+		}
+		if h == "" {
+			return nil, false
+		}
+		if strings.EqualFold(name, "Location") {
+			return bind.LastSegment(h), true
+		}
+		return h, true
+	}
+	if from == "/" {
+		return body, body != nil
+	}
+	return bind.Pointer(body, from)
+}
+
+// filter keeps the elements of the list in an answer that match the
+// filter of the step; it returns why it cannot, or "".
+func (st *Step) filter(r *Response, vars map[string]any) string {
+	n, missing := fill(st.Filter, vars)
+	if len(missing) > 0 {
+		return fmt.Sprintf("filter: no value for {{%s}}", strings.Join(missing, "}}, {{"))
+	}
+	want, _ := decode(n).(map[string]any)
+	out, ok := filterList(r.Body, want)
+	if !ok {
+		return "filter: the answer holds no list (an array, or an object with one array field)"
+	}
+	r.Body = out
+	return ""
 }
 
 // savedHeaders are the headers of an answer a step saves values from;
@@ -353,7 +397,7 @@ func differs(st *Step, got *Response, ignore []string) string {
 		schema = m.Schema.Value
 	}
 	diffs := compare.Values(decode(st.Response.Body), decode(got.Body), compare.Options{Mode: compare.ModeSubset,
-		Ignore: append(slices.Clone(st.Ignore), ignore...), Schema: schema})
+		Ignore: append(slices.Clone(st.Ignore), ignore...), Schema: schema, Unordered: st.Filter != nil})
 	if len(diffs) == 0 {
 		return ""
 	}

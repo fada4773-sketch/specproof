@@ -150,7 +150,8 @@ path of the spec, with its `{parameters}`.
 | `path` | `{param: value}` | Every path parameter of the endpoint needs a value. |
 | `query` | `{param: value}` | Required query parameters need a value; optional ones are sent only if listed. |
 | `body` | the request body | JSON content written as YAML, nested objects and lists included. Required when the spec marks the body as required. |
-| `save` | `{name: source}` | Values of the answer for later entries. The source is a JSON pointer into the answer body (`/id`, `/items/0/code`, `/` for the whole body) or `header <Name>` (`header Location` takes the last path segment, like apitest). |
+| `save` | `{name: source}` | Values for later entries, from the answer or from the request this entry sent. See [Saved values and placeholders](#saved-values-and-placeholders). |
+| `filter` | `{field: value}` | Keeps only the elements of a list answer that match. See [Filtering a list](#filtering-a-list). |
 | `ignore` | `[field, ...]` | Fields apitest must not compare, such as time stamps or generated codes. They go into `x-apitest-ignore` of the operation. Names match at every level, and JSON pointers (`/items/*/updatedAt`) work too. |
 | `response` | the recorded answer | Written by `record`. Empty (`response:`) means "send this request and store the answer". |
 
@@ -164,19 +165,75 @@ path of the spec, with its `{parameters}`.
 
 ### Saved values and placeholders
 
-`save` gives a value of an answer a name; `{{name}}` uses it in any later
-entry: in `path`, `query` and anywhere in `body`, however deeply nested.
+`save` gives a value a name; `{{name}}` uses it in any later entry: in
+`path`, `query`, `filter` and anywhere in `body`, however deeply nested.
+
+| Source | Value |
+|---|---|
+| `/id`, `/items/0/code` | a JSON pointer into the answer body |
+| `/` | the whole answer body |
+| `header Location` | a header of the answer; `Location` gives its last path segment, like apitest |
+| `request /code` | a JSON pointer into the body this entry sent, after its placeholders were filled in |
+| `request /` | the whole body sent |
+| `request path dockId` | the value of a path parameter sent |
+| `request query zone` | the value of a query parameter sent |
+
+Values from the request are useful when the client chooses a key: a POST
+sends `{pilotCode: P001, …}` and answers without a body, and later entries
+address the pilot by that code.
 
 ```yaml
-      save: {dockId: /id, dockCode: /code}
-...
-      path: {dockId: '{{dockId}}'}            # takes the value with its type: 1
-      body: {label: 'dock-{{dockCode}}'}      # inside a text: "dock-D1"
+Pilot:
+  - POST /pilots:
+      body: {pilotCode: P001, name: Ada}
+      save: {pilotCode: request /pilotCode}
+  - GET /pilots/{pilotCode}:
+      path: {pilotCode: '{{pilotCode}}'}      # takes the value with its type
+Mission:
+  - POST /missions:
+      body: {pilotCode: '{{pilotCode}}', title: 'Flight of {{pilotCode}}'}   # inside a text: "Flight of P001"
 ```
 
 Quote a value that starts with `{{`, since YAML would read it as a mapping.
 A placeholder must be saved by an entry above it. A later `save` with
-the same name replaces the value for the entries after it.
+the same name replaces the value for the entries after it. Without
+`-base-url`, the values come from the stored answers and from the requests
+in the file, so a run without instance fills in the same values.
+
+### Filtering a list
+
+Some endpoints answer with a list that holds more than the entry is about:
+all pilots, all missions of a pilot. `filter` keeps only the elements whose
+fields have the given values, and only those are stored:
+
+```yaml
+  - GET /missions:
+      query: {pilotCode: '{{pilotCode}}'}
+      filter: {id: '{{missionId}}'}
+      response:
+        status: 200
+        body:
+          items:
+            - {id: 2, pilotCode: P001, title: Return}
+          total: 2
+```
+
+- The list is the answer itself if it is an array, else the one field of
+  the answer that is an array (`items` above). An answer with no or with
+  several arrays cannot be filtered (`FILTER`).
+- A key of `filter` is a field name of the elements (any case) or a JSON
+  pointer into them (`/route/originDockId`). Values are compared as text, so
+  `7` matches `"7"`. Every key must match.
+- `save` reads the filtered answer: `/0/id` is the first element that
+  matched.
+- An entry sent again is compared with its stored answer after filtering.
+- No element matches: the empty list is stored and reported (`FILTER`).
+
+apitest compares lists by position, and the element may sit anywhere in the
+list it gets. So for a response with a filtered entry, `record` sets
+`x-apitest-compare-unordered: true`: apitest then looks for each element of
+the example anywhere in the answer. Elements apitest gets in addition
+are fine; it compares as a subset.
 
 ## Order
 
@@ -271,6 +328,7 @@ the entries that need one.
 | `body` | `example` of the request body's JSON media type |
 | `response.body` | `example` of the response with the recorded status |
 | `ignore` | `x-apitest-ignore` of the operation, merged with the fields already listed there |
+| `filter` | `x-apitest-compare-unordered: true` on the response |
 
 The placeholders are filled in with the saved values of the stored answers.
 The spec therefore holds plain values (`dockId: 1`); apitest takes the real
@@ -313,10 +371,21 @@ is sent, and the spec stays unchanged.
 - Entries already in the file stay as they are. New entries are placed after
   the last entry of their section that apitest runs before them. The only
   change to an existing entry is a `save` that a new entry needs.
-- Path parameters that apitest binds to an earlier answer get
-  `{{name}}`, and the entry that creates the value gets the `save`. The name is
-  the parameter's name (`dockId`). A generic `{id}` gets the tag's name
-  (`shipId` for tag `Ship`).
+- For each entry, it works out which values later requests need and adds them to
+  the `save` of the entry that provides them:
+  - path and query parameters that apitest binds to an earlier exchange.
+    The binding reads the answer (`/id`, `header Location`), or the request when the
+    client chose the value (`request /pilotCode`, for a POST that answers
+    without the field);
+  - id fields in bodies (`dockId`, `originDockId`, `pilotCode`) that refer to
+    such a value;
+  - parameters and id fields no binding names (a required query parameter
+    `pilotCode`): a value already saved under that name, else the latest
+    entry before it whose answer or request body has a field of that name.
+
+  The name is the parameter's or field's name (`dockId`). A generic `{id}` gets
+  the tag's name (`shipId` for tag `Ship`). A name already used for another
+  value gets a number (`dockId2`).
 - Bodies come from the examples of the spec. Without one, they are generated
   from the schema: `allOf` merged, the first branch of `oneOf`/`anyOf`, no
   readOnly fields, values seeded by `-seed`. Id fields that refer to another
@@ -395,7 +464,8 @@ request the spec stays unchanged. Notes (`NOTE`) are information.
 | `REQUEST_INVALID` | problem | A request violates its schema (shown with the JSON pointer and the rule). | Fix the value in the file. |
 | `NEEDS_INSTANCE` | problem | Answers are missing and no `-base-url` is given. | Start an empty instance and pass `-base-url`. |
 | `REQUEST_FAILED` | problem | The instance rejected a request; the report shows what was sent and the answer. | Fix the entry (or the instance) and run again with a fresh instance. |
-| `SAVE_MISSING` | problem | The answer has no value where `save` points, or a placeholder has no value because its entry was not answered. | Fix the pointer in `save`. |
+| `SAVE_MISSING` | problem | The answer or the request has no value where `save` points, or a placeholder has no value because its entry was not answered. | Fix the source in `save`. |
+| `FILTER` | problem / note | Problem: the answer of an entry with `filter` holds no list, or a placeholder of the filter has no value. Note: no element matched, so the empty list is stored. | Check the filter and the answer in the record file. |
 | `STATUS` | problem | The answer's status is not documented, or an entry without name gets another 2xx than the lowest documented one. | Give the entry a `name`, or document the status. |
 | `SHARED` | problem | A shared place of the spec cannot get its own copy. | Declare the parameter or body in the operation. |
 | `RESPONSE_SCHEMA` | note | A recorded answer violates the schema; apitest will report it too. | Fix the instance or the spec. |

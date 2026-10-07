@@ -12,6 +12,7 @@ import (
 	"github.com/getkin/kin-openapi/openapi3"
 	"gopkg.in/yaml.v3"
 
+	"github.com/fada4773-sketch/specproof/internal/bind"
 	"github.com/fada4773-sketch/specproof/internal/gen/value"
 	"github.com/fada4773-sketch/specproof/internal/gen/yamldoc"
 	"github.com/fada4773-sketch/specproof/internal/params"
@@ -260,4 +261,72 @@ func coerce(v any, s *openapi3.Schema) any {
 		}
 	}
 	return spec.Normalize(v)
+}
+
+// listOf is the list in an answer: the answer itself if it is a list, else
+// its one field that is a list; nil if there is none.
+func listOf(body *yaml.Node) *yaml.Node {
+	if body == nil {
+		return nil
+	}
+	if body.Kind == yaml.SequenceNode {
+		return body
+	}
+	var found *yaml.Node
+	if body.Kind == yaml.MappingNode {
+		for i := 1; i < len(body.Content); i += 2 {
+			if body.Content[i].Kind == yaml.SequenceNode {
+				if found != nil {
+					return nil // two lists: which one is meant is unclear
+				}
+				found = body.Content[i]
+			}
+		}
+	}
+	return found
+}
+
+// filterList returns a copy of an answer whose list keeps only the elements
+// whose fields have the values of want: a field name (any case) or a JSON
+// pointer into the element, compared as text, so 7 matches "7". ok is false
+// if the answer holds no list.
+func filterList(body *yaml.Node, want map[string]any) (*yaml.Node, bool) {
+	out := clone(body)
+	list := listOf(out)
+	if list == nil {
+		return body, false
+	}
+	var kept []*yaml.Node
+	for _, el := range list.Content {
+		if elementMatches(decode(el), want) {
+			kept = append(kept, el)
+		}
+	}
+	list.Content = kept
+	if len(kept) == 0 {
+		list.Style = yaml.FlowStyle // "[]"
+	}
+	return out, true
+}
+
+func elementMatches(el any, want map[string]any) bool {
+	for k, w := range want {
+		var v any
+		var ok bool
+		if strings.HasPrefix(k, "/") {
+			v, ok = bind.Pointer(el, k)
+		} else if m, isMap := el.(map[string]any); isMap {
+			if v, ok = m[k]; !ok {
+				for f, fv := range m {
+					if strings.EqualFold(f, k) {
+						v, ok = fv, true
+					}
+				}
+			}
+		}
+		if !ok || params.Scalar(v) != params.Scalar(w) {
+			return false
+		}
+	}
+	return true
 }

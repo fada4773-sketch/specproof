@@ -146,8 +146,14 @@ func num(v any) int {
 // workspace copies the spec into a temporary directory.
 func workspace(t *testing.T) (specPath, filePath string) {
 	t.Helper()
+	return workspaceOf(t, specFile)
+}
+
+// workspaceOf copies a spec into a temporary directory.
+func workspaceOf(t *testing.T, src string) (specPath, filePath string) {
+	t.Helper()
 	dir := t.TempDir()
-	b, err := os.ReadFile(specFile)
+	b, err := os.ReadFile(src)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -679,7 +685,10 @@ func TestParse(t *testing.T) {
 		{"path no mapping", "Dock:\n  - GET /docks:\n      path: [1]\n", "must map parameter names"},
 		{"save no mapping", "Dock:\n  - GET /docks:\n      save: /id\n", "save of"},
 		{"save name", "Dock:\n  - GET /docks:\n      save: {1x: /id}\n", "no name for a saved value"},
-		{"save source", "Dock:\n  - GET /docks:\n      save: {x: id}\n", "neither a JSON pointer"},
+		{"save source", "Dock:\n  - GET /docks:\n      save: {x: id}\n", `"id" is no source`},
+		{"save request", "Dock:\n  - GET /docks:\n      save: {x: request body}\n", `"request body" is no source`},
+		{"filter no mapping", "Dock:\n  - GET /docks:\n      filter: [1]\n", "filter of"},
+		{"filter empty", "Dock:\n  - GET /docks:\n      filter: {}\n", "filter of"},
 		{"ignore no list", "Dock:\n  - GET /docks:\n      ignore: x\n", "must be a list of field names"},
 		{"response no mapping", "Dock:\n  - GET /docks:\n      response: 200\n", "must have status and body"},
 		{"status", "Dock:\n  - GET /docks:\n      response: {status: ok}\n", "must be an HTTP status"},
@@ -740,5 +749,247 @@ func TestFillAndCompact(t *testing.T) {
 	}
 	if word("ship-dock bay") != "shipDockBay" || word("--") != "value" || singular("Companies") != "Company" || lowerFirst("Dock") != "dock" {
 		t.Error("word, singular or lowerFirst")
+	}
+}
+
+const rosterFile = "../../../testdata/gen/record-roster.yaml"
+
+// roster is an empty instance of testdata/gen/record-roster.yaml: the
+// client chooses the pilot codes, a POST of a pilot answers without body,
+// a mission needs its pilot.
+type roster struct {
+	mu       sync.Mutex
+	pilots   []map[string]any
+	missions []map[string]any
+}
+
+func (ro *roster) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	ro.mu.Lock()
+	defer ro.mu.Unlock()
+	var body map[string]any
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	answer := func(status int, v any) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_ = json.NewEncoder(w).Encode(v)
+	}
+	pilot := func(code string) map[string]any {
+		for _, p := range ro.pilots {
+			if p["pilotCode"] == code {
+				return p
+			}
+		}
+		return nil
+	}
+	switch {
+	case r.Method == http.MethodPost && r.URL.Path == "/pilots":
+		if pilot(fmt.Sprint(body["pilotCode"])) != nil {
+			answer(409, map[string]any{"message": "pilot exists"})
+			return
+		}
+		ro.pilots = append(ro.pilots, body)
+		w.WriteHeader(201)
+	case r.Method == http.MethodGet && r.URL.Path == "/pilots":
+		answer(200, append([]map[string]any{}, ro.pilots...))
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/pilots/"):
+		if p := pilot(strings.TrimPrefix(r.URL.Path, "/pilots/")); p != nil {
+			answer(200, p)
+			return
+		}
+		answer(404, map[string]any{"message": "no such pilot"})
+	case r.Method == http.MethodPost && r.URL.Path == "/missions":
+		if pilot(fmt.Sprint(body["pilotCode"])) == nil {
+			answer(422, map[string]any{"message": "no such pilot"})
+			return
+		}
+		body["id"] = len(ro.missions) + 1
+		ro.missions = append(ro.missions, body)
+		answer(201, body)
+	case r.Method == http.MethodGet && r.URL.Path == "/missions":
+		items := []map[string]any{}
+		for _, m := range ro.missions {
+			if m["pilotCode"] == r.URL.Query().Get("pilotCode") {
+				items = append(items, m)
+			}
+		}
+		answer(200, map[string]any{"total": len(items), "items": items})
+	default:
+		answer(404, map[string]any{"message": "no such path"})
+	}
+}
+
+// -analyse saves what later entries need: the pilot code apitest binds from
+// the request of the POST, and a query parameter no binding names, found
+// by its name; a mission body refers to the pilot, so Pilot runs first.
+func TestAnalyseSavesFromRequest(t *testing.T) {
+	specPath, filePath := workspaceOf(t, rosterFile)
+	an := analyse(t, specPath, filePath)
+	if an.Run == nil || strings.Join(an.Run.Tags, ",") != "Pilot,Mission" {
+		t.Errorf("suggested order: %+v", an.Run)
+	}
+	text := read(t, filePath)
+	for _, want := range []string{
+		"Pilot:\n  - POST /pilots:\n      body:",
+		"      save: {pilotCode: request /pilotCode}",
+		"  - GET /pilots/{pilotCode}:\n      path: {pilotCode: '{{pilotCode}}'}",
+		"  - POST /missions:\n      body: {pilotCode: '{{pilotCode}}', title:",
+		"  - GET /missions:\n      query: {pilotCode: '{{pilotCode}}'}",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("record file misses %q:\n%s", want, text)
+		}
+	}
+	srv := httptest.NewServer(&roster{})
+	defer srv.Close()
+	res := record(t, specPath, filePath, srv)
+	if len(res.Problems) > 0 || res.Recorded != 5 {
+		t.Fatalf("recorded %d, problems:\n%s", res.Recorded, notes(res.Problems))
+	}
+	fresh := httptest.NewServer(&roster{})
+	defer fresh.Close()
+	apitest.Run(t, apitest.Config{SpecPath: specPath, BaseURL: fresh.URL, Tags: an.Run.Tags, DeleteLast: true, DisableReports: true})
+}
+
+// "save" takes values from the request too; "filter" keeps only the list
+// elements that match, and apitest finds them in the list in any order.
+func TestRecordFilterAndRequestValues(t *testing.T) {
+	specPath, filePath := workspaceOf(t, rosterFile)
+	file := `Pilot:
+  - POST /pilots:
+      body: {pilotCode: P001, name: Ada}
+      save: {adaCode: request /pilotCode, adaBody: request /}
+  - GET /pilots:
+      filter: {pilotCode: '{{adaCode}}'}
+      save: {listed: /0/name}
+  - GET /pilots/{pilotCode}:
+      path: {pilotCode: '{{adaCode}}'}
+      save: {sentCode: request path pilotCode}
+Mission:
+  - POST /missions:
+      name: first
+      body: {pilotCode: '{{sentCode}}', title: 'Flight of {{listed}}'}
+  - POST /missions:
+      name: second
+      body: {pilotCode: '{{adaCode}}', title: Return}
+      save: {secondId: /id}
+  - GET /missions:
+      query: {pilotCode: '{{adaCode}}'}
+      filter: {/id: '{{secondId}}'}
+      save: {queried: request query pilotCode}
+`
+	if err := os.WriteFile(filePath, []byte(file), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(&roster{})
+	defer srv.Close()
+	res := record(t, specPath, filePath, srv)
+	if len(res.Problems) > 0 || res.Recorded != 6 {
+		t.Fatalf("recorded %d, problems:\n%s\nnotes:\n%s", res.Recorded, notes(res.Problems), notes(res.Notes))
+	}
+	text := read(t, filePath)
+	for _, want := range []string{
+		"  - GET /pilots:\n      filter: {pilotCode: '{{adaCode}}'}\n      save: {listed: /0/name}\n      response:\n        status: 200\n        body:\n          - {name: Ada, pilotCode: P001}\n",
+		"body: {id: 1, pilotCode: P001, title: Flight of Ada}",
+		"        body:\n          items:\n            - {id: 2, pilotCode: P001, title: Return}\n          total: 2",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("record file misses %q:\n%s", want, text)
+		}
+	}
+	spec := read(t, specPath)
+	if strings.Count(spec, "x-apitest-compare-unordered: true") != 2 {
+		t.Errorf("spec without x-apitest-compare-unordered:\n%s", spec)
+	}
+	// stored answers give the same values without instance
+	res = record(t, specPath, filePath, nil)
+	if len(res.Problems) > 0 || res.SpecChanged {
+		t.Errorf("offline: changed %v, problems:\n%s", res.SpecChanged, notes(res.Problems))
+	}
+	// sent again, the filtered list is compared with the stored one
+	fresh := httptest.NewServer(&roster{})
+	defer fresh.Close()
+	res = record(t, specPath, filePath, fresh, "getPilot")
+	if len(res.Problems) > 0 || strings.Contains(states(res), StateDiffers) {
+		t.Errorf("refresh:\n%s\n%s%s", states(res), notes(res.Problems), notes(res.Notes))
+	}
+	final := httptest.NewServer(&roster{})
+	defer final.Close()
+	apitest.Run(t, apitest.Config{SpecPath: specPath, BaseURL: final.URL, Tags: []string{"Pilot", "Mission"}, DeleteLast: true, DisableReports: true})
+}
+
+// A filter on an answer without list, or one no element matches.
+func TestRecordFilterProblems(t *testing.T) {
+	specPath, filePath := workspaceOf(t, rosterFile)
+	file := `Pilot:
+  - POST /pilots:
+      body: {pilotCode: P001, name: Ada}
+  - GET /pilots/{pilotCode}:
+      path: {pilotCode: P001}
+      filter: {pilotCode: P001}
+`
+	if err := os.WriteFile(filePath, []byte(file), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(&roster{})
+	defer srv.Close()
+	res := record(t, specPath, filePath, srv)
+	if len(res.Problems) != 1 || res.Problems[0].Code != CodeFilter || !strings.Contains(res.Problems[0].Message, "holds no list") {
+		t.Errorf("problems:\n%s", notes(res.Problems))
+	}
+	file = `Pilot:
+  - GET /pilots:
+      filter: {pilotCode: P999}
+`
+	if err := os.WriteFile(filePath, []byte(file), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res = record(t, specPath, filePath, srv)
+	if len(res.Problems) > 0 || len(res.Notes) == 0 || res.Notes[0].Code != CodeFilter || !strings.Contains(read(t, filePath), "body: []") {
+		t.Errorf("problems:\n%s\nnotes:\n%s\n%s", notes(res.Problems), notes(res.Notes), read(t, filePath))
+	}
+	file = `Pilot:
+  - GET /pilots:
+      filter: {pilotCode: '{{nothing}}'}
+`
+	if err := os.WriteFile(filePath, []byte(file), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res = record(t, specPath, filePath, srv)
+	if len(res.Problems) != 1 || res.Problems[0].Code != CodePlaceholder {
+		t.Errorf("problems:\n%s", notes(res.Problems))
+	}
+}
+
+func TestFilterList(t *testing.T) {
+	list := valueNode([]any{map[string]any{"id": 1, "a": map[string]any{"b": "x"}}, map[string]any{"id": 2, "Code": "C2"}})
+	for _, tc := range []struct {
+		want map[string]any
+		ids  string
+	}{
+		{map[string]any{"id": "2"}, "[2]"},
+		{map[string]any{"code": "C2"}, "[2]"},
+		{map[string]any{"/a/b": "x"}, "[1]"},
+		{map[string]any{"id": 1, "/a/b": "y"}, "[]"},
+	} {
+		out, ok := filterList(list, tc.want)
+		var ids []any
+		for _, el := range decode(out).([]any) {
+			ids = append(ids, el.(map[string]any)["id"])
+		}
+		if !ok || fmt.Sprint(ids) != tc.ids {
+			t.Errorf("filter %v: %v %v", tc.want, ok, ids)
+		}
+	}
+	if len(decode(list).([]any)) != 2 {
+		t.Error("filterList changed its input")
+	}
+	if _, ok := filterList(valueNode(map[string]any{"a": []any{}, "b": []any{}}), map[string]any{"id": 1}); ok {
+		t.Error("an object with two lists has no one list")
+	}
+	if _, ok := filterList(valueNode(map[string]any{"id": 1}), map[string]any{"id": 1}); ok {
+		t.Error("an object without list")
+	}
+	if reference("id") || !reference("pilotCode") || !reference("dockId") || reference("name") {
+		t.Error("reference")
 	}
 }

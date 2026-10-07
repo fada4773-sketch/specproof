@@ -3,8 +3,11 @@ package yamldoc
 import (
 	"encoding/json"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 const sample = `# head comment
@@ -118,6 +121,81 @@ func TestLongKeysStaySimple(t *testing.T) {
 	}
 	if again, err := Parse(b); err != nil || Path(again.Root, "paths", long, "get", "summary").Value != "x" {
 		t.Errorf("reparse: %v", err)
+	}
+}
+
+// Long keys keep their usual form in every place yaml.v3 writes them as
+// "? key": as the key of a list item, with a mapping, a list, a flow
+// mapping, a quoted text or nothing as the value.
+func TestLongKeysInLists(t *testing.T) {
+	long := "GET /" + strings.Repeat("segment/", 16) + "{dockId}"
+	src := "Dock:\n" +
+		"  - " + long + ":\n      path: {dockId: 1}\n      response:\n        status: 200\n" +
+		"  - " + long + "/a: 5\n" +
+		"  - " + long + "/b:\n      - x\n      - y\n" +
+		"  - " + long + "/c: {status: 1}\n" +
+		"  - " + long + "/d: 'a: b'\n" +
+		"  - " + long + "/e:\n" +
+		"  - - " + long + "/f: {}\n" +
+		"other:\n  " + long + "/g:\n    '" + long + "': x\n"
+	d, err := Parse([]byte(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, _ := Decode(d.Root)
+	b, err := d.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "? ") || strings.Contains(string(b), "\n  : ") {
+		t.Errorf("explicit keys left:\n%s", b)
+	}
+	for _, line := range []string{"  - " + long + ":\n      path: {dockId: 1}\n      response:", "  - " + long + "/a: 5\n",
+		"  - " + long + "/b:\n      - x\n", "  - " + long + "/d: 'a: b'\n", "  - " + long + "/e:\n", "  - - " + long + "/f: {}\n",
+		"other:\n  " + long + "/g:\n    '" + long + "': x\n"} {
+		if !strings.Contains(string(b), line) {
+			t.Errorf("output misses %q:\n%s", line, b)
+		}
+	}
+	again, err := Parse(b)
+	if err != nil {
+		t.Fatalf("reparse: %v\n%s", err, b)
+	}
+	got, _ := Decode(again.Root)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("content changed:\n%v\nwant\n%v", got, want)
+	}
+	for _, tc := range []struct {
+		rest string
+		want bool
+	}{{"- x", true}, {"-", true}, {"? k", true}, {"a: b", true}, {"a:", true}, {"'a b': x", true}, {`"a": x`, true}, {"'a: b'", false}, {`"x`, false},
+		{"{a: b}", false}, {"[a: b]", false}, {"|", false}, {"x # a: b", false}, {"5", false}, {"http://x", false}} {
+		if startsBlock(tc.rest) != tc.want {
+			t.Errorf("startsBlock(%q) != %v", tc.rest, tc.want)
+		}
+	}
+}
+
+func TestNewAndSetNode(t *testing.T) {
+	d := New("head")
+	if err := SetNode(d.Root, "a", &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!int", Value: "1"}); err != nil {
+		t.Fatal(err)
+	}
+	old := Get(d.Root, "a")
+	old.LineComment = "kept"
+	if err := SetNode(d.Root, "a", &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!int", Value: "2"}); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := d.Bytes()
+	if string(b) != "# head\n\na: 2 # kept\n" {
+		t.Errorf("output %q", b)
+	}
+	if SetNode(Get(d.Root, "a"), "x", &yaml.Node{}) == nil {
+		t.Error("SetNode on a scalar")
+	}
+	ref, _ := Parse([]byte("r: {$ref: '#/x'}\n"))
+	if SetNode(Get(ref.Root, "r"), "x", &yaml.Node{}) == nil {
+		t.Error("SetNode next to a $ref")
 	}
 }
 

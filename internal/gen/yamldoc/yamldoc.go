@@ -77,26 +77,90 @@ func (d *Doc) Bytes() ([]byte, error) {
 	return simpleLongKeys(buf.Bytes()), nil
 }
 
-// longKey matches the explicit key form yaml.v3 uses for keys longer than
-// 128 characters: "? key" followed by ": value" at the same indentation.
-var longKey = regexp.MustCompile(`(?m)^( *)\? (\S[^\n]*)\n( *): (.*)$`)
+// explicitKey matches the line yaml.v3 writes for a key longer than 128
+// characters, "? key": at the start of a line, as the first key of a list
+// item ("- ? key") or as the first key of a mapping value ("a: ? key").
+var explicitKey = regexp.MustCompile(`^(.*?)\? (.+)$`)
 
-// simpleLongKeys turns "? key\n: value" back into "key:" with the value in
-// the usual place, so long OpenAPI paths keep their normal form.
+// explicitValue matches the line after it, ": value" or ":" alone.
+var explicitValue = regexp.MustCompile(`^( *):(?: (.*))?$`)
+
+// listPrefix is the indentation of a line with the dashes of list items.
+var listPrefix = regexp.MustCompile(`^ *(- )*$`)
+
+// simpleLongKeys turns "? key" and the ": value" below it back into
+// "key: value", so long paths keep their usual form. A mapping or list as
+// the value moves to the next line, where the rest of it already is.
 func simpleLongKeys(b []byte) []byte {
-	return longKey.ReplaceAllFunc(b, func(m []byte) []byte {
-		g := longKey.FindSubmatch(m)
-		indent, key, indent2, rest := string(g[1]), string(g[2]), string(g[3]), string(g[4])
-		if indent != indent2 {
-			return m
+	text := string(b)
+	for range 32 {
+		next := simplerLongKeys(text)
+		if next == text {
+			break
 		}
-		// a nested mapping or sequence starts on the next line, a scalar
-		// stays on the line of the key
-		if strings.HasPrefix(rest, "- ") || (strings.Contains(rest, ":") && !strings.HasPrefix(rest, "'") && !strings.HasPrefix(rest, `"`)) {
-			return []byte(indent + key + ":\n" + indent + "  " + rest)
+		text = next
+	}
+	return []byte(text)
+}
+
+func simplerLongKeys(text string) string {
+	lines := strings.Split(text, "\n")
+	out := make([]string, 0, len(lines))
+	for i := 0; i < len(lines); i++ {
+		k := explicitKey.FindStringSubmatch(lines[i])
+		if k == nil || i+1 >= len(lines) {
+			out = append(out, lines[i])
+			continue
 		}
-		return []byte(indent + key + ": " + rest)
-	})
+		prefix, col := k[1], len(k[1])
+		v := explicitValue.FindStringSubmatch(lines[i+1])
+		if v == nil || len(v[1]) != col {
+			out = append(out, lines[i])
+			continue
+		}
+		switch {
+		case listPrefix.MatchString(prefix):
+		case strings.HasSuffix(prefix, ": "):
+			// "a: ? key": the mapping that is the value of a goes below it
+			out = append(out, strings.TrimRight(prefix, " "))
+			prefix = strings.Repeat(" ", col)
+		default:
+			out = append(out, lines[i])
+			continue
+		}
+		key, rest := prefix+k[2]+":", v[2]
+		switch {
+		case rest == "":
+			out = append(out, key)
+		case startsBlock(rest):
+			out = append(out, key, strings.Repeat(" ", col+2)+rest)
+		default:
+			out = append(out, key+" "+rest)
+		}
+		i++
+	}
+	return strings.Join(out, "\n")
+}
+
+// startsBlock reports whether a value starts a mapping or a list, which
+// cannot follow a key on its line: "- x", "name: x", "'a b': x".
+func startsBlock(rest string) bool {
+	if strings.HasPrefix(rest, "- ") || rest == "-" || strings.HasPrefix(rest, "? ") {
+		return true
+	}
+	if q := rest[0]; q == '\'' || q == '"' {
+		end := strings.IndexByte(rest[1:], q)
+		if end < 0 {
+			return false
+		}
+		after := strings.TrimLeft(rest[end+2:], " ")
+		return strings.HasPrefix(after, ":")
+	}
+	if strings.ContainsAny(rest[:1], "{[|>&*!%@`#") {
+		return false
+	}
+	plain, _, _ := strings.Cut(rest, " #")
+	return strings.Contains(plain, ": ") || strings.HasSuffix(plain, ":")
 }
 
 // Save writes the document atomically.

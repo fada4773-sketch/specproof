@@ -47,7 +47,7 @@ func (w *writer) write(f *File, v *spec.Validator) {
 		r, _ := st.request(vars)
 		w.step(st, r, named, v)
 		if st.Response != nil {
-			st.saveStored(vars)
+			st.saveFrom(st.Response, nil, r, vars)
 		}
 		if !slices.Contains(ops, st.Op) {
 			ops = append(ops, st.Op)
@@ -108,6 +108,28 @@ func (w *writer) step(st *Step, r *request, named bool, v *spec.Validator) {
 		w.res.note(CodeSchema, st.where(), "the stored answer violates the schema of the response %s (%s); apitest will report it", code, msg)
 	}
 	w.place(st, pl, name, st.Response.Body, named, func() *place { return w.ownResponse(op, code) })
+	if st.Filter != nil {
+		w.unordered(st, code)
+	}
+}
+
+// unordered marks the response of a filtered list with
+// x-apitest-compare-unordered: the example holds some elements of the list,
+// and apitest finds them wherever they are instead of comparing by position.
+// A response other operations share gets a copy first.
+func (w *writer) unordered(st *Step, code string) {
+	responses := yamldoc.Get(w.operation(st.Op), "responses")
+	if yamldoc.Ref(yamldoc.Get(responses, code)) != "" && !w.inline(responses, code) {
+		w.res.problem(CodeShared, st.where(), "the response %s cannot get its own copy for x-apitest-compare-unordered", code)
+		return
+	}
+	r := yamldoc.Get(responses, code)
+	if n := yamldoc.Get(r, "x-apitest-compare-unordered"); n != nil && n.Value == "true" {
+		return
+	}
+	if yamldoc.SetNode(r, "x-apitest-compare-unordered", &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!bool", Value: "true"}) == nil {
+		w.changed = true
+	}
 }
 
 // place is a media type of the spec that holds an example.

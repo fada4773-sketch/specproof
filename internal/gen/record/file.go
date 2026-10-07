@@ -42,10 +42,13 @@ Per tag the requests in the order they run, top to bottom. Each entry is
 "METHOD /path" (or the operationId) with:
   name:     example name, needed when an endpoint appears more than once
   path:     path parameters        query: query parameters
-  body:     request body           save:  values for later entries, { name: /pointer }
+  body:     request body
+  save:     values for later entries: { name: /pointer } from the answer,
+            "header Location", "request /pointer", "request path <name>"
+  filter:   keep only the list elements that match, { id: '{{id}}' }
   ignore:   fields apitest must not compare (time stamps, generated ids)
   response: the answer; empty means "apitest-gen record" sends the request
-Use a saved value as "{{name}}". Docs: "apitest-gen help".`
+Use a saved value as "{{name}}". Docs: docs/record.md.`
 
 // Keys of an entry.
 const (
@@ -54,13 +57,14 @@ const (
 	keyQuery    = "query"
 	keyBody     = "body"
 	keySave     = "save"
+	keyFilter   = "filter"
 	keyIgnore   = "ignore"
 	keyResponse = "response"
 	keyStatus   = "status"
 	keyHeaders  = "headers"
 )
 
-var entryKeys = []string{keyName, keyPath, keyQuery, keyBody, keySave, keyIgnore, keyResponse}
+var entryKeys = []string{keyName, keyPath, keyQuery, keyBody, keySave, keyFilter, keyIgnore, keyResponse}
 
 // File is a loaded record file.
 type File struct {
@@ -81,6 +85,9 @@ type Step struct {
 	Query *yaml.Node // mapping of query parameters, nil without
 	Body  *yaml.Node // nil without body
 	Save  []Save
+	// Filter keeps only the elements of a list answer whose fields have
+	// these values; nil without.
+	Filter *yaml.Node
 	// Ignore are fields apitest does not compare (x-apitest-ignore).
 	Ignore []string
 	// Response is the recorded answer; nil until it is recorded.
@@ -89,12 +96,18 @@ type Step struct {
 	node     *yaml.Node // the mapping of the entry
 }
 
-// Save keeps a value of the answer under a name for later entries.
+// Save keeps a value under a name for later entries.
 type Save struct {
 	Name string
-	// From is a JSON pointer into the answer ("/id") or "header <Name>".
+	// From is where the value comes from: a JSON pointer into the answer
+	// ("/id"), "header <Name>" of the answer, a JSON pointer into the body
+	// sent ("request /code"), or a parameter sent ("request path dockId",
+	// "request query zone").
 	From string
 }
+
+// sourceForm is the form of a save source.
+var sourceForm = regexp.MustCompile(`^(/.*|header \S+|request /.*|request (path|query) \S+)$`)
 
 // Response is a recorded answer.
 type Response struct {
@@ -202,7 +215,7 @@ func parseStep(tag string, item *yaml.Node) (*Step, error) {
 		item.Content[1] = n
 	}
 	if n.Kind != yaml.MappingNode {
-		return nil, fmt.Errorf("line %d: the settings of %q must be a mapping (name, path, query, body, save, ignore, response)", n.Line, st.Key)
+		return nil, fmt.Errorf("line %d: the settings of %q must be a mapping (%s)", n.Line, st.Key, strings.Join(entryKeys, ", "))
 	}
 	st.node = n
 	for i := 0; i+1 < len(n.Content); i += 2 {
@@ -237,11 +250,19 @@ func parseStep(tag string, item *yaml.Node) (*Step, error) {
 				if !validName.MatchString(name) {
 					return nil, fmt.Errorf("line %d: %q is no name for a saved value: letters, digits, _ and -", v.Content[j].Line, name)
 				}
-				if !strings.HasPrefix(from, "/") && !strings.HasPrefix(from, "header ") && from != "" {
-					return nil, fmt.Errorf("line %d: save %s: %q is neither a JSON pointer (/id) nor \"header <Name>\"", v.Content[j].Line, name, from)
+				if !sourceForm.MatchString(from) {
+					return nil, fmt.Errorf("line %d: save %s: %q is no source; write a JSON pointer into the answer (/id), \"header <Name>\", \"request /pointer\", \"request path <name>\" or \"request query <name>\"", v.Content[j].Line, name, from)
 				}
 				st.Save = append(st.Save, Save{Name: name, From: from})
 			}
+		case keyFilter:
+			if null {
+				continue
+			}
+			if v.Kind != yaml.MappingNode || len(v.Content) == 0 {
+				return nil, fmt.Errorf("line %d: filter of %q must map fields of the list elements to values, e.g. { id: '{{dockId}}' }", v.Line, st.Key)
+			}
+			st.Filter = v
 		case keyIgnore:
 			if null {
 				continue
@@ -334,7 +355,7 @@ func (st *Step) addSave(s Save) {
 	m := yamldoc.Get(st.node, keySave)
 	if m == nil || m.Kind != yaml.MappingNode {
 		m = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map", Style: yaml.FlowStyle}
-		insertBefore(st.node, keySave, m, keyIgnore, keyResponse)
+		insertBefore(st.node, keySave, m, keyFilter, keyIgnore, keyResponse)
 	}
 	m.Content = append(m.Content, scalarNode(s.Name), scalarNode(s.From))
 }

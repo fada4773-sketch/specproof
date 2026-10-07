@@ -23,7 +23,8 @@ const (
 	CodeRequest     = "REQUEST_INVALID"   // the request of an entry violates the schema
 	CodeNeedsURL    = "NEEDS_INSTANCE"    // answers to record, but no -base-url
 	CodeFailed      = "REQUEST_FAILED"    // the instance rejected a request
-	CodeSave        = "SAVE_MISSING"      // the answer lacks a value to save
+	CodeSave        = "SAVE_MISSING"      // the answer or the request lacks a value to save
+	CodeFilter      = "FILTER"            // a filter without list, or one no element matches
 	CodeStatus      = "STATUS"            // the answer has a status the spec does not document
 	CodeShared      = "SHARED"            // one place of the spec needs two examples
 	CodeSchema      = "RESPONSE_SCHEMA"   // a recorded answer violates the schema
@@ -157,7 +158,7 @@ func (st *Step) hasPlace() bool {
 // uses are the saved values the request of a step uses.
 func (st *Step) uses() []string {
 	var out []string
-	for _, n := range []*yaml.Node{st.Path, st.Query, st.Body} {
+	for _, n := range []*yaml.Node{st.Path, st.Query, st.Body, st.Filter} {
 		for _, name := range names(n) {
 			if !slices.Contains(out, name) {
 				out = append(out, name)
