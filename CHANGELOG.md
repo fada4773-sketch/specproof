@@ -256,6 +256,12 @@ contain breaking changes, which are listed here.
 
 ### Fixed
 
+- `apitest-gen record -analyse` no longer proposes a `Tags` order that
+  apitest refuses ("Config.Tags lists … before …, but … depends on …
+  through bindings"): the bindings of path parameters come first, and a body
+  reference against them is reported as `ORDER` with the binding instead.
+  When `"$apitest".Tags` itself contradicts the bindings, the error lists
+  the bindings behind it.
 - `apitest-gen`: a key longer than 128 characters (a long path) is written in
   its usual form also as the key of a list item (`- GET /long/path:`), with a
   mapping or list as its value, and as the first key of a mapping value.

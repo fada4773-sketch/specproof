@@ -1,0 +1,58 @@
+openapi: 3.0.3
+info: {title: Starport permits, version: "1"}
+paths:
+  /docks:
+    post:
+      operationId: createDock
+      tags: [Dock]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, required: [title], properties: {title: {type: string}}}
+      responses:
+        "201":
+          description: ok
+          content:
+            application/json:
+              schema: {type: object, properties: {id: {type: integer}, title: {type: string}}}
+  /docks/{dockId}:
+    get:
+      operationId: getDock
+      tags: [Dock]
+      parameters:
+        - {name: dockId, in: path, required: true, schema: {type: integer}}
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema: {type: object, properties: {id: {type: integer}, title: {type: string}}}
+  /docks/{dockId}/permits/{dockPermitId}:
+    get:
+      operationId: getDockWithPermit
+      tags: [Dock]
+      parameters:
+        - {name: dockId, in: path, required: true, schema: {type: integer}}
+        - {name: dockPermitId, in: path, required: true, schema: {type: integer}}
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema: {type: object, properties: {id: {type: integer}}}
+  /dockPermits:
+    post:
+      operationId: createDockPermit
+      tags: [DockPermit]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, required: [dockId, text], properties: {dockId: {type: integer}, text: {type: string}}}
+      responses:
+        "201":
+          description: ok
+          content:
+            application/json:
+              schema: {type: object, properties: {id: {type: integer}, dockId: {type: integer}, text: {type: string}}}

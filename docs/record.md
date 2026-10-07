@@ -275,6 +275,20 @@ ORDER
 `Tags` also limits apitest to the tags it lists. The proposal always lists
 every tag of the spec.
 
+The bindings of apitest come first. If a tag's path parameters take a
+value from another tag (`getDockWithPermit` takes `{dockPermitId}` from
+`createDockPermit`), apitest runs the other tag first, whatever the bodies
+say. A body reference against such a binding (`createDockPermit` sends
+`dockId`) cannot be satisfied by the order of the tags. `-analyse` leaves it
+out of the proposal and reports it as `ORDER`, naming the binding. Often
+the binding is a guess of apitest (heuristic) and wrong; then declare the
+right one with `x-apitest-bind` at that parameter.
+
+If `"$apitest".Tags` itself contradicts the bindings, apitest refuses the
+order (`Config.Tags lists "Dock" before "DockPermit", but …`). `record`
+then lists the bindings behind it, so you can see which operation takes
+which value from which tag.
+
 `record` reads `"$apitest"` from `defaults.json` (`Tags`, `DeleteLast`,
 `MethodOrder`, `IncludeOps`, `ExcludeOps`, `IgnoreFields`). After writing
 the spec, it compares the file with the order apitest will run. If an entry

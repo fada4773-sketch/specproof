@@ -52,7 +52,7 @@ var genericParams = []string{"id", "uuid", "key", "guid"}
 func Analyse(s *spec.Spec, f *File, run defaults.Run, seed uint64) (*Analysis, error) {
 	order, binds, err := scenario.Order(s, run)
 	if err != nil {
-		return nil, err
+		return nil, orderError(s, run, err)
 	}
 	an := &Analysis{}
 	res := &Result{}
@@ -189,54 +189,104 @@ func matches(field, name string) bool {
 
 // suggest finds the order apitest has to run the tags in: a tag whose
 // bodies refer to the records of another tag comes after it, and since
-// those records must still exist then, every DELETE runs last. It reports
-// whether that order differs from the one given.
+// those records must still exist then, every DELETE runs last. The
+// bindings of apitest come first: a tag whose path parameters take a value
+// from another tag runs after it whatever its bodies say, so a body
+// reference against a binding is left out and reported. It reports whether
+// the order differs from the one given.
 func (a *analyser) suggest(order []*cases.Case, run defaults.Run) (defaults.Run, bool) {
 	var groups []string
-	deps := map[string][]string{}
 	for _, c := range order {
 		if !slices.Contains(groups, c.Group) {
 			groups = append(groups, c.Group)
 		}
+	}
+	// hard: group -> groups it takes bound values from, with the binding
+	hard := map[string]map[string]*bind.Binding{}
+	for _, op := range a.s.Ops {
+		for _, b := range a.binds.Of(op) {
+			from, to := b.Producer.Group(), op.Group()
+			if from == to || !slices.Contains(groups, from) || !slices.Contains(groups, to) {
+				continue
+			}
+			if hard[to] == nil {
+				hard[to] = map[string]*bind.Binding{}
+			}
+			if hard[to][from] == nil {
+				hard[to][from] = b
+			}
+		}
+	}
+	// body: group -> groups its bodies refer to, with the fields
+	body := map[string]map[string][]string{}
+	for _, c := range order {
 		if c.Kind != cases.Positive || requestMedia(c.Op) == nil {
 			continue
 		}
-		body, ok := c.Body, c.HasBody
+		v, ok := c.Body, c.HasBody
 		if !ok {
-			body, ok = a.generate(requestMedia(c.Op).Schema, "body."+c.Op.ID)
+			v, ok = a.generate(requestMedia(c.Op).Schema, "body."+c.Op.ID)
 		}
 		if !ok {
 			continue
 		}
-		walkFields(body, func(k string) {
-			if p := a.refers(k); p != nil && p.op.Group() != c.Group && !slices.Contains(deps[c.Group], p.op.Group()) {
-				deps[c.Group] = append(deps[c.Group], p.op.Group())
+		walkFields(v, func(k string) {
+			p := a.refers(k)
+			if p == nil || p.op.Group() == c.Group || !slices.Contains(groups, p.op.Group()) {
+				return
+			}
+			if body[c.Group] == nil {
+				body[c.Group] = map[string][]string{}
+			}
+			if f := body[c.Group][p.op.Group()]; !slices.Contains(f, c.Op.ID+"."+k) {
+				body[c.Group][p.op.Group()] = append(f, c.Op.ID+"."+k)
 			}
 		})
 	}
-	if len(deps) == 0 {
+	if len(body) == 0 {
+		return run, false
+	}
+	// a body reference that would need a cycle with the bindings is left out
+	for g, refs := range body {
+		for d, fields := range refs {
+			if b := a.reaches(hard, d, g); b != nil {
+				a.an.Notes = append(a.an.Notes, Note{CodeOrder, g, fmt.Sprintf(
+					"%s refers to records of %s, but apitest must run %s before %s: %s takes {%s} from %s (%s binding). In an empty instance these bodies find no %s record. If that binding is wrong, declare the right one with x-apitest-bind at {%s} of %s",
+					strings.Join(fields, ", "), d, g, d, b.Consumer.ID, b.Param.Name, b.Producer.ID, b.Kind, d, b.Param.Name, b.Consumer.ID)})
+				delete(refs, d)
+			}
+		}
+		if len(refs) == 0 {
+			delete(body, g)
+		}
+	}
+	if len(body) == 0 {
 		return run, false
 	}
 	var sorted []string
 	placed := map[string]bool{}
+	ready := func(g string) bool {
+		for d := range hard[g] {
+			if !placed[d] {
+				return false
+			}
+		}
+		for d := range body[g] {
+			if !placed[d] {
+				return false
+			}
+		}
+		return true
+	}
 	for len(sorted) < len(groups) {
 		next := ""
 		for _, g := range groups {
-			if placed[g] {
-				continue
-			}
-			ready := true
-			for _, d := range deps[g] {
-				if !placed[d] && slices.Contains(groups, d) {
-					ready = false
-				}
-			}
-			if ready {
+			if !placed[g] && ready(g) {
 				next = g
 				break
 			}
 		}
-		if next == "" { // a cycle: keep the rest as it is
+		if next == "" { // a cycle of body references: keep the given order
 			for _, g := range groups {
 				if !placed[g] {
 					next = g
@@ -247,12 +297,36 @@ func (a *analyser) suggest(order []*cases.Case, run defaults.Run) (defaults.Run,
 		placed[next] = true
 		sorted = append(sorted, next)
 	}
-	better := run
-	better.Tags, better.DeleteLast = sorted, true
 	if slices.Equal(sorted, groups) && run.DeleteLast {
 		return run, false
 	}
+	better := run
+	better.Tags, better.DeleteLast = sorted, true
 	return better, true
+}
+
+// reaches returns a binding on the way from group from to group to through
+// the bindings: to runs before from in every order apitest accepts; nil if
+// there is no such way.
+func (a *analyser) reaches(hard map[string]map[string]*bind.Binding, from, to string) *bind.Binding {
+	seen := map[string]bool{}
+	var walk func(g string) *bind.Binding
+	walk = func(g string) *bind.Binding {
+		if seen[g] {
+			return nil
+		}
+		seen[g] = true
+		for _, d := range sortedKeys(hard[g]) {
+			if d == to {
+				return hard[g][d]
+			}
+			if b := walk(d); b != nil {
+				return hard[g][d]
+			}
+		}
+		return nil
+	}
+	return walk(from)
 }
 
 // walkFields calls fn with every field name of a value whose value is

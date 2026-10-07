@@ -993,3 +993,38 @@ func TestFilterList(t *testing.T) {
 		t.Error("reference")
 	}
 }
+
+const permitsFile = "../../../testdata/gen/record-permits.yaml"
+
+// The bindings of apitest decide the order of the tags; a body reference
+// against them is reported instead of a Tags apitest refuses: Dock takes
+// {dockPermitId} from DockPermit, so a permit body cannot refer to a dock.
+func TestAnalyseBindingsWinOverBodies(t *testing.T) {
+	specPath, filePath := workspaceOf(t, permitsFile)
+	an := analyse(t, specPath, filePath)
+	if an.Run != nil {
+		t.Errorf("suggested order %+v", an.Run)
+	}
+	if len(an.Notes) != 1 || an.Notes[0].Code != CodeOrder || an.Notes[0].Where != "DockPermit" ||
+		!strings.Contains(an.Notes[0].Message, "createDockPermit.dockId refers to records of Dock, but apitest must run DockPermit before Dock: getDockWithPermit takes {dockPermitId} from createDockPermit (heuristic binding)") {
+		t.Errorf("notes:\n%s", notes(an.Notes))
+	}
+	text := read(t, filePath)
+	if strings.Index(text, "\nDockPermit:") > strings.Index(text, "\nDock:") {
+		t.Errorf("sections:\n%s", text)
+	}
+	// "$apitest".Tags against the bindings: the error names them
+	want := "getDockWithPermit (Dock) takes {dockPermitId} from createDockPermit (DockPermit), heuristic binding"
+	run := defaults.Run{Tags: []string{"Dock", "DockPermit"}}
+	if _, err := Analyse(loadSpec(t, specPath), mustLoad(t, filePath), run, 1); err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("analyse: %v", err)
+	}
+	if _, err := CheckOrder(loadSpec(t, specPath), mustLoad(t, filePath), run); err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("check order: %v", err)
+	}
+	if err := orderError(loadSpec(t, specPath), defaults.Run{}, errTest); err.Error() != "test" {
+		t.Errorf("without Tags: %v", err)
+	}
+}
+
+var errTest = fmt.Errorf("test")
