@@ -4,154 +4,57 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/fada4773-sketch/specproof/internal/gen/discover"
-	"github.com/fada4773-sketch/specproof/internal/spec"
 )
 
-// Client sends the requests to the instance.
+// Client sends the requests of a run to the instance.
 type Client struct {
 	Opt discover.Options
-	// Count are the requests sent, by method.
-	Count map[string]int
-	// Log receives every request when it is answered, in the order they
-	// are sent.
-	Log func(Entry)
-	n   int
 }
 
-// Entry is one request of the run.
-type Entry struct {
-	N      int    // its position in the run, from 1
-	Tag    string // the tag whose step sent it
-	Why    string // the operation and the reason: "read GetDocks", "details of dock D2"
-	Method string
-	URL    string
-	Body   any // what was sent
-	Status int // 0 if there was no answer
-	Resp   any
-	Err    error
-	// Probe marks a request that checks a candidate for "select" (its
-	// details, the records below it): an error answer only rejects the
-	// candidate, it is no failure of the run.
-	Probe bool
-	// Origin tells where the values of the request come from: one line
-	// per parameter and one for the body.
-	Origin []string
-}
-
-// Failed reports a request that failed: an error or a status other than
-// 2xx, unless it only checked a candidate for "select".
-func (e Entry) Failed() bool { return !e.Probe && (e.Err != nil || e.Status/100 != 2) }
-
-// String is the line of the request in the log; a failed one shows what was
-// sent and what came back.
-func (e Entry) String() string {
-	status := fmt.Sprint(e.Status)
-	if e.Err != nil {
-		status = "ERR"
-	}
-	line := fmt.Sprintf("#%03d %-14s %-6s %s → %s  %s", e.N, "["+e.Tag+"]", e.Method, e.URL, status, e.Why)
-	if !e.Failed() {
-		return line
-	}
-	if e.Err != nil {
-		line += "\n       error:  " + e.Err.Error()
-	}
-	if e.Body != nil {
-		line += "\n       sent:   " + clip(text(e.Body))
-	}
-	if e.Resp != nil {
-		line += "\n       answer: " + clip(text(e.Resp))
-	}
-	for _, o := range e.Origin {
-		line += "\n       from:   " + o
-	}
-	return line
-}
-
-// JSON is a value as JSON text.
-func JSON(v any) string { return text(v) }
-
-// Clip is a value as JSON text, at most 1500 bytes, for the log.
-func Clip(v any) string { return clip(text(v)) }
-
-func clip(s string) string {
-	if len(s) > 1500 {
-		return s[:1500] + fmt.Sprintf("… (%d bytes)", len(s))
-	}
-	return s
-}
-
-// response is an answer of the instance.
-type response struct {
+// answer is what the instance sent back.
+type answer struct {
 	Status int
-	Body   any // decoded JSON, numbers as json.Number; nil without body
-	Seq    int // the number of the request in the log
+	Header http.Header
+	Raw    []byte // the body as sent
 }
 
-func (r response) ok() bool { return r.Status/100 == 2 }
-
-// do sends one request and logs it; a status other than 2xx is no error.
-// origin tells where its values come from.
-func (c *Client) do(ctx context.Context, method, path string, body any, tag, why string, origin ...string) (response, error) {
-	return c.call(ctx, Entry{Tag: tag, Why: why, Method: method, URL: path, Body: body, Origin: origin})
-}
-
-// probe sends a GET that checks a candidate for "select"; an error answer
-// rejects the candidate.
-func (c *Client) probe(ctx context.Context, path, tag, why string, origin []string) (response, error) {
-	return c.call(ctx, Entry{Tag: tag, Why: why, Method: http.MethodGet, URL: path, Probe: true, Origin: origin})
-}
-
-func (c *Client) call(ctx context.Context, e Entry) (resp response, err error) {
-	c.n++
-	e.N = c.n
-	method, path, body := e.Method, e.URL, e.Body
-	defer func() {
-		resp.Seq = e.N
-		e.Status, e.Resp, e.Err = resp.Status, resp.Body, err
-		if c.Log != nil {
-			c.Log(e)
-		}
-	}()
-	return c.send(ctx, method, path, body)
-}
-
-func (c *Client) send(ctx context.Context, method, path string, body any) (response, error) {
-	if c.Opt.Client == nil {
-		c.Opt.Client = &http.Client{}
+// send sends one request; a status other than 2xx is no error.
+func (c *Client) send(ctx context.Context, method, path, mediaType string, body any, hasBody bool) (answer, error) {
+	client := c.Opt.Client
+	if client == nil {
+		client = &http.Client{}
 	}
-	if c.Opt.Timeout == 0 {
-		c.Opt.Timeout = 30 * time.Second
+	timeout := c.Opt.Timeout
+	if timeout == 0 {
+		timeout = 30 * time.Second
 	}
-	if c.Count == nil {
-		c.Count = map[string]int{}
-	}
-	c.Count[method]++
-	ctx, cancel := context.WithTimeout(ctx, c.Opt.Timeout)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	var rd io.Reader
-	if body != nil {
+	if hasBody {
 		b, err := json.Marshal(body)
 		if err != nil {
-			return response{}, err
+			return answer{}, err
 		}
 		rd = bytes.NewReader(b)
 	}
 	target := strings.TrimSuffix(c.Opt.BaseURL, "/") + "/" + strings.TrimPrefix(path, "/")
 	req, err := http.NewRequestWithContext(ctx, method, target, rd)
 	if err != nil {
-		return response{}, err
+		return answer{}, err
 	}
 	req.Header.Set("Accept", "application/json")
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
+	if hasBody {
+		if mediaType == "" {
+			mediaType = "application/json"
+		}
+		req.Header.Set("Content-Type", mediaType)
 	}
 	for k, v := range c.Opt.Headers {
 		req.Header.Set(k, v)
@@ -159,24 +62,14 @@ func (c *Client) send(ctx context.Context, method, path string, body any) (respo
 	if c.Opt.Token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.Opt.Token)
 	}
-	resp, err := c.Opt.Client.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
-		return response{}, err // the error names the URL, never the token
+		return answer{}, err // the error names the URL, never the token
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 20<<20))
 	if err != nil {
-		return response{}, err
+		return answer{}, err
 	}
-	out := response{Status: resp.StatusCode}
-	if len(bytes.TrimSpace(raw)) == 0 {
-		return out, nil
-	}
-	if err := spec.DecodeJSON(raw, &out.Body); err != nil {
-		if out.ok() {
-			return out, fmt.Errorf("%s %s: the answer is not JSON: %w", method, path, err)
-		}
-		out.Body = nil
-	}
-	return out, nil
+	return answer{Status: resp.StatusCode, Header: resp.Header, Raw: raw}, nil
 }

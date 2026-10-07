@@ -2,14 +2,15 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
-
-	"github.com/fada4773-sketch/specproof/internal/gen/record"
 )
 
 const shop = "../../testdata/gen/shop.yaml"
@@ -470,158 +471,121 @@ func TestApplyIgnoreLintingAndDebug(t *testing.T) {
 	}
 }
 
-// record reads a GET-only instance, writes the examples, the lock file and
-// the seed, and a second run leaves the spec alone.
+// store is an empty instance for testdata/gen/record.yaml: per collection
+// ids from 1, POST stores the body, GET, PUT and DELETE work on the ids.
+func store() http.Handler {
+	var mu sync.Mutex
+	data := map[string]map[string]map[string]any{}
+	next := map[string]int{}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		segs := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+		coll := data[segs[0]]
+		if coll == nil {
+			coll = map[string]map[string]any{}
+			data[segs[0]] = coll
+		}
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case len(segs) == 1 && r.Method == http.MethodPost:
+			next[segs[0]]++
+			body["id"] = next[segs[0]]
+			if segs[0] == "bookings" {
+				body["createdAt"] = "2027-01-15T10:00:00Z"
+			}
+			coll[strconv.Itoa(next[segs[0]])] = body
+			w.WriteHeader(201)
+			_ = json.NewEncoder(w).Encode(body)
+		case len(segs) == 1:
+			list := []any{}
+			for i := 1; i <= next[segs[0]]; i++ {
+				if rec := coll[strconv.Itoa(i)]; rec != nil {
+					list = append(list, rec)
+				}
+			}
+			_ = json.NewEncoder(w).Encode(list)
+		case coll[segs[1]] == nil:
+			w.WriteHeader(404)
+			_, _ = w.Write([]byte(`{"message": "not found"}`))
+		case r.Method == http.MethodDelete:
+			delete(coll, segs[1])
+			w.WriteHeader(204)
+		case r.Method == http.MethodPut:
+			body["id"], _ = strconv.Atoi(segs[1])
+			coll[segs[1]] = body
+			_ = json.NewEncoder(w).Encode(body)
+		default:
+			_ = json.NewEncoder(w).Encode(coll[segs[1]])
+		}
+	})
+}
+
+// record -analyse writes the record file and proposes the order; record
+// sends the requests to an empty instance, stores the answers and writes
+// the spec; a run without instance only writes the stored answers.
 func TestRecordCommand(t *testing.T) {
-	data := map[string]string{
-		"/Planet":                   `[{"id": 7, "planetCode": "P1", "name": "Mars"}]`,
-		"/Planet/P1":                `{"id": 7, "planetCode": "P1", "name": "Mars"}`,
-		"/Planet/P1/Dock":           `[{"id": 31, "dockCode": "D2", "planetId": 7, "name": "South"}]`,
-		"/Planet/P1/Ship":           `[{"id": 101, "shipCode": "S1", "dockId": 31, "name": "Falcon"}]`,
-		"/Ship/id/101":              `{"id": 101, "shipCode": "S1", "dockId": 31, "name": "Falcon"}`,
-		"/Planet/P1/Dock/D2/Config": `{"settings": {"mode": "auto"}}`,
-	}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, ok := data[r.URL.Path]
-		if !ok || r.Method != http.MethodGet {
-			http.NotFound(w, r)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(body))
-	}))
-	defer srv.Close()
 	dir, spec := copySpec(t, "record.yaml")
+	file := filepath.Join(dir, "examples.record.yaml")
 	defs := filepath.Join(dir, "defaults.json")
-	if err := os.WriteFile(defs, []byte(`{"params": {"planetCode": "P1"}, "seed": ["Planet", "Dock"], "$apitest": {"DeleteLast": true}}`), 0o644); err != nil {
-		t.Fatal(err)
+	if code, _, errOut := cli("record", "-spec", spec, "-file", file); code != 1 || !strings.Contains(errOut, "does not exist; create it with: apitest-gen record -spec "+spec+" -analyse") {
+		t.Errorf("without record file: %d %q", code, errOut)
 	}
-	args := []string{"record", "-spec", spec, "-base-url", srv.URL, "-defaults", defs, "-read-only"}
-	code, out, errOut := cli(args...)
+	code, out, errOut := cli("record", "-spec", spec, "-file", file, "-defaults", defs, "-analyse", "-dry-run")
+	if code != 0 || !strings.Contains(out, "9 entries would be added (dry run)") {
+		t.Fatalf("-analyse -dry-run: %d\n%s\n%s", code, out, errOut)
+	}
+	if _, err := os.Stat(file); err == nil {
+		t.Error("-dry-run wrote the record file")
+	}
+	code, out, errOut = cli("record", "-spec", spec, "-file", file, "-defaults", defs, "-analyse")
+	if code != 0 || errOut != "" {
+		t.Fatalf("-analyse: %d\n%s\n%s", code, out, errOut)
+	}
+	for _, want := range []string{"ADDED (in the order apitest runs them)", "── Dock", "POST /docks", "to record", "── cleanup",
+		"ORDER", `"$apitest": {"Tags": ["Dock", "Ship", "Booking"], "DeleteLast": true}`, `apitest.Config{Tags: []string{"Dock", "Ship", "Booking"}, DeleteLast: true, …}`,
+		"9 entries added (0 with the answer of the spec), 3 saved values to link them", "-base-url <url>"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("-analyse output misses %q:\n%s", want, out)
+		}
+	}
+	if code, out, _ := cli("record", "-spec", spec, "-file", file, "-defaults", defs, "-analyse"); code != 0 || !strings.Contains(out, "nothing to add") || !strings.Contains(out, ": unchanged") {
+		t.Errorf("second -analyse: %d\n%s", code, out)
+	}
+	code, out, errOut = cli("record", "-spec", spec, "-file", file, "-defaults", defs)
+	if code != 1 || !strings.Contains(out, "NEEDS_INSTANCE") || !strings.Contains(out, "9 entries need an answer") || !strings.Contains(errOut, "1 problems") {
+		t.Errorf("without instance: %d\n%s\n%s", code, out, errOut)
+	}
+	srv := httptest.NewServer(store())
+	defer srv.Close()
+	code, out, errOut = cli("record", "-spec", spec, "-file", file, "-defaults", defs, "-base-url", srv.URL)
 	if code != 0 || errOut != "" {
 		t.Fatalf("record: %d\n%s\n%s", code, out, errOut)
 	}
-	for _, want := range []string{"REQUESTS to " + srv.URL, "── Dock", "#001 GET", "record: 13 operations, 13 with new or changed schemas",
-		"FINDINGS", "WHAT THE CODES MEAN", "examples written", `"$recorded" updated`, "2 seed records",
-		"EXAMPLES", "places have an example", "WHY IT HAS NO EXAMPLE"} {
+	for _, want := range []string{"ENTRIES (requests to " + srv.URL + ")", "#01 POST /docks", "201 recorded", "(no answer yet)", "9 entries: 9 recorded; 9 requests sent",
+		"FINDINGS", "ORDER", `"$apitest"`, "9 answers recorded and saved", "examples written"} {
 		if !strings.Contains(out, want) {
-			t.Errorf("output misses %q:\n%s", want, out)
+			t.Errorf("record output misses %q:\n%s", want, out)
 		}
 	}
-	b, err := os.ReadFile(spec)
-	if err != nil || !strings.Contains(string(b), "shipCode: S1") {
-		t.Errorf("spec without the examples: %v", err)
-	}
-	if b, err := os.ReadFile(defs); err != nil || !strings.Contains(string(b), `"$recorded": {`) || !strings.HasPrefix(string(b), `{"params": {"planetCode": "P1"}`) {
-		t.Errorf("defaults file: %s %v", b, err)
-	}
-	code, out, _ = cli(args...)
-	if code != 0 || !strings.Contains(out, "10 unchanged") || !strings.Contains(out, "0 examples written") {
-		t.Errorf("second run: %d\n%s", code, out)
-	}
-	if code, _, errOut := cli("record", "-spec", spec); code != 2 || !strings.Contains(errOut, "-base-url is required") {
-		t.Errorf("without -base-url: %d %q", code, errOut)
-	}
-	if code, _, errOut := cli(append(args, "-all")...); code != 1 || !strings.Contains(errOut, "-all sends every write; it cannot be combined with -read-only") {
-		t.Errorf("-all with -read-only: %d %q", code, errOut)
-	}
-	if err := os.WriteFile(defs, []byte(`{"$snapshot": {}}`), 0o644); err != nil {
+	if err := os.WriteFile(defs, []byte(`{"$apitest": {"Tags": ["Dock", "Ship", "Booking"], "DeleteLast": true}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if code, _, errOut := cli(args...); code != 1 || !strings.Contains(errOut, "belongs to the format of") {
-		t.Errorf("old format: %d %q", code, errOut)
+	code, out, _ = cli("record", "-spec", spec, "-file", file, "-defaults", defs)
+	if code != 0 || strings.Contains(out, "FINDINGS") || !strings.Contains(out, "9 entries: 9 kept; 0 requests sent") || !strings.Contains(out, "every example is up to date") {
+		t.Errorf("offline run: %d\n%s", code, out)
 	}
-}
-
-// record -show-bodies writes every request with its body and answer, the
-// findings and the summary into record-log.html in the current directory;
-// the console shows only a short report.
-func TestRecordShowBodies(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body := map[string]string{
-			"/Planet":         `[{"id": 7, "planetCode": "P1", "name": "Mars <b>"}]`,
-			"/Planet/P1":      `{"id": 7, "planetCode": "P1", "name": "Mars <b>"}`,
-			"/Planet/P1/Dock": `[{"id": 31, "dockCode": "D2", "planetId": 7, "name": "South"}]`,
-		}[r.URL.Path]
-		if body == "" || r.Method != http.MethodGet {
-			http.NotFound(w, r)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(body))
-	}))
-	defer srv.Close()
-	dir, spec := copySpec(t, "record.yaml")
-	defs := filepath.Join(dir, "defaults.json")
-	if err := os.WriteFile(defs, []byte(`{"params": {"planetCode": "P1"}, "seed": ["Planet"]}`), 0o644); err != nil {
-		t.Fatal(err)
+	fresh := httptest.NewServer(store())
+	defer fresh.Close()
+	before, _ := os.ReadFile(file)
+	code, out, _ = cli("record", "-spec", spec, "-file", file, "-defaults", defs, "-base-url", fresh.URL, "-refresh", "Ship", "-dry-run")
+	if code != 0 || !strings.Contains(out, "2 answers recorded, not saved (dry run)") || !strings.Contains(out, "(-refresh)") {
+		t.Errorf("-refresh -dry-run: %d\n%s", code, out)
 	}
-	t.Chdir(dir)
-	code, out, errOut := cli("record", "-spec", spec, "-base-url", srv.URL, "-defaults", defs, "-read-only", "-show-bodies")
-	if code != 0 || errOut != "" {
-		t.Fatalf("record: %d\n%s\n%s", code, out, errOut)
-	}
-	for _, want := range []string{"apitest-gen record: ", "13 operations", "findings: ", "examples written", "log: " + filepath.Join(dir, "record-log.html"),
-		"examples: ", "places have an example", " without; "} {
-		if !strings.Contains(out, want) {
-			t.Errorf("console misses %q:\n%s", want, out)
-		}
-	}
-	for _, not := range []string{"REQUESTS", "#001", "FINDINGS", "FETCH_FAILED", "Mars"} {
-		if strings.Contains(out, not) {
-			t.Errorf("console shows %q:\n%s", not, out)
-		}
-	}
-	b, err := os.ReadFile(filepath.Join(dir, "record-log.html"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	page := string(b)
-	for _, want := range []string{"<details", "#001", "/Planet/P1/Dock", "Findings", "FETCH_FAILED", "What the codes mean",
-		`<span class="j-key">&#34;name&#34;</span>: <span class="j-str">&#34;Mars \u003cb\u003e&#34;</span>`, `class="req failed" open`, "examples written",
-		"<h2>Examples</h2>", "without example</span>", "Why it has no example", "<td class=\"mono\">GetShips</td><td class=\"mono\">response 200</td><td class=\"msg\">NO_DATA: "} {
-		if !strings.Contains(page, want) {
-			t.Errorf("log misses %q", want)
-		}
-	}
-	if strings.Contains(page, "Mars <b>") {
-		t.Error("the log does not escape the answers")
-	}
-}
-
-// record -ignorelinting writes data that violates its schema and prints
-// none of the violations; without it they stop the run.
-func TestRecordIgnoreLinting(t *testing.T) {
-	data := map[string]string{
-		"/Planet":         `[{"id": 7, "planetCode": "P1", "name": 5}]`,
-		"/Planet/P1":      `{"id": 7, "planetCode": "P1", "name": 5}`,
-		"/Planet/P1/Dock": `[{"id": 31, "dockCode": "D2", "planetId": 7, "name": "South"}]`,
-	}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, ok := data[r.URL.Path]
-		if !ok || r.Method != http.MethodGet {
-			http.NotFound(w, r)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(body))
-	}))
-	defer srv.Close()
-	dir, spec := copySpec(t, "record.yaml")
-	defs := filepath.Join(dir, "defaults.json")
-	if err := os.WriteFile(defs, []byte(`{"params": {"planetCode": "P1"}, "seed": ["Planet", "Dock"], "$apitest": {"DeleteLast": true}}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	args := []string{"record", "-spec", spec, "-base-url", srv.URL, "-defaults", defs, "-read-only"}
-	if code, out, _ := cli(args...); code != 1 || !strings.Contains(out, "EXAMPLE_INVALID") {
-		t.Fatalf("without -ignorelinting: %d\n%s", code, out)
-	}
-	code, out, _ := cli(append(args, "-ignorelinting")...)
-	if strings.Contains(out, "LINT_IGNORED") || strings.Contains(out, "violates the schema") {
-		t.Errorf("-ignorelinting prints the violations: %d\n%s", code, out)
-	}
-	if !strings.Contains(out, "examples written") {
-		t.Errorf("-ignorelinting: %d\n%s", code, out)
+	if after, _ := os.ReadFile(file); string(after) != string(before) {
+		t.Error("-dry-run changed the record file")
 	}
 }
 
@@ -643,60 +607,5 @@ func TestTable(t *testing.T) {
 	}
 	if got := (style{on: true}).paint(red, "x"); got != "\x1b[31mx\x1b[0m" {
 		t.Errorf("paint %q", got)
-	}
-}
-
-func TestLogEntryBodies(t *testing.T) {
-	e := record.Entry{N: 3, Tag: "Dock", Method: "PUT", URL: "/Dock/D1", Why: "update", Status: 200, Body: map[string]any{"name": "North"}}
-	var b strings.Builder
-	tag := ""
-	logEntry(&b, style{}, e, &tag)
-	if strings.Contains(b.String(), "sent:") || !strings.Contains(b.String(), "── Dock") || !strings.Contains(b.String(), "#003 PUT    200 /Dock/D1") {
-		t.Errorf("a write that succeeded:\n%s", b.String())
-	}
-	b.Reset()
-	e.Status, e.Resp = 409, map[string]any{"message": "exists"}
-	logEntry(&b, style{}, e, &tag)
-	if !strings.Contains(b.String(), `sent:   {"name":"North"}`) || !strings.Contains(b.String(), `answer: {"message":"exists"}`) || strings.Contains(b.String(), "── Dock") {
-		t.Errorf("a write that failed:\n%s", b.String())
-	}
-	b.Reset()
-	e.Origin = []string{`{dockCode} = D1 ← "params".dockCode`, "body ← the dock selected from #2 GET /Planet/P1/Dock (GetDocks)"}
-	logEntry(&b, style{}, e, &tag)
-	if !strings.Contains(b.String(), `from:   {dockCode} = D1 ← "params".dockCode`) || !strings.Contains(b.String(), "from:   body ← the dock selected from #2") {
-		t.Errorf("a write that failed, with its origin:\n%s", b.String())
-	}
-	b.Reset()
-	probe := record.Entry{N: 4, Tag: "Dock", Method: "GET", URL: "/Dock/D1/Config", Why: "details", Status: 404, Resp: map[string]any{"message": "none"}, Probe: true, Origin: e.Origin}
-	logEntry(&b, style{}, probe, &tag)
-	if strings.Contains(b.String(), "answer:") || strings.Contains(b.String(), "from:") || !strings.Contains(b.String(), "#004 GET    404 /Dock/D1/Config") {
-		t.Errorf("a select check that rejects a candidate:\n%s", b.String())
-	}
-}
-
-// In the HTML log a select check that rejects a candidate is no failure:
-// it stays closed, shows its verdict and counts in no "failed".
-func TestRunLogProbe(t *testing.T) {
-	l := &runLog{Entries: []record.Entry{
-		{N: 1, Tag: "Dock", Method: "GET", URL: "/Dock/D1/Config", Status: 404, Probe: true, Origin: []string{"{dockCode} = D1 ← x"}},
-		{N: 2, Tag: "Dock", Method: "PUT", URL: "/Dock/D2", Status: 500, Origin: []string{"body ← the dock selected from #3"}},
-	}, Probes: map[int]string{1: "the dock is rejected, the next one is checked: #1 GET /Dock/D1/Config answers 404"}}
-	v := l.view()
-	if len(v.Tags) != 1 || v.Tags[0].Failed != 1 {
-		t.Fatalf("tags: %+v", v.Tags)
-	}
-	p, w := v.Tags[0].Requests[0], v.Tags[0].Requests[1]
-	if p.Failed || p.StatusClass != "probe" || !strings.Contains(p.Verdict, "rejected") || !w.Failed || w.StatusClass != "fail" {
-		t.Errorf("probe %+v, write %+v", p, w)
-	}
-	path, err := l.write(filepath.Join(t.TempDir(), "log.html"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	b, _ := os.ReadFile(path)
-	for _, want := range []string{"select check", "where the values come from", "body ← the dock selected from #3", "the next one is checked"} {
-		if !strings.Contains(string(b), want) {
-			t.Errorf("log misses %q", want)
-		}
 	}
 }

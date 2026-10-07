@@ -33,6 +33,14 @@ func Load(path string) (*Doc, error) {
 	return Parse(b)
 }
 
+// New returns an empty YAML document; comment, if set, heads the file.
+func New(comment string) *Doc {
+	d := &Doc{}
+	d.Root = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+	d.doc = yaml.Node{Kind: yaml.DocumentNode, HeadComment: comment, Content: []*yaml.Node{d.Root}}
+	return d
+}
+
 // Parse reads YAML or JSON content.
 func Parse(b []byte) (*Doc, error) {
 	d := &Doc{json: bytes.HasPrefix(bytes.TrimSpace(b), []byte("{"))}
@@ -205,6 +213,28 @@ func Set(n *yaml.Node, key string, value any) error {
 	v, err := Node(value)
 	if err != nil {
 		return err
+	}
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		if n.Content[i].Value == key {
+			old := n.Content[i+1]
+			v.HeadComment, v.LineComment, v.FootComment = old.HeadComment, old.LineComment, old.FootComment
+			n.Content[i+1] = v
+			return nil
+		}
+	}
+	n.Content = append(n.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key}, v)
+	return nil
+}
+
+// SetNode sets key in mapping n to the node v, like Set: an existing value
+// is replaced in place and keeps its comments. It never writes next to a
+// $ref.
+func SetNode(n *yaml.Node, key string, v *yaml.Node) error {
+	if n == nil || n.Kind != yaml.MappingNode {
+		return errors.New("not a mapping")
+	}
+	if Ref(n) != "" {
+		return errors.New("refusing to write next to a $ref")
 	}
 	for i := 0; i+1 < len(n.Content); i += 2 {
 		if n.Content[i].Value == key {

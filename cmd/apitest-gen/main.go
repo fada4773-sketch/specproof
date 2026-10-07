@@ -26,6 +26,7 @@ import (
 	"github.com/fada4773-sketch/specproof/internal/gen/dict"
 	"github.com/fada4773-sketch/specproof/internal/gen/discover"
 	"github.com/fada4773-sketch/specproof/internal/gen/model"
+	"github.com/fada4773-sketch/specproof/internal/gen/record"
 	"github.com/fada4773-sketch/specproof/internal/gen/review"
 	"github.com/fada4773-sketch/specproof/internal/gen/scenario"
 	"github.com/fada4773-sketch/specproof/internal/gen/yamldoc"
@@ -40,7 +41,8 @@ Usage:
   apitest-gen discover -defaults defaults.json -base-url <url> [-token-env API_TOKEN] [-out defaults.resolved.json]
   apitest-gen check    -spec <openapi.yaml> [-defaults defaults.json]
   apitest-gen review   -spec <openapi.yaml> [-dict global-dict.json] [-defaults defaults.json]
-  apitest-gen record   -spec <openapi.yaml> -base-url <url> [-defaults defaults.json] [flags]
+  apitest-gen record   -spec <openapi.yaml> -analyse [-file examples.record.yaml]
+  apitest-gen record   -spec <openapi.yaml> [-file examples.record.yaml] [-base-url <url>] [-refresh <entries>]
 
 Commands:
   apply     (default) update the dictionary, then write missing or invalid
@@ -62,13 +64,16 @@ Commands:
             generator cannot create); the fixes are added as data to the
             defaults file (created if missing): values and "$snapshot";
             check them, then run apply
-  record    write the examples from a running instance (defaults.json with
-            "params", "seed", "select", "$apitest"): read every GET, select
-            one record per DTO, send PUT, DELETE and POST of the same data,
-            and write what apitest sees in an empty environment that holds
-            only the seed (its ids, its lists); only operations whose
-            schemas changed since the last run ("$recorded" in the
-            defaults file) get new examples; every request is logged
+  record    keep the examples in one file, examples.record.yaml: per tag
+            the requests in the order they run, each with its answer.
+            -analyse adds an entry for every case of the spec the file has
+            none for, in apitest's order; you check the order and the
+            values. Without -analyse it sends, in the order of the file,
+            the requests whose answer is missing, no longer fits the schema
+            or is named by -refresh (to -base-url, an EMPTY instance; the
+            entries before them are sent again to build their data), stores
+            the answers in the file and writes every entry into the spec;
+            without -base-url it only writes the stored answers
   help      show this help
 
 Flags:
@@ -118,10 +123,6 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return checkCommand(o, stdout, stderr)
 	}
 	if cmd == "record" {
-		if o.baseURL == "" {
-			fmt.Fprintln(stderr, "apitest-gen record: -base-url is required")
-			return 2
-		}
 		if err := recordCommand(o, stdout); err != nil {
 			fmt.Fprintf(stderr, "apitest-gen record: %v\n", err)
 			return 1
@@ -154,7 +155,8 @@ type options struct {
 	debug, ignoreLinting      bool
 	genericIDs                string
 	// record
-	readOnly, showBodies, all bool
+	file, refresh string
+	analyse       bool
 }
 
 func flags(name string, out io.Writer) (*flag.FlagSet, *options) {
@@ -164,18 +166,18 @@ func flags(name string, out io.Writer) (*flag.FlagSet, *options) {
 	fs.StringVar(&o.spec, "spec", "", "OpenAPI file (YAML or JSON), required")
 	fs.StringVar(&o.dict, "dict", "global-dict.json", "dictionary file; created if it does not exist")
 	fs.StringVar(&o.defaults, "defaults", "defaults.json", "values that win everywhere; several files comma-separated, later ones override earlier ones")
-	outHelp := "write the spec here instead of in place (apply)"
+	outHelp := "write the spec here instead of in place (apply, record)"
 	if name == "discover" {
 		outHelp = "file for the fetched values"
 		o.out = "defaults.resolved.json"
 	}
 	fs.StringVar(&o.out, "out", o.out, outHelp)
-	fs.StringVar(&o.baseURL, "base-url", "", "running instance to fetch the records (apply) and the sources from, e.g. http://localhost:8080/api")
+	fs.StringVar(&o.baseURL, "base-url", "", "running instance to fetch the records (apply) and the sources from, e.g. http://localhost:8080/api; record: the EMPTY instance the requests go to")
 	fs.StringVar(&o.tokenEnv, "token-env", "", "environment variable holding a bearer token for -base-url")
 	fs.Var(&o.headers, "header", `extra header for -base-url, "Name: value"; repeatable`)
 	fs.Uint64Var(&o.seed, "seed", 42, "seed for generated values; the same seed gives the same values")
 	fs.BoolVar(&o.repair, "repair", false, "regenerate dictionary values that no longer fit their schema")
-	fs.BoolVar(&o.overwrite, "overwrite", false, "replace existing valid examples too (apply); write the examples of unchanged operations too and select every record again (record)")
+	fs.BoolVar(&o.overwrite, "overwrite", false, "replace existing valid examples too (apply)")
 	fs.StringVar(&o.genericIDs, "generic-ids", "id,uuid,key", "path parameter names that mean another resource on every path")
 	fs.BoolVar(&o.dryRun, "dry-run", false, "show what would change, write nothing")
 	fs.BoolVar(&o.verbose, "v", false, "verbose: list every change and how often each default was used, not only problems")
@@ -183,9 +185,9 @@ func flags(name string, out io.Writer) (*flag.FlagSet, *options) {
 	fs.BoolVar(&o.debug, "debug", false, "apply: save the dictionary even if the run fails; the spec stays unchanged")
 	fs.BoolVar(&o.ignoreLinting, "ignorelinting", false, "apply: report records and examples that violate their schema instead of stopping")
 	if name == "record" {
-		fs.BoolVar(&o.readOnly, "read-only", false, "send only GET; build the examples of PUT, POST and DELETE from the data the GETs read")
-		fs.BoolVar(&o.all, "all", false, "send every write, none stays NOT_EXECUTED: parameters and required body fields no data has are generated, a DELETE without a POST that creates its record again is sent on its own")
-		fs.BoolVar(&o.showBodies, "show-bodies", false, "write every request with its body and answer, the findings and the summary into record-log.html in the current directory (collapsible HTML); the console shows only a short report")
+		fs.StringVar(&o.file, "file", record.DefaultFile, "the record file: per tag the requests in the order they run, with their answers")
+		fs.BoolVar(&o.analyse, "analyse", false, "add an entry for every case of the spec the record file has none for, in apitest's order; nothing is sent, the spec stays unchanged")
+		fs.StringVar(&o.refresh, "refresh", "", `record these answers again, comma-separated: "all", a tag, an operationId, "METHOD /path" or "operationId/name"`)
 	}
 	return fs, o
 }

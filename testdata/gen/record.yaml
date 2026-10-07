@@ -3,265 +3,224 @@ info:
   title: Starport
   version: "1.0"
 paths:
-  /Planet:
+  /docks:
+    post:
+      operationId: createDock
+      tags: [Dock]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DockWrite"
+      responses:
+        "201":
+          $ref: "#/components/responses/Dock"
     get:
-      operationId: GetPlanets
-      tags: [Planet]
+      operationId: listDocks
+      tags: [Dock]
       responses:
         "200":
-          description: planets
+          description: all docks
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  $ref: "#/components/schemas/PlanetRead"
-  /Planet/{planetCode}:
+                  $ref: "#/components/schemas/Dock"
+  /docks/{dockId}:
+    parameters:
+      - $ref: "#/components/parameters/DockId"
     get:
-      operationId: GetPlanet
-      tags: [Planet]
-      parameters:
-        - $ref: "#/components/parameters/PlanetCode"
-      responses:
-        "200":
-          description: the planet
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/PlanetRead"
-  /Planet/{planetCode}/Dock:
-    get:
-      operationId: GetDocks
+      operationId: getDock
       tags: [Dock]
-      parameters:
-        - $ref: "#/components/parameters/PlanetCode"
       responses:
         "200":
-          description: docks
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/DockRead"
-  /Planet/{planetCode}/Dock/{dockCode}/Config:
-    get:
-      operationId: GetDockConfig
-      tags: [Dock]
-      parameters:
-        - $ref: "#/components/parameters/PlanetCode"
-        - name: dockCode
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        "200":
-          description: the config
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/DockConfig"
+          $ref: "#/components/responses/Dock"
     put:
-      operationId: UpdateDockConfig
+      operationId: updateDock
       tags: [Dock]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DockWrite"
+      responses:
+        "200":
+          $ref: "#/components/responses/Dock"
+    delete:
+      operationId: deleteDock
+      tags: [Dock]
+      responses:
+        "204":
+          description: deleted
+  /ships:
+    post:
+      operationId: createShip
+      tags: [Ship]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ShipWrite"
+      responses:
+        "201":
+          description: the ship
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Ship"
+  /ships/{shipId}:
+    get:
+      operationId: getShip
+      tags: [Ship]
       parameters:
-        - $ref: "#/components/parameters/PlanetCode"
-        - name: dockCode
+        - name: shipId
           in: path
           required: true
           schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/DockConfig"
-      responses:
-        "200":
-          description: the config
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/DockConfig"
-  /Planet/{planetCode}/Ship:
-    get:
-      operationId: GetShips
-      tags: [Ship]
-      parameters:
-        - $ref: "#/components/parameters/PlanetCode"
-      responses:
-        "200":
-          description: ships
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/ShipRead"
-    post:
-      operationId: CreateShip
-      tags: [Ship]
-      parameters:
-        - $ref: "#/components/parameters/PlanetCode"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/ShipCreate"
-      responses:
-        "201":
-          description: created
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ShipRead"
-  /Planet/{planetCode}/Dock/{dockCode}/Ship:
-    parameters:
-      - $ref: "#/components/parameters/PlanetCode"
-      - name: dockCode
-        in: path
-        required: true
-        schema:
-          type: string
-    get:
-      operationId: GetDockShips
-      tags: [Ship]
-      responses:
-        "200":
-          description: the ships of a dock
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/ShipRead"
-    post:
-      operationId: CreateDockShip
-      tags: [Ship]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/ShipCreate"
-      responses:
-        "201":
-          description: created
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ShipRead"
-  /Ship/search:
-    post:
-      operationId: SearchShips
-      tags: [Ship]
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                name: {type: string}
-      responses:
-        "200":
-          description: the ships found
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/ShipRead"
-  /Ship/id/{id}:
-    parameters:
-      - name: id
-        in: path
-        required: true
-        schema:
-          type: integer
-    get:
-      operationId: GetShip
-      tags: [Ship]
+            type: integer
       responses:
         "200":
           description: the ship
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ShipRead"
-    put:
-      operationId: UpdateShip
-      tags: [Ship]
+                $ref: "#/components/schemas/Ship"
+  /bookings:
+    post:
+      operationId: createBooking
+      tags: [Booking]
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/ShipUpdate"
+              $ref: "#/components/schemas/BookingCreate"
       responses:
-        "200":
-          description: updated
+        "201":
+          description: the booking
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ShipRead"
-    delete:
-      operationId: DeleteShip
-      tags: [Ship]
+                $ref: "#/components/schemas/Booking"
+  /bookings/{bookingId}:
+    get:
+      operationId: getBooking
+      tags: [Booking]
+      parameters:
+        - name: bookingId
+          in: path
+          required: true
+          schema:
+            type: integer
       responses:
-        "204":
-          description: deleted
+        "200":
+          description: the booking
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Booking"
 components:
   parameters:
-    PlanetCode:
-      name: planetCode
+    DockId:
+      name: dockId
       in: path
       required: true
       schema:
-        type: string
+        type: integer
+  responses:
+    Dock:
+      description: the dock
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Dock"
   schemas:
-    PlanetRead:
+    DockWrite:
       type: object
-      required: [id, planetCode]
+      required: [name, capacity]
       properties:
-        id: {type: integer}
-        planetCode: {type: string}
-        name: {type: string}
-    DockRead:
-      type: object
-      required: [id, dockCode]
-      properties:
-        id: {type: integer}
-        dockCode: {type: string}
-        planetId: {type: integer}
-        name: {type: string}
-    DockConfig:
-      type: object
-      properties:
-        settings:
-          type: object
+        name:
+          type: string
+          maxLength: 40
+        capacity:
+          type: integer
+          minimum: 1
+          maximum: 20
+    Dock:
+      allOf:
+        - $ref: "#/components/schemas/DockWrite"
+        - type: object
+          required: [id]
           properties:
-            mode: {type: string}
-    ShipRead:
+            id:
+              type: integer
+              readOnly: true
+    ShipWrite:
       type: object
-      required: [id, shipCode]
+      required: [name, dockId]
       properties:
-        id: {type: integer}
-        shipCode: {type: string}
-        dockId: {type: integer}
-        name: {type: string}
-        updatedAt: {type: string}
-    ShipCreate:
+        name:
+          type: string
+        dockId:
+          type: integer
+    Ship:
+      allOf:
+        - $ref: "#/components/schemas/ShipWrite"
+        - type: object
+          required: [id]
+          properties:
+            id:
+              type: integer
+              readOnly: true
+    BookingBase:
       type: object
-      required: [shipCode, dockId]
+      required: [shipId, route]
       properties:
-        shipCode: {type: string}
-        dockId: {type: integer}
-        name: {type: string}
-    ShipUpdate:
+        shipId:
+          type: integer
+        route:
+          $ref: "#/components/schemas/Route"
+    BookingCreate:
+      allOf:
+        - $ref: "#/components/schemas/BookingBase"
+        - type: object
+          properties:
+            crew:
+              type: array
+              items:
+                $ref: "#/components/schemas/CrewMember"
+    Booking:
+      allOf:
+        - $ref: "#/components/schemas/BookingCreate"
+        - type: object
+          required: [id, createdAt]
+          properties:
+            id:
+              type: integer
+              readOnly: true
+            createdAt:
+              type: string
+              format: date-time
+              readOnly: true
+    Route:
       type: object
+      required: [originDockId, departure]
       properties:
-        dockId: {type: integer}
-        name: {type: string}
+        originDockId:
+          type: integer
+        departure:
+          type: string
+          format: date-time
+    CrewMember:
+      type: object
+      required: [pilotName, role]
+      properties:
+        pilotName:
+          type: string
+        role:
+          type: string
+          enum: [CAPTAIN, NAVIGATOR]

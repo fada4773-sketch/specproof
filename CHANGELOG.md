@@ -16,167 +16,29 @@ contain breaking changes, which are listed here.
 
 ### Features
 
-- `apitest-gen record`: `"select".<DTO>.count` lets the seed hold more
-  records of a seed DTO: the first `n` elements of its list that pass
-  `select`, `"*"` every one. They get the ids 1 to n of the empty
-  environment, the lists show them, and `"$recorded".seed` holds a list of
-  them for that DTO. Fewer passing elements than `count` are reported as
-  `SEED_SHORT`; a `count` for a DTO that is not in `seed` stops the run.
-- `apitest-gen record -all` sends every write the run would leave out as
-  `NOT_EXECUTED`: parameters and required body fields no data has get
-  generated values, a DELETE without a record to create again is sent on
-  its own. Each such write is reported as `FORCED`; one the instance
-  rejects gets no example. Not together with `-read-only` or `-dry-run`.
-  The body of such a write is assembled from the record of its table or
-  of the DTO of its body (seed or selected), optional fields included; a
-  POST body gets other values in the unique indexes of `"tables"`.
-- `apitest-gen record`: operations not in the run (`ExcludeOps`, a case
-  apitest skips) keep the examples of `-spec` (`SPEC_EXAMPLES`), named
-  `examples` with their `$ref` resolved; before, they lost them unless the
-  last output had them.
-- `apitest-gen record`: a POST that is not sent and whose body comes from a
-  record the empty environment holds already gets the `-copy` values in
-  the unique indexes of `"tables"` in its example, as the POST of a copy.
-- `apitest-gen record` shows how many places of the spec hold an example:
-  path and required query parameters, the request body and the first 2xx
-  response with JSON content of every operation. The console (`EXAMPLES`)
-  and `record-log.html` (section "Examples") show how many this run wrote,
-  how many were kept from the last output, how many values were generated
-  because no data read had them, and every place without example with the
-  reason (the note of the run, an operation not in the run, an unchanged
-  operation whose last output lacks it).
-- `apitest-gen record -show-bodies` writes every request with its body and
-  answer, the findings, what their codes mean and the summary into
-  `record-log.html` in the current directory: one HTML page with collapsible
-  tags and requests, failed requests open, a filter and "only failed". The
-  console then shows only a short report (summary, finding counts, files,
-  the path of the log).
-- `apitest-gen record`: the GETs `select` sends to check a candidate (its
-  `details`, the records below it) are select checks, not failures: an
-  error answer only rejects the candidate. The log shows them dim and
-  marked "select check", with what each one decided (rejected and why, or
-  passes); they count in no "failed".
-- `apitest-gen record`: the copy of a record is sent without its lists of
-  nested records (`crew: [{…}]`) unless the request schema requires them;
-  a required one keeps `minItems` elements, at least one. Sent with them,
-  the server created n more rows for the copy, which a DELETE that only
-  marks the copy (soft delete) left, so the lists of them grew after the
-  writes (`DATA_CHANGED`, n → 2n). The examples still show the record with
-  its list. Rows the copy created anyway (shown in its answer, or found
-  in the lists read that refer to it, e.g. an audit row) are deleted first
-  with a DELETE of the spec that addresses each one by its id; those it
-  cannot delete are named once (`COPY_LEFT`). The check after the writes
-  leaves every row that refers to a copy out and names it as `COPY_LEFT`,
-  never as `DATA_CHANGED`.
-- `apitest-gen record`: bodies and built answers are assembled part by
-  part along their schema, so a POST whose body joins several DTOs
-  (`allOf`, `$ref`, properties of its own) gets a valid example although no
-  GET answers that structure. A part with the DTO of a table takes the
-  selected record (the one its `…Id` next to it refers to); a DTO without
-  a table takes the object an answer holds (one of a selected record
-  first); an inline object takes the object read with most of its fields;
-  `oneOf`/`anyOf` take the part the data fits best and set the
-  discriminator; a required field without data gets a generated value
-  (default, enum, format, pattern). A POST that creates fills its optional
-  parts too, other writes only what the schema requires; lists of records
-  are filled only if required. A value of the data that violates its schema
-  stays (`EXAMPLE_INVALID`). The log names where each added part comes
-  from (`body.dock ← the dock selected from #12 …`).
-- `apitest-gen record`: looking for the POST that creates a record again no
-  longer resolves the POSTs of other tables before their tag read its
-  records (a POST at the path of its own list got no record).
-- `apitest-gen record`: a path parameter whose segment in front names no
-  table (`/Dock/pilot/id/{id}`) takes the field of a table a segment
-  further left names (`Dock.id`); in `select.<DTO>.details` that is the
-  candidate being checked. Before, such a detail had no value and rejected
-  every candidate.
-- `apitest-gen record`: every request carries where its values come from:
-  each parameter (`"params".<key>`, the field of a selected record and the
-  request it was selected from, the example or default of the spec) and
-  the body (the answer of the GET of the same path, the record, a copy,
-  the fields of the selected records, `"bodies"`). The console shows it
-  under a failed request (`from:`), the HTML log under every request.
-- `apitest-gen record`: `"tables"` in the defaults file describes the table
-  of a DTO as the database knows it: `unique` indexes (fields as the API or
-  as columns name them, `where` of a partial index), `softDelete` and
-  `refs` (`to`, `onDelete`). A table with an entry is written through a
-  copy: the POST creates a copy with other values of the unique fields and
-  of the keys the paths address the record by, the DELETE deletes that
-  copy; the records the run read stay untouched. The values of the copy
-  carry a token per run, so a copy an earlier run left behind by a soft
-  delete never collides. The examples still show the record; a POST of a
-  seed record shows the values of the copy (`-copy`), so it does not
-  collide with the seed in the empty environment.
-- `apitest-gen record` reports `UNIQUE_SOFT_DELETE` before the writes for a
-  unique index of a soft-deleted table that counts deleted rows,
-  `UNIQUE_CONFLICT` for a POST that violates a unique index (after a DELETE
-  with how to restore the row and make the index partial) and `COPY_LEFT`
-  for a copy it could not delete. A DELETE whose `onDelete: CASCADE`
-  would remove rows of another table is not sent unless its table is
-  written through a copy.
-- `apitest-gen record` writes `"$recorded".seedOrder`: the order to create
-  the seed records in, each after the records it refers to.
-- `apitest-gen record` reads the seed first, before every tag (log tag
-  `seed`), in the order of `seed`, each record from its `from` list.
-- `apitest-gen record` reports `NOT_SENT` when a write leaves out filled
-  fields of its record that its request schema does not declare; a value
-  `"{field}"` in `bodies` sends such a field from the record.
-- `apitest-gen record`: `"bodies": {"<operationId>": {…}}` in the defaults
-  file sets fields of the body of a write or of a POST that only reads,
-  laid over the body the run builds, e.g. the filter of a table query. The
-  body of a query also fills a list in the plural from the selected
-  records (`dockCodes` takes the `dockCode`).
-- `apitest-gen record`: a value `"{name}"` in `select.<DTO>.equal` and in
-  `details.<GET>.equal` takes the value `params` sets for `name`; the run
-  stops if `params` has no plain value for it.
-- `apitest-gen record` prints its output in parts: the requests below a
-  heading per tag with colored status, a summary, the findings as a table
-  (`FATAL`, `PROBLEM`, `WARN`, `INFO`, the most serious first), one line
-  per code that occurred with what it means and what to do, and the files
-  written. Colors only on a terminal; `NO_COLOR` turns them off, `COLUMNS`
-  sets the width. Problems that do not stop the run (`DATA_CHANGED`,
-  `FETCH_FAILED`) are no longer labelled `FATAL`.
-- `apitest-gen record` writes `"$suggestions"` into the defaults file: for
-  every `NO_DATA` and `NOT_IN_CONTAINER` the entry to merge into `params`
-  (a field for a parameter without a value), `select` (`details` with the
-  GET that answered 404 for the selected record), `seed` or `$apitest`
-  (`DeleteLast`, `MethodOrder`). Each run writes it anew and removes it
-  when there is nothing to suggest.
-- `apitest-gen record`: `params` takes `{"format": "{Planet.id}-{Dock.id}"}`,
-  a value put together from fields of several selected records, for
-   keys; in the examples the ids in it are those of the empty
-  environment.
-- `apitest-gen record` writes the examples from a running instance for a
-  test in an empty environment that holds only a seed. It goes through the
-  tags of the run (`$apitest` `Tags`, in exactly this order) and in each
-  tag reads the GETs (parameters from `params` and the fields of the
-  records read before; one record per DTO chosen with `select`: `from`,
-  `equal`, `mandatory`, `details`), then sends PUT/PATCH with the same
-  data, the DELETE of a record and the POST that creates it again
-  (`select.<DTO>.delete` where several DELETEs could). Every request is
-  logged, numbered in the order it was sent, with its tag and reason;
-  failed requests show what was sent and answered, schema violations the
-  request, the value and the rule. The examples show what apitest will see:
-  the ids the sequences of the empty environment assign, lists with only
-  the records it holds at that point. `"$recorded"` in the defaults file
-  keeps the fingerprints of complete operations, the created ids and the
-  seed records, so the next run only writes changed, new or failed ones;
-  no other files are written. `params` can group the parameters of one
-  operation, keys starting with `$` are comments, and unknown operations,
-  parameters, `from` and `delete` entries stop the run with the ones that
-  exist.
-- `apitest-gen record` keeps the selected records in `"$recorded".records`
-  and takes them in the next run: GETs of unchanged operations whose
-  records are stored are not sent (a run without changes sends no request),
-  and the seed stays the same. Only records whose GETs changed (a changed
-  DTO), whose `select` entry or `params` changed, or that are new are read
-  and selected again, preferring the stored record. `-overwrite` ignores
-  them.
-- `apitest-gen record -ignorelinting` no longer prints the `LINT_IGNORED`
-  notes.
-- `apitest-gen record` builds request bodies of composed DTOs with the
-  fields of the schema at every level (nested objects, array elements,
-  `allOf` parts), leaving out nested `readOnly` fields.
+- `apitest-gen record` is rebuilt around one file, `examples.record.yaml`,
+  the one place the examples live. Per tag it lists the requests in the
+  order they run, each with its path and query parameters, its body, the
+  values it saves for later entries (`save: { dockId: /id }`, used as
+  `"{{dockId}}"`), the fields apitest must not compare (`ignore`) and the
+  recorded answer. `record -analyse` adds an entry for every case of the
+  spec the file lacks, in apitest's order, bodies from the spec's examples
+  or generated from the schema; it links id fields of bodies
+  (`shipId`, `originDockId`) to the entries that create those records and
+  proposes the `Tags` and `DeleteLast` apitest needs for that order. `record`
+  without `-analyse` writes every entry into the spec (parameters, request
+  body, response at its status; `examples.<name>` for an endpoint that
+  appears more than once; a copy of a shared `$ref` where operations need
+  different examples) and sends only the requests whose answer is missing,
+  no longer fits the schema or is named by `-refresh`, to an empty instance
+  (`-base-url`); the entries before them are sent again to build their
+  data. Without `-base-url` nothing is sent, so the same file gives everyone
+  the same examples. It reports entries apitest runs in another order
+  (`ORDER`) and answers that changed (`DIFFERS`). This replaces the record
+  run that read and wrote the data of a shared instance: `"params"`,
+  `"seed"`, `"select"`, `"tables"`, `"bodies"`, `"$recorded"`,
+  `"$suggestions"`, `-read-only`, `-all`, `-show-bodies` and
+  `record-log.html` are gone.
 - The resource model of `apitest-gen` tells more shapes of a spec apart:
   - a DTO with a longer stem that a path names (`DockDetailRead` with
     `/DockDetail/{id}`) is a resource of its own instead of part of `Dock`,
@@ -382,51 +244,12 @@ contain breaking changes, which are listed here.
 
 ### Fixed
 
-- `apitest-gen record`: after a POST created a record again, every later
-  request takes its new id. The DELETEs, PUTs and POSTs not sent yet are
-  resolved again, so a second DELETE no longer sends the id the GET read
-  (answered 404, then a duplicate POST). Fields of other records that refer
-  to it (`dockId`) take the new id, and GETs are no longer answered from
-  before. The log names the POST as the origin of the id.
-- `apitest-gen record`: a request for a record other than the first of its
-  table (a copy, the record of a list of its own) no longer fills a
-  missing field with the value of the first record. The copy of a record
-  no longer inherits its id: the id comes from the answer of the POST,
-  else from its list; without one the DELETE by id is not sent
-  (`COPY_LEFT`), so it never reaches the record.
-- `apitest-gen record`: no example of `-spec` reaches the output any more.
-  Header parameters, response headers, schemas and their properties and
-  `components.examples` are cleared too, and without `"$recorded"` no
-  example is carried over. Operations whose stored record is selected
-  again are written again.
-
-- `apitest-gen record` no longer reports `DATA_CHANGED` for a GET whose
-  objects have the same `id` as a record the run created again (a planet
-  with id 14 next to a ship 14 that became 136): the new id only
-  replaces the `id` of objects of that DTO, found by the response schema.
-- `apitest-gen record` sends a PUT/PATCH whose record is read only by a
-  GET of a later tag after the late reads, instead of `NOT_EXECUTED ... no
-  was read` with an empty name; the note names the DTO.
-- `apitest-gen record` takes no example of `-spec` any more: every
-  `example` and `examples` of its parameters, request bodies and responses
-  is removed, and the examples of unchanged operations come from the
-  output of the last run (`-out`). Before, a second run with `-out`
-  replaced them by the old examples of `-spec`.
-- `apitest-gen record` pairs DELETE and POST by table instead of by path:
-  a POST without a DELETE below its path is sent after another DELETE of
-  its table, with the parameters of its record; a DELETE without a POST of
-  its path is followed by another POST of its table. Without any DELETE
-  (or POST) of the table the write is built from the data read and
-  reported as `BUILT`, not `NOT_EXECUTED`; `NOT_EXECUTED` is left for
-  writes that can neither be sent nor built. DELETEs and POSTs whose
-  parameters need a record of a later tag wait for the late reads.
 - `apitest-gen`: a request body or list item written inline as `allOf` of
   several `$ref`s (as code generators write a type with `x-go-type`, e.g.
   `[{$ref: ShipBase}, {$ref: ShipExtra}, {x-go-type: ShipCreate}]`)
   belongs to the resource its path names. Before, such a POST was no
   create and such a GET no list: the POST body did not become the record,
-  and the examples of POST response, GET and list did not show it. `record`
-  finds the table of such a body the same way.
+  and the examples of POST response, GET and list did not show it.
 - `apitest-gen`: an inline `allOf` of several `$ref`s with fields of its
   own (`[{$ref: ShipBase}, {$ref: ShipExtra}, {properties: {Registry: …}}]`)
   is recognized as well; a field only such a body or list element declares
@@ -434,45 +257,6 @@ contain breaking changes, which are listed here.
   A property declared again in another part of an `allOf` (to add a
   description or readOnly) keeps its first declaration instead of
   replacing it, which made apply stop with `EXAMPLE_INCOMPLETE`.
-- `apitest-gen record`: a suggestion never repeats what the defaults set
-  already. A DTO in the seed whose GET reads another record than the
-  selected one gets `"select": {"<DTO>": {"equal": {"id": …}}}`; a
-  `MethodOrder` or `DeleteLast` that is set already gets a hint at the real
-  cause (the write belongs to a later tag, was not sent, or wrote another
-  record). A parameter without value gets the field of a selected record
-  that may hold it (`{"field": "ShipRead.id"}`) instead of a placeholder,
-  and the other candidates in the hint.
-- `apitest-gen record`: `{"field": "<DTO>.<field>"}` in `params` takes the
-  field of that DTO's record; before, a generic name such as `id` was not
-  found where the path segment names no DTO, so `NO_DATA` stayed.
-- `apitest-gen record`: `VOLATILE` and `DATA_CHANGED` compare also fields
-  only the second answer has, honor JSON pointers in `IgnoreFields`, and
-  write suggestions: the fields for `"$apitest".IgnoreFields`, and for
-  `DATA_CHANGED` the fields no body of the run can set or a hint that the
-  writes lost records.
-- `apitest-gen record`: the seed record of a DTO with `select.from` is the
-  one of that list; before, a list at the path of a POST read earlier made
-  its record the seed. `"$recorded".seed` holds the seed records complete;
-  before, elements of their lists the environment did not hold were left
-  out.
-- `apitest-gen record`: the body of an update takes the fields the GET of
-  its path lacks or holds as null from the selected record: a detail GET
-  that shows a nested object instead of the plain field of its list no
-  longer drops that field from the PUT. A null in a detail GET no longer
-  replaces a value the list read.
-- `apitest-gen record`: an update whose GET at the same path answers a list
-  sent that list as its body (the server answered "cannot unmarshal array");
-  it sends the record now. The body of an update comes from that GET only
-  if it read the same record (the same URL).
-- `apitest-gen record`: the request examples of PUT, PATCH and POST keep
-  every element of their nested lists; before, elements whose record the
-  empty environment does not hold were left out. Such an element is now
-  reported as `NOT_IN_CONTAINER` with its id.
-- `apitest-gen record`: `DATA_CHANGED` names the path of every difference
-  with both values (`dock.crew: 1 → 0 elements`, `dock.name: "North" →
-  "South"`), compares list elements by id, and reports nested lists with
-  another number of elements. Before, the number of elements of an object
-  answer was taken from any of its lists, which reported wrong counts.
 - `apitest-gen`: the body of an update no longer contains the readOnly
   fields of a nested DTO (the `Id` of a nested `Person`), which made apply
   stop with `EXAMPLE_INVALID`; the record keeps them after the update, so
