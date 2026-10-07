@@ -36,6 +36,9 @@ type rec struct {
 	// more marks a further record of a seed DTO ("count"): the environment
 	// holds it, no path addresses it
 	more bool
+	// counted marks the first record of a seed DTO whose further records
+	// were selected (none may pass)
+	counted bool
 }
 
 // ids are the local ids the record had during the run: the first one, the
@@ -698,13 +701,15 @@ func (rd *reader) take(f *fetched) {
 			return
 		}
 		o, _ := free[i].(map[string]any)
+		first := rd.recs[t] == nil
 		r := rd.selectRec(t, o, f)
 		if own {
 			rd.forPath[f.op.Path] = r
 			r.path = f.op.Path
-			return
 		}
-		if r == rd.recs[t] {
+		// a seed list with a POST at its path (GET and POST /Ship) is own
+		// too: its first record is the one of the table
+		if first && r == rd.recs[t] {
 			rd.selectMore(t, r, free[i+1:], f)
 		}
 		return
@@ -777,6 +782,7 @@ func (rd *reader) selectMore(t string, first *rec, elems []any, f *fetched) {
 	if !count.many() || !rd.cfg.seeded(t, rd.n) {
 		return
 	}
+	first.counted = true
 	rd.more = true
 	defer func() { rd.more = false }()
 	n := 1
@@ -784,8 +790,10 @@ func (rd *reader) selectMore(t string, first *rec, elems []any, f *fetched) {
 		if count != All && n >= int(count) {
 			return
 		}
+		// the elements are not taken yet; taken would not tell records
+		// without a numeric id (a uuid) apart before their keys are known
 		o, ok := e.(map[string]any)
-		if !ok || rd.taken(t, o) != nil || rd.check(t, o, rd.k, rd.k.tables, 0) != "" {
+		if !ok || rd.check(t, o, rd.k, rd.k.tables, 0) != "" {
 			continue
 		}
 		r := rd.selectRec(t, o, f)

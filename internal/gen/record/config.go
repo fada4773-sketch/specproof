@@ -84,6 +84,9 @@ type StoredRecord struct {
 	Keys []string `json:"keys,omitempty"`
 	// More marks a further record of a seed DTO ("count").
 	More bool `json:"more,omitempty"`
+	// Counted marks the first record of a seed DTO whose further records
+	// were selected.
+	Counted bool `json:"counted,omitempty"`
 	// Ops are the fingerprints of the GETs whose answers Data holds: if
 	// one changed, the record is read and selected again.
 	Ops map[string]string `json:"ops"`

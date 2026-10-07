@@ -2568,6 +2568,16 @@ func TestRecordSeedCount(t *testing.T) {
 		t.Errorf("second run: %d of %d records reused\n%s", res2.Stats.Reused, len(res.Recorded.Records), notes(res2))
 	}
 
+	// "$recorded" with only the first record of a DTO with "count" (written
+	// before its further records were selected): it is read again
+	only := *res.Recorded
+	only.Records = slices.DeleteFunc(slices.Clone(only.Records), func(r StoredRecord) bool { return r.More })
+	for i := range only.Records {
+		only.Records[i].Counted = false
+	}
+	res4, _, _ := runConfig(t, sp, specPath, config, &only, true)
+	equal(t, "seed from a record without its further ones", res4.Recorded.Seed, want)
+
 	// without "count" the seed holds one object again
 	res3, _, _ := runConfig(t, sp, specPath, `{"params": {"planetCode": "P1"}, "seed": ["Planet", "Dock"]}`, res.Recorded, true)
 	equal(t, "seed without count", res3.Recorded.Seed, `{"Planet":{"id":1,"planetCode":"P1","name":"Mars"},"Dock":{"id":1,"dockCode":"D1","planetId":1,"name":"North"}}`)
@@ -2653,4 +2663,41 @@ func TestRecordAll(t *testing.T) {
 	}
 	equal(t, "SearchShips body", exampleAt(t, doc, "paths", "/Ship/search", "post", "requestBody", "content", "application/json"),
 		text(body))
+}
+
+// A seed DTO whose list has a POST at its path (GET and POST
+// /Planet/{planetCode}/Ship) takes its further records from that list too.
+func TestRecordSeedCountOwnList(t *testing.T) {
+	config := `{"params": {"planetCode": "P1"}, "seed": ["Planet", "Dock", "Ship"],
+	  "select": {"Dock": {"count": "*"}, "Ship": {"count": "*"}}, "$apitest": {"DeleteLast": true}}`
+	res, _, _ := runConfig(t, newStarport(), "../../../testdata/gen/record.yaml", config, nil, false)
+	ships, _ := res.Recorded.Seed["Ship"].([]any)
+	if len(ships) != 3 {
+		t.Errorf("seed Ship: %s\n%s", text(res.Recorded.Seed["Ship"]), notes(res))
+	}
+}
+
+// Records without a numeric id (a uuid) are told apart by their data: the
+// further records of "count" are not taken for the first one.
+func TestSelectMoreWithoutID(t *testing.T) {
+	s, err := spec.Load(context.Background(), "../../../testdata/gen/record.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Parse([]byte(`{"seed": ["Planet"], "select": {"Planet": {"count": "*"}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rd := &reader{n: newNamer(s), cfg: cfg, s: s, res: &Result{}, k: newKnown(), recs: map[string]*rec{}, all: map[string][]*rec{},
+		gets: map[string]*fetched{}, forPath: map[string]*rec{}, creates: map[string]string{}, cache: map[string]response{}}
+	elems := []any{
+		map[string]any{"id": "a-1", "planetCode": "P1"},
+		map[string]any{"id": "b-2", "planetCode": "P2"},
+		map[string]any{"id": "c-3", "planetCode": "P3"},
+	}
+	f := &fetched{op: s.Op("GetPlanets"), url: "/Planet", resp: response{Status: 200, Body: elems, Seq: 1}}
+	rd.take(f)
+	if got := len(rd.seedRecs("planet")); got != 3 {
+		t.Errorf("%d seed records, want 3\n%s", got, notes(rd.res))
+	}
 }

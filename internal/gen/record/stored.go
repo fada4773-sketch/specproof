@@ -18,9 +18,15 @@ func (rd *reader) load(old *Recorded) (int, map[string]bool) {
 	same := old.Params == paramsHash(rd.cfg)
 	n := 0
 	stale := map[string]bool{}
+	// a seed DTO with "count" whose further records were never selected
+	// (stored by an older run) is read again
+	more := map[string]bool{}
+	for _, st := range old.Records {
+		more[st.Table] = more[st.Table] || st.More || st.Counted
+	}
 	for _, st := range old.Records {
 		rd.stored[st.Table] = append(rd.stored[st.Table], st)
-		if !same || !rd.valid(st) {
+		if !same || !rd.valid(st) || (rd.cfg.selection(st.Table, rd.n).Count.many() && rd.cfg.seeded(st.Table, rd.n) && !more[st.Table]) {
 			stale[st.Table] = true
 			continue
 		}
@@ -83,7 +89,7 @@ func (rd *reader) valid(st StoredRecord) bool {
 
 // rec turns a stored record into one of the run.
 func (st StoredRecord) rec() *rec {
-	r := &rec{table: st.Table, data: map[string]any{}, from: st.From, keys: map[string]bool{}, path: st.Path, more: st.More}
+	r := &rec{table: st.Table, data: map[string]any{}, from: st.From, keys: map[string]bool{}, path: st.Path, more: st.More, counted: st.Counted}
 	for k, v := range st.Data {
 		r.data[k] = v
 	}
@@ -115,7 +121,7 @@ func (rd *reader) storedRecords() []StoredRecord {
 				ops[id] = fingerprint(op)
 			}
 		}
-		out = append(out, StoredRecord{Table: r.table, From: r.from, Path: r.path, Keys: sortedKeys(r.keys), More: r.more, Ops: ops,
+		out = append(out, StoredRecord{Table: r.table, From: r.from, Path: r.path, Keys: sortedKeys(r.keys), More: r.more, Counted: r.counted, Ops: ops,
 			Select: selectHash(rd.cfg.selection(r.table, rd.n)), Data: data})
 	}
 	return out
