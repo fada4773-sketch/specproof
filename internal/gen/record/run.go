@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"slices"
 	"strings"
 
 	"github.com/getkin/kin-openapi/openapi3"
@@ -24,21 +23,20 @@ type Input struct {
 	Doc  *yamldoc.Doc // the spec as a node tree; the examples go here
 	File *File
 	// Client sends the requests; nil when no instance is given. Then only
-	// the stored answers are written, and a missing one is a problem.
+	// the stored answers are written, and an entry to send is a problem.
 	Client *Client
-	// Refresh names entries whose answers are recorded again: "all", a
-	// tag, an operationId or "METHOD /path".
+	// Refresh names entries that are sent again whatever their status
+	// (except ignore): "all", a section or tag, an operationId,
+	// "METHOD /path" or "operationId/name".
 	Refresh []string
-	// IgnoreFields are fields no answer is compared on ("$apitest").
-	IgnoreFields []string
 }
 
 // Run brings the record file and the spec together. It checks the file
-// against the spec; sends, in the order of the file, every request up to
-// the last one whose answer is missing, no longer fits the schema or is
-// to be refreshed, and stores those answers in the file; then it writes
-// every entry into the spec as examples. The instance must be empty: the
-// requests before an answer to record are sent again to build its data.
+// against the spec; sends, in the order of the file, the entries with
+// status new or repeat (and those -refresh names), stores their answers
+// and sets them approved; then it writes every entry that is not ignored
+// into the spec as examples. Approved entries are never sent again: the
+// values later entries need come from their stored answers and requests.
 func Run(ctx context.Context, in Input) (*Result, error) {
 	res := &Result{}
 	f := in.File
@@ -48,71 +46,57 @@ func Run(ctx context.Context, in Input) (*Result, error) {
 	}
 	v := spec.NewValidator()
 	needs := map[*Step]string{}
-	last := -1
-	for i, st := range f.Steps {
-		why := ""
+	for _, st := range f.Steps {
+		status := st.status()
 		switch {
+		case status == StatusIgnore:
 		case refreshed(st, in.Refresh):
-			why = "-refresh"
+			needs[st] = "-refresh"
+		case status == StatusNew:
+			needs[st] = "status new"
+		case status == StatusRepeat:
+			needs[st] = "status repeat"
 		case st.Response == nil:
-			why = "no answer yet"
+			res.problem(CodeApproved, st.where(), "the entry is approved but has no answer; set \"status: repeat\" to send it")
 		default:
 			if msg := responseFits(v, st); msg != "" {
-				if in.Client == nil {
-					res.note(CodeStale, st.where(), "the stored answer no longer fits the schema (%s); pass -base-url of an empty instance to record it again", msg)
-					continue
-				}
-				why = "the schema changed: " + msg
+				res.note(CodeStale, st.where(), "the stored answer no longer fits the schema (%s); set \"status: repeat\" to send it again", msg)
 			}
 		}
-		if why != "" {
-			needs[st] = why
-			last = i
-		}
 	}
-	// the requests must fit the schema before anything is sent
+	// the requests must fit the schema before anything is sent; a stored
+	// answer of an entry with filter is filtered (the filter may be new)
 	vars := map[string]any{}
 	for _, st := range f.Steps {
 		r, missing := st.request(vars)
-		if len(missing) == 0 {
+		if len(missing) == 0 && st.status() != StatusIgnore {
 			if msg := requestFits(v, st, r); msg != "" {
 				res.problem(CodeRequest, st.where(), "%s; fix the entry in the record file", msg)
 			}
 		}
-		if st.Response != nil {
-			st.saveFrom(st.Response, nil, r, vars)
+		if st.Response == nil {
+			continue
 		}
+		if st.Filter != nil {
+			st.refilter(vars, res)
+		}
+		st.saveFrom(st.Response, nil, r, vars)
 	}
 	if len(res.Problems) > 0 {
 		return res, nil
 	}
-	if last >= 0 && in.Client == nil {
+	if len(needs) > 0 && in.Client == nil {
 		var list []string
 		for _, st := range f.Steps {
 			if needs[st] != "" {
 				list = append(list, fmt.Sprintf("line %d %s (%s)", st.Line, st, needs[st]))
 			}
 		}
-		res.problem(CodeNeedsURL, "record file", "%d entries need an answer from the instance; start an empty instance and pass it with -base-url:\n  %s",
+		res.problem(CodeNeedsURL, "record file", "%d entries are to be sent; pass the instance with -base-url:\n  %s",
 			len(list), strings.Join(list, "\n  "))
 		return res, nil
 	}
-	ok := true
-	if last >= 0 {
-		ok = send(ctx, in, res, needs, last)
-	}
-	for i, st := range f.Steps {
-		if i > last {
-			state := StateKept
-			if needs[st] == "" && st.Response != nil {
-				if msg := responseFits(v, st); msg != "" {
-					state = StateStale
-				}
-			}
-			res.Steps = append(res.Steps, StepResult{Step: st, State: state})
-		}
-	}
-	if !ok {
+	if !send(ctx, in, res, needs, v) {
 		return res, nil
 	}
 	w := newWriter(in.Doc, res)
@@ -135,22 +119,53 @@ func refreshed(st *Step, refresh []string) bool {
 	return false
 }
 
-// send sends the steps up to last in the order of the file. A step that
-// needs an answer stores it; the others are compared with their stored
-// answer. It stops at the first request the instance rejects and reports
-// whether all were sent.
-func send(ctx context.Context, in Input, res *Result, needs map[*Step]string, last int) bool {
+// refilter applies the filter of a step to its stored answer; a stored
+// answer from before the filter keeps only the matching elements from now
+// on.
+func (st *Step) refilter(vars map[string]any, res *Result) {
+	r := &Response{Status: st.Response.Status, Headers: st.Response.Headers, Body: st.Response.Body}
+	if msg := st.filter(r, vars); msg != "" {
+		res.problem(CodeFilter, st.where(), "%s", msg)
+		return
+	}
+	if !compare.Equal(decode(r.Body), decode(st.Response.Body)) {
+		st.setResponse(r)
+		res.FileChanged = true
+		res.note(CodeFilter, st.where(), "the stored answer is filtered now; only the matching elements stay")
+	}
+}
+
+// send goes through the steps in the order of the file: a step that needs
+// it is sent, its answer stored and its status set to approved; the
+// values of the others come from their stored answers. It stops sending
+// at the first request the instance rejects and reports whether none was.
+func send(ctx context.Context, in Input, res *Result, needs map[*Step]string, v *spec.Validator) bool {
 	vars := map[string]any{}
 	failed := false
-	for _, st := range in.File.Steps[:last+1] {
-		if failed {
-			res.Steps = append(res.Steps, StepResult{Step: st, State: StateNotSent})
-			continue
-		}
+	for _, st := range in.File.Steps {
 		sr := StepResult{Step: st, Why: needs[st]}
 		r, missing := st.request(vars)
+		if needs[st] == "" {
+			sr.State = StateKept
+			switch {
+			case st.status() == StatusIgnore:
+				sr.State = StateIgnored
+			case st.Response != nil && responseFits(v, st) != "":
+				sr.State = StateStale
+			}
+			if st.Response != nil {
+				st.saveFrom(st.Response, nil, r, vars)
+			}
+			res.Steps = append(res.Steps, sr)
+			continue
+		}
+		if failed {
+			sr.State = StateNotSent
+			res.Steps = append(res.Steps, sr)
+			continue
+		}
 		if len(missing) > 0 {
-			res.problem(CodeSave, st.where(), "no value for {{%s}}: the entry that saves it was not answered", strings.Join(missing, "}}, {{"))
+			res.problem(CodeSave, st.where(), "no value for {{%s}}: the entry that saves it has no answer", strings.Join(missing, "}}, {{"))
 			sr.State, failed = StateFailed, true
 			res.Steps = append(res.Steps, sr)
 			continue
@@ -176,28 +191,7 @@ func send(ctx context.Context, in Input, res *Result, needs map[*Step]string, la
 			continue
 		}
 		sr.Status = ans.Status
-		got := &Response{Status: ans.Status}
-		if len(bytes.TrimSpace(ans.Raw)) > 0 {
-			if n, err := jsonNode(ans.Raw); err == nil {
-				compact(n)
-				got.Body = n
-			} else if ans.Status/100 == 2 && needs[st] != "" {
-				res.note(CodeSchema, st.where(), "the answer is not JSON; no body is stored")
-			}
-		}
-		if st.Filter != nil && ans.Status/100 == 2 {
-			if msg := st.filter(got, vars); msg != "" {
-				res.problem(CodeFilter, st.where(), "%s", msg)
-				sr.State, failed = StateFailed, true
-				res.Steps = append(res.Steps, sr)
-				continue
-			}
-			if got.Body != nil && len(listOf(got.Body).Content) == 0 {
-				res.note(CodeFilter, st.where(), "no element of the list matches the filter; the example is an empty list")
-			}
-		}
-		rejected := ans.Status/100 != 2 && (needs[st] != "" || st.Response == nil || st.Response.Status != ans.Status)
-		if rejected {
+		if ans.Status/100 != 2 {
 			sr.State, sr.Sent, sr.Answer = StateFailed, r.body, clip(strings.TrimSpace(string(ans.Raw)))
 			res.problem(CodeFailed, st.where(), "%s %s answered %d: %s\n  sent: %s",
 				st.Op.Method, path, ans.Status, sr.Answer, clip(text(r.body)))
@@ -205,23 +199,37 @@ func send(ctx context.Context, in Input, res *Result, needs map[*Step]string, la
 			res.Steps = append(res.Steps, sr)
 			continue
 		}
-		got.Headers = savedHeaders(st, ans.Header)
-		if needs[st] != "" {
-			st.setResponse(got)
-			res.Recorded++
-			res.FileChanged = true
-			sr.State = StateRecorded
-		} else {
-			sr.State = StateSent
-			if d := differs(st, got, in.IgnoreFields); d != "" {
-				sr.State = StateDiffers
-				res.note(CodeDiffers, st.where(), "sent again, the instance answers otherwise than stored (%s); is the instance empty? A field that changes on every run belongs under \"ignore\"", d)
+		got := &Response{Status: ans.Status, Headers: savedHeaders(st, ans.Header)}
+		if len(bytes.TrimSpace(ans.Raw)) > 0 {
+			if n, err := jsonNode(ans.Raw); err == nil {
+				compact(n)
+				got.Body = n
+			} else {
+				res.note(CodeSchema, st.where(), "the answer is not JSON; no body is stored")
+			}
+		}
+		if st.Filter != nil {
+			if msg := st.filter(got, vars); msg != "" {
+				res.problem(CodeFilter, st.where(), "%s", msg)
+				sr.State, failed = StateFailed, true
+				res.Steps = append(res.Steps, sr)
+				continue
+			}
+			if l := listOf(got.Body); l != nil && len(l.Content) == 0 {
+				res.note(CodeFilter, st.where(), "no element of the list matches the filter; the example is an empty list")
 			}
 		}
 		if miss := st.saveFrom(got, ans.Header, r, vars); len(miss) > 0 {
 			res.problem(CodeSave, st.where(), "no value at %s; fix \"save\"", strings.Join(miss, ", "))
-			failed = true
+			sr.State, failed = StateFailed, true
+			res.Steps = append(res.Steps, sr)
+			continue
 		}
+		st.setResponse(got)
+		st.setStatus(StatusApproved)
+		res.Recorded++
+		res.FileChanged = true
+		sr.State = StateRecorded
 		res.Steps = append(res.Steps, sr)
 	}
 	return !failed
@@ -303,11 +311,18 @@ func (r *request) url(op *spec.Operation) (string, error) {
 
 // saveFrom keeps the values a step saves, from its answer or from the
 // request it sent; missing lists the sources without value. A stored
-// answer (header nil) gives the headers it stored.
+// answer (header nil) gives the headers it stored. With a filter, a pointer
+// reads the first element that matched, else the filtered answer.
 func (st *Step) saveFrom(r *Response, header http.Header, req *request, vars map[string]any) (missing []string) {
 	body := decode(r.Body)
+	var elem any
+	if st.Filter != nil {
+		if l := listOf(r.Body); l != nil && len(l.Content) > 0 {
+			elem = decode(l.Content[0])
+		}
+	}
 	for _, sv := range st.Save {
-		v, ok := st.source(sv.From, body, r, header, req)
+		v, ok := st.source(sv.From, body, elem, r, header, req)
 		if !ok {
 			missing = append(missing, sv.From)
 			continue
@@ -317,8 +332,9 @@ func (st *Step) saveFrom(r *Response, header http.Header, req *request, vars map
 	return missing
 }
 
-// source reads the value of a save source.
-func (st *Step) source(from string, body any, r *Response, header http.Header, req *request) (any, bool) {
+// source reads the value of a save source; elem is the element a filter
+// kept first, nil without filter.
+func (st *Step) source(from string, body, elem any, r *Response, header http.Header, req *request) (any, bool) {
 	if rest, ok := strings.CutPrefix(from, "request "); ok {
 		if req == nil {
 			return nil, false
@@ -348,6 +364,14 @@ func (st *Step) source(from string, body any, r *Response, header http.Header, r
 			return bind.LastSegment(h), true
 		}
 		return h, true
+	}
+	if elem != nil {
+		if from == "/" {
+			return elem, true
+		}
+		if v, ok := bind.Pointer(elem, from); ok {
+			return v, true
+		}
 	}
 	if from == "/" {
 		return body, body != nil
@@ -384,32 +408,6 @@ func savedHeaders(st *Step, h http.Header) map[string]string {
 		}
 	}
 	return out
-}
-
-// differs describes how an answer differs from the stored one, the way
-// apitest compares them; "" if it does not.
-func differs(st *Step, got *Response, ignore []string) string {
-	if got.Status != st.Response.Status {
-		return fmt.Sprintf("status %d instead of %d", got.Status, st.Response.Status)
-	}
-	var schema *openapi3.Schema
-	if m := responseMedia(st.Op, responseCode(st.Op, got.Status)); m != nil && m.Schema != nil {
-		schema = m.Schema.Value
-	}
-	diffs := compare.Values(decode(st.Response.Body), decode(got.Body), compare.Options{Mode: compare.ModeSubset,
-		Ignore: append(slices.Clone(st.Ignore), ignore...), Schema: schema, Unordered: st.Filter != nil})
-	if len(diffs) == 0 {
-		return ""
-	}
-	var parts []string
-	for i, d := range diffs {
-		if i == 3 {
-			parts = append(parts, fmt.Sprintf("%d more", len(diffs)-3))
-			break
-		}
-		parts = append(parts, fmt.Sprintf("%s: stored %s, now %s", d.Pointer, d.Expected, d.Actual))
-	}
-	return strings.Join(parts, "; ")
 }
 
 // responseFits checks a stored answer against the schema of its response;

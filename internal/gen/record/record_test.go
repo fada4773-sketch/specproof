@@ -288,11 +288,11 @@ func TestAnalyseOrdersAndLinks(t *testing.T) {
 	text := read(t, filePath)
 	for _, want := range []string{
 		"# Examples for apitest",
-		"Dock:\n  - POST /docks:\n      body: {capacity: 19, name: Where Team}\n      save: {dockId: /id}\n      response:\n",
-		"  - POST /ships:\n      body: {dockId: '{{dockId}}', name: Either Group}\n      save: {shipId: /id}",
+		"Dock:\n  - POST /docks:\n      status: new\n      body: {capacity: 19, name: Where Team}\n      save: {dockId: /id}\n      response:\n",
+		"  - POST /ships:\n      status: new\n      body: {dockId: '{{dockId}}', name: Either Group}\n      save: {shipId: /id}",
 		"route: {departure: \"2026-06-01T23:39:00Z\", originDockId: '{{dockId}}'}",
 		"shipId: '{{shipId}}'",
-		"cleanup:\n  - DELETE /docks/{dockId}:\n      path: {dockId: '{{dockId}}'}",
+		"cleanup:\n  - DELETE /docks/{dockId}:\n      status: new\n      path: {dockId: '{{dockId}}'}",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("record file misses %q:\n%s", want, text)
@@ -379,58 +379,80 @@ func TestRecordWritesStoredAnswers(t *testing.T) {
 	}
 }
 
-// An entry without answer is recorded; the entries before it are sent
-// again to build its data, the ones after it are not sent.
-func TestRecordOnlyMissing(t *testing.T) {
+// Only entries with status new or repeat are sent; a recorded one becomes
+// approved and is not sent again, its values come from the stored answer.
+// An ignored entry is neither sent nor written into the spec.
+func TestRecordStatus(t *testing.T) {
 	specPath, filePath := workspace(t)
 	analyse(t, specPath, filePath)
-	srv := httptest.NewServer(newStarport())
-	defer srv.Close()
-	record(t, specPath, filePath, srv)
-	edit(t, filePath, func(f *File) {
-		st := step(t, f, "GET /ships/{shipId}")
-		yamldoc.Delete(st.node, keyResponse)
-	})
-	sp := newStarport()
-	fresh := httptest.NewServer(sp)
-	defer fresh.Close()
-	res := record(t, specPath, filePath, fresh)
-	if len(res.Problems) > 0 || res.Recorded != 1 || res.Sent != 6 || len(res.Notes) != 0 {
-		t.Fatalf("recorded %d, sent %d, problems:\n%s\nnotes:\n%s", res.Recorded, res.Sent, notes(res.Problems), notes(res.Notes))
+	if n := strings.Count(read(t, filePath), "status: new"); n != 9 {
+		t.Fatalf("%d entries with status new:\n%s", n, read(t, filePath))
 	}
-	want := "POST /docks=sent\nGET /docks/{dockId}=sent\nGET /docks=sent\nPUT /docks/{dockId}=sent\nPOST /ships=sent\nGET /ships/{shipId}=recorded\n" +
+	sp := newStarport()
+	srv := httptest.NewServer(sp)
+	defer srv.Close()
+	res := record(t, specPath, filePath, srv)
+	if len(res.Problems) > 0 || res.Recorded != 9 || strings.Count(read(t, filePath), "status: approved") != 9 {
+		t.Fatalf("recorded %d, problems:\n%s\n%s", res.Recorded, notes(res.Problems), read(t, filePath))
+	}
+	// again: nothing is sent
+	res = record(t, specPath, filePath, srv)
+	if len(res.Problems) > 0 || res.Sent != 0 || res.FileChanged {
+		t.Fatalf("second run sent %d:\n%s", res.Sent, notes(res.Problems))
+	}
+	edit(t, filePath, func(f *File) {
+		step(t, f, "GET /ships/{shipId}").setStatus(StatusRepeat)
+		step(t, f, "GET /docks").setStatus(StatusIgnore)
+	})
+	before := len(sp.sent)
+	res = record(t, specPath, filePath, srv)
+	if len(res.Problems) > 0 || res.Recorded != 1 || res.Sent != 1 || len(sp.sent) != before+1 || sp.sent[before] != "GET /ships/1" {
+		t.Fatalf("recorded %d, sent %v, problems:\n%s", res.Recorded, sp.sent[before:], notes(res.Problems))
+	}
+	want := "POST /docks=kept\nGET /docks/{dockId}=kept\nGET /docks=ignored\nPUT /docks/{dockId}=kept\nPOST /ships=kept\nGET /ships/{shipId}=recorded\n" +
 		"POST /bookings=kept\nGET /bookings/{bookingId}=kept\nDELETE /docks/{dockId}=kept"
 	if got := states(res); got != want {
 		t.Errorf("states:\n%s\nwant:\n%s", got, want)
 	}
-	if res.Steps[5].Why != "no answer yet" || res.Steps[5].URL != "/ships/1" || res.Steps[5].Status != 200 {
+	if res.Steps[5].Why != "status repeat" || res.Steps[5].URL != "/ships/1" || res.Steps[5].Status != 200 {
 		t.Errorf("recorded step: %+v", res.Steps[5])
+	}
+	text := read(t, filePath)
+	if !strings.Contains(text, "  - GET /ships/{shipId}:\n      status: approved\n") || !strings.Contains(text, "  - GET /docks:\n      status: ignore\n") {
+		t.Errorf("statuses:\n%s", text)
+	}
+	// an ignored entry is not written into the spec
+	b, _ := os.ReadFile(specFile)
+	if err := os.WriteFile(specPath, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	record(t, specPath, filePath, nil)
+	if strings.Contains(read(t, specPath), "- {capacity: 14, id: 1, name: How Life}") {
+		t.Errorf("the ignored list has an example:\n%s", read(t, specPath))
+	}
+	// approved without answer
+	edit(t, filePath, func(f *File) { yamldoc.Delete(step(t, f, "GET /ships/{shipId}").node, keyResponse) })
+	res = record(t, specPath, filePath, nil)
+	if len(res.Problems) != 1 || res.Problems[0].Code != CodeApproved {
+		t.Errorf("problems:\n%s", notes(res.Problems))
+	}
+	if _, err := Parse([]byte("Dock:\n  - GET /docks:\n      status: done\n")); err == nil || !strings.Contains(err.Error(), `status of "GET /docks" is "done"`) {
+		t.Errorf("unknown status: %v", err)
 	}
 }
 
-// -refresh records the answers of a tag again; a stored answer the
-// instance no longer gives is reported.
-func TestRecordRefreshAndDiffers(t *testing.T) {
+// -refresh sends approved entries again.
+func TestRecordRefresh(t *testing.T) {
 	specPath, filePath := workspace(t)
 	analyse(t, specPath, filePath)
+	// the dock stays in the instance for the entries sent again
+	edit(t, filePath, func(f *File) { step(t, f, "DELETE /docks/{dockId}").setStatus(StatusIgnore) })
 	srv := httptest.NewServer(newStarport())
 	defer srv.Close()
 	record(t, specPath, filePath, srv)
-	edit(t, filePath, func(f *File) {
-		st := step(t, f, "GET /docks/{dockId}")
-		st.setResponse(&Response{Status: 200, Body: valueNode(map[string]any{"id": 1, "name": "Old", "capacity": 19})})
-	})
-	fresh := httptest.NewServer(newStarport())
-	defer fresh.Close()
-	res := record(t, specPath, filePath, fresh, "Ship")
-	if len(res.Problems) > 0 || res.Recorded != 2 {
-		t.Fatalf("recorded %d, problems:\n%s", res.Recorded, notes(res.Problems))
-	}
-	if len(res.Notes) != 1 || res.Notes[0].Code != CodeDiffers || !strings.Contains(res.Notes[0].Message, "/name: stored \"Old\", now \"Where Team\"") {
-		t.Errorf("notes:\n%s", notes(res.Notes))
-	}
-	if res.Steps[1].State != StateDiffers || res.Steps[4].Why != "-refresh" {
-		t.Errorf("states:\n%s", states(res))
+	res := record(t, specPath, filePath, srv, "Ship")
+	if len(res.Problems) > 0 || res.Recorded != 2 || res.Steps[4].Why != "-refresh" || res.Steps[5].URL != "/ships/2" {
+		t.Fatalf("recorded %d, problems:\n%s\n%s\n%s", res.Recorded, notes(res.Problems), states(res), read(t, filePath))
 	}
 	for _, r := range []string{"all", "createShip", "post /ships", "POST /ships", "Ship"} {
 		if !refreshed(step(t, mustBound(t, specPath, filePath), "POST /ships"), []string{r}) {
@@ -458,6 +480,8 @@ func mustBound(t *testing.T, specPath, filePath string) *File {
 func TestRecordSchemaChanged(t *testing.T) {
 	specPath, filePath := workspace(t)
 	analyse(t, specPath, filePath)
+	// the dock stays in the instance for the entries sent again
+	edit(t, filePath, func(f *File) { step(t, f, "DELETE /docks/{dockId}").setStatus(StatusIgnore) })
 	srv := httptest.NewServer(newStarport())
 	defer srv.Close()
 	record(t, specPath, filePath, srv)
@@ -480,10 +504,19 @@ func TestRecordSchemaChanged(t *testing.T) {
 	if stale != 2 || !strings.Contains(states(res), "POST /ships=stale") {
 		t.Errorf("notes:\n%s\nstates:\n%s", notes(res.Notes), states(res))
 	}
-	fresh := httptest.NewServer(newStarport())
-	defer fresh.Close()
-	res = record(t, specPath, filePath, fresh)
-	if res.Recorded != 2 || !strings.Contains(res.Steps[4].Why, "the schema changed") {
+	if !strings.Contains(notes(res.Notes), `set "status: repeat" to send it again`) {
+		t.Errorf("notes:\n%s", notes(res.Notes))
+	}
+	// approved: sent again only with status repeat
+	if res = record(t, specPath, filePath, srv); res.Sent != 0 {
+		t.Errorf("an approved entry was sent: %d", res.Sent)
+	}
+	edit(t, filePath, func(f *File) {
+		step(t, f, "POST /ships").setStatus(StatusRepeat)
+		step(t, f, "GET /ships/{shipId}").setStatus(StatusRepeat)
+	})
+	res = record(t, specPath, filePath, srv)
+	if res.Recorded != 2 || res.Steps[4].Why != "status repeat" {
 		t.Errorf("recorded %d:\n%s", res.Recorded, states(res))
 	}
 	// the instance still lacks the field: apitest will report it
@@ -534,7 +567,7 @@ func TestRecordProblems(t *testing.T) {
 		{"body not taken", "Dock:\n  - GET /docks:\n      body: {name: A}\n", CodeBody, "takes no request body"},
 		{"request invalid", "Dock:\n  - POST /docks:\n      body: {name: A, capacity: 99}\n", CodeRequest, "body /capacity:"},
 		{"parameter invalid", "Dock:\n  - GET /docks/{dockId}:\n      path: {dockId: abc}\n", CodeRequest, `path parameter "dockId"`},
-		{"no instance", "Dock:\n  - GET /docks\n", CodeNeedsURL, "1 entries need an answer"},
+		{"no instance", "Dock:\n  - GET /docks\n", CodeNeedsURL, "1 entries are to be sent"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			specPath, filePath := workspace(t)
@@ -829,11 +862,11 @@ func TestAnalyseSavesFromRequest(t *testing.T) {
 	}
 	text := read(t, filePath)
 	for _, want := range []string{
-		"Pilot:\n  - POST /pilots:\n      body:",
+		"Pilot:\n  - POST /pilots:\n      status: new\n      body:",
 		"      save: {pilotCode: request /pilotCode}",
-		"  - GET /pilots/{pilotCode}:\n      path: {pilotCode: '{{pilotCode}}'}",
-		"  - POST /missions:\n      body: {pilotCode: '{{pilotCode}}', title:",
-		"  - GET /missions:\n      query: {pilotCode: '{{pilotCode}}'}",
+		"  - GET /pilots/{pilotCode}:\n      status: new\n      path: {pilotCode: '{{pilotCode}}'}",
+		"  - POST /missions:\n      status: new\n      body: {pilotCode: '{{pilotCode}}', title:",
+		"  - GET /missions:\n      status: new\n      query: {pilotCode: '{{pilotCode}}'}",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("record file misses %q:\n%s", want, text)
@@ -888,7 +921,7 @@ Mission:
 	}
 	text := read(t, filePath)
 	for _, want := range []string{
-		"  - GET /pilots:\n      filter: {pilotCode: '{{adaCode}}'}\n      save: {listed: /0/name}\n      response:\n        status: 200\n        body:\n          - {name: Ada, pilotCode: P001}\n",
+		"  - GET /pilots:\n      status: approved\n      filter: {pilotCode: '{{adaCode}}'}\n      save: {listed: /0/name}\n      response:\n        status: 200\n        body:\n          - {name: Ada, pilotCode: P001}\n",
 		"body: {id: 1, pilotCode: P001, title: Flight of Ada}",
 		"        body:\n          items:\n            - {id: 2, pilotCode: P001, title: Return}\n          total: 2",
 	} {
@@ -905,11 +938,9 @@ Mission:
 	if len(res.Problems) > 0 || res.SpecChanged {
 		t.Errorf("offline: changed %v, problems:\n%s", res.SpecChanged, notes(res.Problems))
 	}
-	// sent again, the filtered list is compared with the stored one
-	fresh := httptest.NewServer(&roster{})
-	defer fresh.Close()
-	res = record(t, specPath, filePath, fresh, "getPilot")
-	if len(res.Problems) > 0 || strings.Contains(states(res), StateDiffers) {
+	// the filtered list sent again: the saves read the filtered answer
+	res = record(t, specPath, filePath, srv, "listMissions")
+	if len(res.Problems) > 0 || res.Recorded != 1 {
 		t.Errorf("refresh:\n%s\n%s%s", states(res), notes(res.Problems), notes(res.Notes))
 	}
 	final := httptest.NewServer(&roster{})
@@ -1028,3 +1059,177 @@ func TestAnalyseBindingsWinOverBodies(t *testing.T) {
 }
 
 var errTest = fmt.Errorf("test")
+
+// With a filter, save reads the element the filter kept: "/name" is the
+// name of the matching pilot, "/0/name" and "/" work on the filtered list
+// and the element. A filter added after recording filters the stored
+// answer, so the saves read the right element without sending.
+func TestRecordFilterThenSave(t *testing.T) {
+	specPath, filePath := workspaceOf(t, rosterFile)
+	file := `Pilot:
+  - POST /pilots:
+      name: ada
+      body: {pilotCode: P001, name: Ada}
+  - POST /pilots:
+      name: bob
+      body: {pilotCode: P002, name: Bob}
+  - GET /pilots:
+      filter: {pilotCode: P002}
+      save: {byName: /name, byIndex: /0/name, whole: /}
+Mission:
+  - POST /missions:
+      name: one
+      body: {pilotCode: P002, title: '{{byName}}-{{byIndex}}'}
+`
+	if err := os.WriteFile(filePath, []byte(file), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(&roster{})
+	defer srv.Close()
+	res := record(t, specPath, filePath, srv)
+	if len(res.Problems) > 0 || !strings.Contains(read(t, filePath), "body: {id: 1, pilotCode: P002, title: Bob-Bob}") {
+		t.Fatalf("problems:\n%s\n%s", notes(res.Problems), read(t, filePath))
+	}
+	vars := map[string]any{}
+	f := mustBound(t, specPath, filePath)
+	st := step(t, f, "GET /pilots")
+	r, _ := st.request(vars)
+	st.saveFrom(st.Response, nil, r, vars)
+	if text(vars["whole"]) != `{"name":"Bob","pilotCode":"P002"}` {
+		t.Errorf("whole: %s", text(vars["whole"]))
+	}
+	// the filter is added after the list was recorded unfiltered
+	edit(t, filePath, func(f *File) {
+		st := step(t, f, "GET /pilots")
+		yamldoc.Delete(st.node, keyFilter)
+		st.Filter = nil
+		st.setResponse(&Response{Status: 200, Body: valueNode([]any{
+			map[string]any{"pilotCode": "P001", "name": "Ada"}, map[string]any{"pilotCode": "P002", "name": "Bob"}})})
+	})
+	edit(t, filePath, func(f *File) {
+		st := step(t, f, "GET /pilots")
+		n := valueNode(map[string]any{"pilotCode": "P002"})
+		insertBefore(st.node, keyFilter, n, keySave)
+	})
+	res = record(t, specPath, filePath, nil)
+	if len(res.Problems) > 0 || !res.FileChanged || !strings.Contains(notes(res.Notes), "the stored answer is filtered now") {
+		t.Fatalf("problems:\n%s\nnotes:\n%s", notes(res.Problems), notes(res.Notes))
+	}
+	if got := text(decode(step(t, mustLoad(t, filePath), "GET /pilots").Response.Body)); got != `[{"name":"Bob","pilotCode":"P002"}]` {
+		t.Errorf("stored list %s", got)
+	}
+}
+
+// -analyse keeps the entries of the file as they are, with comments and
+// own values, adds the missing ones and a status to every entry: approved
+// with an answer, else new.
+func TestAnalyseKeepsEntriesAndAddsStatus(t *testing.T) {
+	specPath, filePath := workspace(t)
+	file := `# my notes
+Dock:
+  - POST /docks:
+      body: {name: "Harbour One", capacity: 7} # chosen by hand
+      save: {dockId: /id}
+      response:
+        status: 201
+        body: {id: 1, name: Harbour One, capacity: 7}
+  - GET /docks/{dockId}:
+      status: repeat
+      path: {dockId: "{{dockId}}"}
+`
+	if err := os.WriteFile(filePath, []byte(file), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	an := analyse(t, specPath, filePath)
+	if len(an.Added) != 7 || an.Statuses != 8 {
+		t.Errorf("added %d, statuses %d", len(an.Added), an.Statuses)
+	}
+	text := read(t, filePath)
+	for _, want := range []string{"# my notes\nDock:\n  - POST /docks:\n      status: approved\n      body: {name: \"Harbour One\", capacity: 7} # chosen by hand\n      save: {dockId: /id}\n      response:\n        status: 201\n        body: {id: 1, name: Harbour One, capacity: 7}\n",
+		"  - GET /docks/{dockId}:\n      status: repeat\n      path: {dockId: \"{{dockId}}\"}\n", "  - GET /docks:\n      status: new\n"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("record file misses %q:\n%s", want, text)
+		}
+	}
+	if again := analyse(t, specPath, filePath); len(again.Added) != 0 || again.Statuses != 0 || read(t, filePath) != text {
+		t.Errorf("second analyse changed the file: %d added, %d statuses", len(again.Added), again.Statuses)
+	}
+}
+
+// save reads deeply nested values of the request and of the answer, list
+// elements and escaped field names included.
+func TestSaveDeepValues(t *testing.T) {
+	specPath, filePath := workspace(t)
+	file := `Dock:
+  - POST /docks:
+      body: {name: North, capacity: 4}
+      save: {dockId: /id}
+Ship:
+  - POST /ships:
+      body: {name: Comet, dockId: '{{dockId}}'}
+      save: {shipId: /id}
+Booking:
+  - POST /bookings:
+      body:
+        shipId: '{{shipId}}'
+        route: {originDockId: '{{dockId}}', departure: "2027-01-15T08:00:00Z"}
+        crew:
+          - {pilotName: Ada, role: CAPTAIN}
+          - {pilotName: Bob, role: NAVIGATOR}
+      save:
+        sentDock: request /route/originDockId
+        secondPilot: request /crew/1/pilotName
+        firstRole: request /crew/0/role
+        crew: request /crew
+        answerPilot: /crew/1/pilotName
+  - GET /bookings/{bookingId}:
+      path: {bookingId: 1}
+`
+	if err := os.WriteFile(filePath, []byte(file), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(newStarport())
+	defer srv.Close()
+	res := record(t, specPath, filePath, srv)
+	if len(res.Problems) > 0 {
+		t.Fatalf("problems:\n%s", notes(res.Problems))
+	}
+	vars := map[string]any{}
+	f := mustBound(t, specPath, filePath)
+	for _, st := range f.Steps {
+		r, _ := st.request(vars)
+		if st.Response != nil {
+			if miss := st.saveFrom(st.Response, nil, r, vars); len(miss) > 0 {
+				t.Errorf("%s: missing %v", st, miss)
+			}
+		}
+	}
+	if text(vars["sentDock"]) != "1" || vars["secondPilot"] != "Bob" || vars["firstRole"] != "CAPTAIN" || vars["answerPilot"] != "Bob" ||
+		text(vars["crew"]) != `[{"pilotName":"Ada","role":"CAPTAIN"},{"pilotName":"Bob","role":"NAVIGATOR"}]` {
+		t.Errorf("vars: %s", text(vars))
+	}
+	st := &Step{Save: []Save{{"a", "request /x~1y/0/z"}, {"b", "request /missing/deep"}}}
+	got := map[string]any{}
+	miss := st.saveFrom(&Response{}, nil, &request{body: map[string]any{"x/y": []any{map[string]any{"z": "ok"}}}, hasBody: true}, got)
+	if got["a"] != "ok" || len(miss) != 1 || miss[0] != "request /missing/deep" {
+		t.Errorf("escaped: %v, missing %v", got, miss)
+	}
+}
+
+// -analyse finds a value no binding names at any depth of an earlier
+// answer or request.
+func TestFieldPointer(t *testing.T) {
+	s := loadSpec(t, specFile)
+	book := requestMedia(s.Op("createBooking")).Schema.Value
+	for name, want := range map[string]string{"shipId": "/shipId", "originDockId": "/route/originDockId", "PILOTNAME": "/crew/0/pilotName"} {
+		if got, ok := fieldPointer(book, name); !ok || got != want {
+			t.Errorf("fieldPointer(%s) = %q %v, want %q", name, got, ok, want)
+		}
+	}
+	if _, ok := fieldPointer(book, "nothing"); ok {
+		t.Error("a field that is not there")
+	}
+	if escapePointer("a/b~c") != "a~1b~0c" {
+		t.Error("escapePointer")
+	}
+}

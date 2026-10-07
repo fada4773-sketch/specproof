@@ -546,7 +546,7 @@ func TestRecordCommand(t *testing.T) {
 	}
 	for _, want := range []string{"ADDED (in the order apitest runs them)", "── Dock", "POST /docks", "to record", "── cleanup",
 		"ORDER", `"$apitest": {"Tags": ["Dock", "Ship", "Booking"], "DeleteLast": true}`, `apitest.Config{Tags: []string{"Dock", "Ship", "Booking"}, DeleteLast: true, …}`,
-		"9 entries added (0 with the answer of the spec), 3 saved values to link them", "-base-url <url>"} {
+		"9 entries added (0 with the answer of the spec), 3 saved values to link them, 9 statuses set", "-base-url <url>"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("-analyse output misses %q:\n%s", want, out)
 		}
@@ -555,7 +555,7 @@ func TestRecordCommand(t *testing.T) {
 		t.Errorf("second -analyse: %d\n%s", code, out)
 	}
 	code, out, errOut = cli("record", "-spec", spec, "-file", file, "-defaults", defs)
-	if code != 1 || !strings.Contains(out, "NEEDS_INSTANCE") || !strings.Contains(out, "9 entries need an answer") || !strings.Contains(errOut, "1 problems") {
+	if code != 1 || !strings.Contains(out, "NEEDS_INSTANCE") || !strings.Contains(out, "9 entries are to be sent") || !strings.Contains(errOut, "1 problems") {
 		t.Errorf("without instance: %d\n%s\n%s", code, out, errOut)
 	}
 	srv := httptest.NewServer(store())
@@ -564,7 +564,7 @@ func TestRecordCommand(t *testing.T) {
 	if code != 0 || errOut != "" {
 		t.Fatalf("record: %d\n%s\n%s", code, out, errOut)
 	}
-	for _, want := range []string{"ENTRIES (requests to " + srv.URL + ")", "#01 POST /docks", "201 recorded", "(no answer yet)", "9 entries: 9 recorded; 9 requests sent",
+	for _, want := range []string{"ENTRIES (requests to " + srv.URL + ")", "#01 POST /docks", "201 recorded", "(status new)", "9 entries: 9 recorded; 9 requests sent",
 		"FINDINGS", "ORDER", `"$apitest"`, "9 answers recorded and saved", "examples written"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("record output misses %q:\n%s", want, out)

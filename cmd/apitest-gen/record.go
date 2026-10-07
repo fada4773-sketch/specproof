@@ -42,7 +42,7 @@ func recordCommand(o *options, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	in := record.Input{Spec: s, Doc: doc, File: f, IgnoreFields: run.IgnoreFields}
+	in := record.Input{Spec: s, Doc: doc, File: f}
 	if o.refresh != "" {
 		in.Refresh = strings.Split(o.refresh, ",")
 	}
@@ -157,7 +157,7 @@ func analyseCommand(o *options, out io.Writer, st style, s *spec.Spec, f *record
 		fmt.Fprintln(out, "  Tags limits apitest to the tags it lists; it lists every tag of the spec.")
 	}
 	section(out, st, "FILES")
-	if len(an.Added) == 0 && exists {
+	if len(an.Added) == 0 && an.Statuses == 0 && exists {
 		fmt.Fprintf(out, "  %s: unchanged\n", o.file)
 		return nil
 	}
@@ -168,8 +168,8 @@ func analyseCommand(o *options, out io.Writer, st style, s *spec.Spec, f *record
 	if err := f.Save(o.file); err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "  %s: %d entries added (%d with the answer of the spec), %d saved values to link them\n", o.file, len(an.Added), an.Complete, an.Saves)
-	fmt.Fprintln(out, "\nnext: check the order and the values in "+o.file+", start an EMPTY instance, then run")
+	fmt.Fprintf(out, "  %s: %d entries added (%d with the answer of the spec), %d saved values to link them, %d statuses set\n", o.file, len(an.Added), an.Complete, an.Saves, an.Statuses)
+	fmt.Fprintln(out, "\nnext: check the order and the values in "+o.file+", start the instance, then run")
 	fmt.Fprintf(out, "  apitest-gen record -spec %s -file %s -base-url <url>\n", o.spec, o.file)
 	return nil
 }
@@ -197,7 +197,7 @@ func steps(out io.Writer, st style, o *options, res *record.Result) {
 		if sr.Status != 0 {
 			status = fmt.Sprint(sr.Status)
 		}
-		color := map[string]string{record.StateRecorded: green, record.StateSent: dim, record.StateKept: dim, record.StateDiffers: yellow,
+		color := map[string]string{record.StateRecorded: green, record.StateKept: dim, record.StateIgnored: dim,
 			record.StateFailed: red, record.StateStale: yellow, record.StateNotSent: dim}[sr.State]
 		what := sr.Step.String()
 		if sr.URL != "" {
@@ -213,7 +213,7 @@ func steps(out io.Writer, st style, o *options, res *record.Result) {
 		fmt.Fprintln(out, line)
 	}
 	var parts []string
-	for _, s := range []string{record.StateRecorded, record.StateSent, record.StateDiffers, record.StateKept, record.StateStale, record.StateFailed, record.StateNotSent} {
+	for _, s := range []string{record.StateRecorded, record.StateKept, record.StateStale, record.StateIgnored, record.StateFailed, record.StateNotSent} {
 		if count[s] > 0 {
 			parts = append(parts, fmt.Sprintf("%d %s", count[s], s))
 		}

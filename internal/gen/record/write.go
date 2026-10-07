@@ -45,6 +45,12 @@ func (w *writer) write(f *File, v *spec.Validator) {
 	for _, st := range f.Steps {
 		named := st.Name != "" || count[st.Op.ID] > 1
 		r, _ := st.request(vars)
+		if st.status() == StatusIgnore {
+			if st.Response != nil {
+				st.saveFrom(st.Response, nil, r, vars)
+			}
+			continue
+		}
 		w.step(st, r, named, v)
 		if st.Response != nil {
 			st.saveFrom(st.Response, nil, r, vars)

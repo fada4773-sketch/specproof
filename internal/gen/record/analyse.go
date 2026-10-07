@@ -26,6 +26,9 @@ type Analysis struct {
 	Complete int
 	// Saves are the saved values added to link the entries.
 	Saves int
+	// Statuses are the entries that got a status: every new entry, and
+	// entries of the file without one (approved with an answer, else new).
+	Statuses int
 	// Run is the order apitest has to run the cases in so that every
 	// entry finds the data its body refers to; nil if apitest's order as
 	// given fits. Its Tags and DeleteLast go into "$apitest" of the
@@ -107,6 +110,12 @@ func Analyse(s *spec.Spec, f *File, run defaults.Run, seed uint64) (*Analysis, e
 		an.Added = append(an.Added, st)
 		if st.Response != nil {
 			an.Complete++
+		}
+	}
+	for _, st := range f.Steps {
+		if st.Status == "" && st.node != nil {
+			st.setStatus(st.status())
+			an.Statuses++
 		}
 	}
 	return an, nil
@@ -541,8 +550,8 @@ func reference(field string) bool {
 
 // earlier finds the entry apitest runs last before the current case whose
 // answer (an object) or request body has a field of this name, ignoring
-// case: the source of a value no binding names. The answer wins over the
-// request of the same entry.
+// case, at any depth: the source of a value no binding names. The answer
+// wins over the request of the same entry.
 func (a *analyser) earlier(field string) (*Step, string) {
 	var best *Step
 	from, at := "", -1
@@ -551,36 +560,63 @@ func (a *analyser) earlier(field string) (*Step, string) {
 		if !ok || i >= a.cur || i < at || st.Op == nil {
 			continue
 		}
-		if m := responseMedia(st.Op, lowestSuccess(st.Op)); m != nil && m.Schema != nil {
-			if f, ok := objectField(m.Schema.Value, field); ok {
-				best, from, at = st, "/"+f, i
+		if m := responseMedia(st.Op, lowestSuccess(st.Op)); m != nil && m.Schema != nil && value.Type(m.Schema.Value) != "array" {
+			if ptr, ok := fieldPointer(m.Schema.Value, field); ok {
+				best, from, at = st, ptr, i
 				continue
 			}
 		}
 		if m := requestMedia(st.Op); m != nil && st.Body != nil && m.Schema != nil {
-			if f, ok := objectField(m.Schema.Value, field); ok {
-				best, from, at = st, "request /"+f, i
+			if ptr, ok := fieldPointer(m.Schema.Value, field); ok {
+				best, from, at = st, "request "+ptr, i
 			}
 		}
 	}
 	return best, from
 }
 
-// objectField finds a field of an object schema by name, ignoring case.
-func objectField(s *openapi3.Schema, name string) (string, bool) {
-	if s == nil || value.Type(s) == "array" {
-		return "", false
+// fieldPointer finds a field of an object schema by name, ignoring case,
+// at the smallest depth: "/dockId", "/route/originDockId" or
+// "/crew/0/pilotCode" through a list.
+func fieldPointer(s *openapi3.Schema, name string) (string, bool) {
+	type item struct {
+		s   *openapi3.Schema
+		ptr string
 	}
-	props := properties(s)
-	if props[name] != nil {
-		return name, true
-	}
-	for _, k := range sortedKeys(props) {
-		if strings.EqualFold(k, name) {
-			return k, true
+	queue := []item{{s, ""}}
+	for depth := 0; depth < 8 && len(queue) > 0; depth++ {
+		var next []item
+		for _, it := range queue {
+			if it.s == nil {
+				continue
+			}
+			if value.Type(it.s) == "array" {
+				if it.s.Items != nil {
+					next = append(next, item{it.s.Items.Value, it.ptr + "/0"})
+				}
+				continue
+			}
+			props := properties(it.s)
+			keys := sortedKeys(props)
+			for _, k := range keys {
+				if strings.EqualFold(k, name) {
+					return it.ptr + "/" + escapePointer(k), true
+				}
+			}
+			for _, k := range keys {
+				if p := props[k]; p != nil {
+					next = append(next, item{p.Value, it.ptr + "/" + escapePointer(k)})
+				}
+			}
 		}
+		queue = next
 	}
 	return "", false
+}
+
+// escapePointer escapes a field name for a JSON pointer.
+func escapePointer(k string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(k, "~", "~0"), "/", "~1")
 }
 
 func scalar(v any) bool {

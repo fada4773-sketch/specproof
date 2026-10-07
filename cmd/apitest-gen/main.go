@@ -65,15 +65,15 @@ Commands:
             defaults file (created if missing): values and "$snapshot";
             check them, then run apply
   record    keep the examples in one file, examples.record.yaml: per tag
-            the requests in the order they run, each with its answer.
-            -analyse adds an entry for every case of the spec the file has
-            none for, in apitest's order; you check the order and the
-            values. Without -analyse it sends, in the order of the file,
-            the requests whose answer is missing, no longer fits the schema
-            or is named by -refresh (to -base-url, an EMPTY instance; the
-            entries before them are sent again to build their data), stores
-            the answers in the file and writes every entry into the spec;
-            without -base-url it only writes the stored answers
+            the requests in the order they run, each with its answer and a
+            status. -analyse adds an entry for every case of the spec the
+            file has none for, in apitest's order, and a status to every
+            entry; you check the order and the values. Without -analyse it
+            sends, in the order of the file, the entries with status new or
+            repeat (or named by -refresh) to -base-url, stores the answers,
+            sets them approved and writes every entry that is not ignored
+            into the spec; approved entries are never sent again; without
+            -base-url it only writes the stored answers
   help      show this help
 
 Flags:
@@ -172,7 +172,7 @@ func flags(name string, out io.Writer) (*flag.FlagSet, *options) {
 		o.out = "defaults.resolved.json"
 	}
 	fs.StringVar(&o.out, "out", o.out, outHelp)
-	fs.StringVar(&o.baseURL, "base-url", "", "running instance to fetch the records (apply) and the sources from, e.g. http://localhost:8080/api; record: the EMPTY instance the requests go to")
+	fs.StringVar(&o.baseURL, "base-url", "", "running instance to fetch the records (apply) and the sources from, e.g. http://localhost:8080/api; record: the instance the requests go to (empty for the first run)")
 	fs.StringVar(&o.tokenEnv, "token-env", "", "environment variable holding a bearer token for -base-url")
 	fs.Var(&o.headers, "header", `extra header for -base-url, "Name: value"; repeatable`)
 	fs.Uint64Var(&o.seed, "seed", 42, "seed for generated values; the same seed gives the same values")
@@ -187,7 +187,7 @@ func flags(name string, out io.Writer) (*flag.FlagSet, *options) {
 	if name == "record" {
 		fs.StringVar(&o.file, "file", record.DefaultFile, "the record file: per tag the requests in the order they run, with their answers")
 		fs.BoolVar(&o.analyse, "analyse", false, "add an entry for every case of the spec the record file has none for, in apitest's order; nothing is sent, the spec stays unchanged")
-		fs.StringVar(&o.refresh, "refresh", "", `record these answers again, comma-separated: "all", a tag, an operationId, "METHOD /path" or "operationId/name"`)
+		fs.StringVar(&o.refresh, "refresh", "", `send these entries again whatever their status (except ignore), comma-separated: "all", a tag, an operationId, "METHOD /path" or "operationId/name"`)
 	}
 	return fs, o
 }

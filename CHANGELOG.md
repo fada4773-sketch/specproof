@@ -46,6 +46,20 @@ contain breaking changes, which are listed here.
   of the producer, and parameters and id fields no binding names, matched
   by name to a value saved before or to the latest earlier entry with such a
   field.
+- `apitest-gen record`: every entry has a `status`. `new` and `repeat` are
+  sent; a request that went through becomes `approved` and is never sent
+  again, its stored answer and request give the values later entries need;
+  `ignore` leaves the entry out (not sent, not written into the spec). The
+  entries before one to record are no longer sent again, so nothing is
+  created twice; `DIFFERS` is gone. An approved answer that no longer fits
+  the schema is `RESPONSE_STALE` (set `repeat`), an approved entry without
+  answer `APPROVED_NO_ANSWER`. `-analyse` gives every new entry `status: new`
+  and every entry without status one (`approved` with an answer, else
+  `new`), and finds values no binding names at any depth of earlier
+  answers and request bodies.
+- `apitest-gen record`: with a `filter`, `save` reads the element the filter
+  kept first (`/id`), then the filtered answer (`/0/id`); a filter added
+  after the answer was stored filters the stored answer.
 - `apitest-gen record`: `filter: {field: value}` keeps only the elements of a
   list answer (an array, or the one array field of an object) that match;
   keys are field names or JSON pointers, values may use placeholders. The

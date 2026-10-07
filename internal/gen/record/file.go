@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -40,6 +41,8 @@ const DefaultFile = "examples.record.yaml"
 const header = `Examples for apitest, written by "apitest-gen record".
 Per tag the requests in the order they run, top to bottom. Each entry is
 "METHOD /path" (or the operationId) with:
+  status:   new (send it), approved (sent, not sent again), repeat (send it
+            again), ignore (leave the entry out)
   name:     example name, needed when an endpoint appears more than once
   path:     path parameters        query: query parameters
   body:     request body
@@ -47,24 +50,25 @@ Per tag the requests in the order they run, top to bottom. Each entry is
             "header Location", "request /pointer", "request path <name>"
   filter:   keep only the list elements that match, { id: '{{id}}' }
   ignore:   fields apitest must not compare (time stamps, generated ids)
-  response: the answer; empty means "apitest-gen record" sends the request
+  response: the answer the instance gave, written by "apitest-gen record"
 Use a saved value as "{{name}}". Docs: docs/record.md.`
 
 // Keys of an entry.
 const (
-	keyName     = "name"
-	keyPath     = "path"
-	keyQuery    = "query"
-	keyBody     = "body"
-	keySave     = "save"
-	keyFilter   = "filter"
-	keyIgnore   = "ignore"
-	keyResponse = "response"
-	keyStatus   = "status"
-	keyHeaders  = "headers"
+	keyEntryStatus = "status"
+	keyName        = "name"
+	keyPath        = "path"
+	keyQuery       = "query"
+	keyBody        = "body"
+	keySave        = "save"
+	keyFilter      = "filter"
+	keyIgnore      = "ignore"
+	keyResponse    = "response"
+	keyStatus      = "status"
+	keyHeaders     = "headers"
 )
 
-var entryKeys = []string{keyName, keyPath, keyQuery, keyBody, keySave, keyFilter, keyIgnore, keyResponse}
+var entryKeys = []string{keyEntryStatus, keyName, keyPath, keyQuery, keyBody, keySave, keyFilter, keyIgnore, keyResponse}
 
 // File is a loaded record file.
 type File struct {
@@ -80,11 +84,15 @@ type Step struct {
 	Key string // as written: "POST /docks" or an operationId
 	Op  *spec.Operation
 	// Name is the example name; "" is the default example.
-	Name  string
-	Path  *yaml.Node // mapping of path parameters, nil without
-	Query *yaml.Node // mapping of query parameters, nil without
-	Body  *yaml.Node // nil without body
-	Save  []Save
+	Name string
+	// Status says whether the request is sent: StatusNew and StatusRepeat
+	// are, StatusApproved is not again, StatusIgnore leaves the entry out.
+	// "" is an entry of an older file: new without answer, else approved.
+	Status string
+	Path   *yaml.Node // mapping of path parameters, nil without
+	Query  *yaml.Node // mapping of query parameters, nil without
+	Body   *yaml.Node // nil without body
+	Save   []Save
 	// Filter keeps only the elements of a list answer whose fields have
 	// these values; nil without.
 	Filter *yaml.Node
@@ -222,6 +230,11 @@ func parseStep(tag string, item *yaml.Node) (*Step, error) {
 		k, v := n.Content[i].Value, n.Content[i+1]
 		null := v.Kind == yaml.ScalarNode && v.Tag == "!!null"
 		switch k {
+		case keyEntryStatus:
+			st.Status = strings.TrimSpace(v.Value)
+			if !slices.Contains(statuses, st.Status) {
+				return nil, fmt.Errorf("line %d: status of %q is %q; allowed: %s", v.Line, st.Key, st.Status, strings.Join(statuses, ", "))
+			}
 		case keyName:
 			st.Name = strings.TrimSpace(v.Value)
 		case keyPath, keyQuery:
@@ -330,6 +343,39 @@ func (f *File) Bytes() ([]byte, error) { return f.doc.Bytes() }
 
 // Save writes the file atomically.
 func (f *File) Save(path string) error { return f.doc.Save(path) }
+
+// Statuses of an entry.
+const (
+	StatusNew      = "new"      // not sent yet: record sends it
+	StatusApproved = "approved" // sent and answered: not sent again
+	StatusRepeat   = "repeat"   // send it again on the next run
+	StatusIgnore   = "ignore"   // leave the entry out: not sent, not written
+)
+
+var statuses = []string{StatusNew, StatusApproved, StatusRepeat, StatusIgnore}
+
+// status is the status of a step, an older entry without one read as new
+// without answer and approved with one.
+func (st *Step) status() string {
+	switch {
+	case st.Status != "":
+		return st.Status
+	case st.Response == nil:
+		return StatusNew
+	}
+	return StatusApproved
+}
+
+// setStatus writes the status of a step as the first setting of its entry.
+func (st *Step) setStatus(status string) {
+	st.Status = status
+	v := scalarNode(status)
+	if n := yamldoc.Get(st.node, keyEntryStatus); n != nil {
+		_ = yamldoc.SetNode(st.node, keyEntryStatus, v)
+		return
+	}
+	st.node.Content = append([]*yaml.Node{scalarNode(keyEntryStatus), v}, st.node.Content...)
+}
 
 // setResponse stores an answer in the entry of a step.
 func (st *Step) setResponse(r *Response) {

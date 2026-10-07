@@ -15,25 +15,25 @@ import (
 
 // Codes of the notes and problems.
 const (
-	CodeUnknownOp   = "UNKNOWN_OPERATION" // an entry names no operation of the spec
-	CodeDuplicate   = "DUPLICATE"         // two entries of one endpoint with the same name
-	CodeParam       = "PARAMETER"         // a parameter the endpoint does not have, or one without value
-	CodeBody        = "BODY"              // a body missing, or one the endpoint does not take
-	CodePlaceholder = "PLACEHOLDER"       // "{{name}}" no earlier entry saves
-	CodeRequest     = "REQUEST_INVALID"   // the request of an entry violates the schema
-	CodeNeedsURL    = "NEEDS_INSTANCE"    // answers to record, but no -base-url
-	CodeFailed      = "REQUEST_FAILED"    // the instance rejected a request
-	CodeSave        = "SAVE_MISSING"      // the answer or the request lacks a value to save
-	CodeFilter      = "FILTER"            // a filter without list, or one no element matches
-	CodeStatus      = "STATUS"            // the answer has a status the spec does not document
-	CodeShared      = "SHARED"            // one place of the spec needs two examples
-	CodeSchema      = "RESPONSE_SCHEMA"   // a recorded answer violates the schema
-	CodeStale       = "RESPONSE_STALE"    // a stored answer no longer fits; no instance to record it again
-	CodeDiffers     = "DIFFERS"           // a request sent again answered differently
-	CodeOrder       = "ORDER"             // apitest runs an entry in another order
-	CodeNotRun      = "NOT_RUN"           // apitest does not run the case of an entry
-	CodeNotInFile   = "NOT_IN_FILE"       // apitest runs a case the file has no entry for
-	CodeSkipped     = "SKIPPED"           // -analyse leaves out a case it cannot build
+	CodeUnknownOp   = "UNKNOWN_OPERATION"  // an entry names no operation of the spec
+	CodeDuplicate   = "DUPLICATE"          // two entries of one endpoint with the same name
+	CodeParam       = "PARAMETER"          // a parameter the endpoint does not have, or one without value
+	CodeBody        = "BODY"               // a body missing, or one the endpoint does not take
+	CodePlaceholder = "PLACEHOLDER"        // "{{name}}" no earlier entry saves
+	CodeRequest     = "REQUEST_INVALID"    // the request of an entry violates the schema
+	CodeNeedsURL    = "NEEDS_INSTANCE"     // answers to record, but no -base-url
+	CodeFailed      = "REQUEST_FAILED"     // the instance rejected a request
+	CodeSave        = "SAVE_MISSING"       // the answer or the request lacks a value to save
+	CodeFilter      = "FILTER"             // a filter without list, or one no element matches
+	CodeStatus      = "STATUS"             // the answer has a status the spec does not document
+	CodeShared      = "SHARED"             // one place of the spec needs two examples
+	CodeSchema      = "RESPONSE_SCHEMA"    // a recorded answer violates the schema
+	CodeStale       = "RESPONSE_STALE"     // a stored answer no longer fits the schema
+	CodeApproved    = "APPROVED_NO_ANSWER" // an approved entry without answer
+	CodeOrder       = "ORDER"              // apitest runs an entry in another order
+	CodeNotRun      = "NOT_RUN"            // apitest does not run the case of an entry
+	CodeNotInFile   = "NOT_IN_FILE"        // apitest runs a case the file has no entry for
+	CodeSkipped     = "SKIPPED"            // -analyse leaves out a case it cannot build
 )
 
 // Note is one finding of a run.
@@ -43,10 +43,9 @@ func (n Note) String() string { return fmt.Sprintf("%s %s: %s", n.Code, n.Where,
 
 // States of a step after a run.
 const (
-	StateKept     = "kept"     // the stored answer is used
-	StateRecorded = "recorded" // sent, its answer is stored now
-	StateSent     = "sent"     // sent again for the ones after it, same answer
-	StateDiffers  = "differs"  // sent again, another answer than stored
+	StateKept     = "kept"     // not sent; the stored answer is used
+	StateRecorded = "recorded" // sent, its answer is stored now, approved
+	StateIgnored  = "ignored"  // status ignore: not sent, not written
 	StateFailed   = "failed"   // the instance rejected it
 	StateStale    = "stale"    // the stored answer no longer fits the schema
 	StateNotSent  = "not sent" // after a failed request
@@ -58,7 +57,7 @@ type StepResult struct {
 	State  string
 	Status int    // the status the instance answered; 0 if not sent
 	URL    string // the path sent, with its values
-	Why    string // why it was sent: no answer yet, -refresh, schema changed
+	Why    string // why it was sent: status new or repeat, -refresh
 	Sent   any    // the body sent, for a failed request
 	Answer string // the answer, for a failed request
 }
