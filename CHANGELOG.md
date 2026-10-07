@@ -27,6 +27,16 @@ contain breaking changes, which are listed here.
   generated values, a DELETE without a record to create again is sent on
   its own. Each such write is reported as `FORCED`; one the instance
   rejects gets no example. Not together with `-read-only` or `-dry-run`.
+  The body of such a write is assembled from the record of its table or
+  of the DTO of its body (seed or selected), optional fields included; a
+  POST body gets other values in the unique indexes of `"tables"`.
+- `apitest-gen record`: operations not in the run (`ExcludeOps`, a case
+  apitest skips) keep the examples of `-spec` (`SPEC_EXAMPLES`), named
+  `examples` with their `$ref` resolved; before, they lost them unless the
+  last output had them.
+- `apitest-gen record`: a POST that is not sent and whose body comes from a
+  record the empty environment holds already gets the `-copy` values in
+  the unique indexes of `"tables"` in its example, as the POST of a copy.
 - `apitest-gen record` shows how many places of the spec hold an example:
   path and required query parameters, the request body and the first 2xx
   response with JSON content of every operation. The console (`EXAMPLES`)

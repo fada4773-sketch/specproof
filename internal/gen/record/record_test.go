@@ -22,6 +22,7 @@ import (
 	"github.com/fada4773-sketch/specproof/internal/gen/discover"
 	"github.com/fada4773-sketch/specproof/internal/gen/yamldoc"
 	"github.com/fada4773-sketch/specproof/internal/spec"
+	"gopkg.in/yaml.v3"
 )
 
 // starport is the local instance of testdata/gen/record.yaml: data from
@@ -2699,5 +2700,92 @@ func TestSelectMoreWithoutID(t *testing.T) {
 	rd.take(f)
 	if got := len(rd.seedRecs("planet")); got != 3 {
 		t.Errorf("%d seed records, want 3\n%s", got, notes(rd.res))
+	}
+}
+
+// An operation not in the run (ExcludeOps) keeps the examples of -spec,
+// "examples" with a $ref to components.examples resolved; the others lose
+// theirs.
+func TestRecordExcludedKeepSpecExamples(t *testing.T) {
+	b, err := os.ReadFile("../../../testdata/gen/record.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := yamldoc.Parse(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	media := func(path, method, code string) *yaml.Node {
+		return yamldoc.Path(doc.Root, "paths", path, method, "responses", code, "content", "application/json")
+	}
+	if err := yamldoc.Set(media("/Planet/{planetCode}/Dock/{dockCode}/Config", "get", "200"), "example", map[string]any{"settings": map[string]any{"mode": "manual"}}); err != nil {
+		t.Fatal(err)
+	}
+	named, _ := yamldoc.Node(map[string]any{"one": map[string]any{"$ref": "#/components/examples/Ship"}})
+	ship := media("/Ship/id/{id}", "put", "200")
+	ship.Content = append(ship.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "examples"}, named)
+	comps := yamldoc.Get(doc.Root, "components")
+	if err := yamldoc.Set(comps, "examples", map[string]any{"Ship": map[string]any{"value": map[string]any{"id": 5, "shipCode": "S5"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := yamldoc.Set(media("/Planet", "get", "200"), "example", []any{map[string]any{"id": 99}}); err != nil {
+		t.Fatal(err)
+	}
+	out, err := doc.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	specPath := filepath.Join(t.TempDir(), "record.yaml")
+	if err := os.WriteFile(specPath, out, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	config := `{"params": {"planetCode": "P1"}, "seed": ["Planet", "Dock"], "$apitest": {"DeleteLast": true, "ExcludeOps": ["GetDockConfig", "UpdateShip"]}}`
+	res, got, _ := runConfig(t, newStarport(), specPath, config, nil, false)
+	equal(t, "GetDockConfig", exampleAt(t, got, "paths", "/Planet/{planetCode}/Dock/{dockCode}/Config", "get", "responses", "200", "content", "application/json"),
+		`{"settings":{"mode":"manual"}}`)
+	v, err := yamldoc.Decode(yamldoc.Path(got.Root, "paths", "/Ship/id/{id}", "put", "responses", "200", "content", "application/json", "examples", "one"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	equal(t, "UpdateShip examples", v, `{"value":{"id":5,"shipCode":"S5"}}`)
+	equal(t, "GetPlanets", exampleAt(t, got, "paths", "/Planet", "get", "responses", "200", "content", "application/json"), `[{"id":1,"planetCode":"P1","name":"Mars"}]`)
+	if !strings.Contains(notes(res), "SPEC_EXAMPLES spec: 2 operations not in the run keep the examples of the spec: GetDockConfig, UpdateShip") {
+		t.Errorf("notes:\n%s", notes(res))
+	}
+}
+
+// A body -all assembles for a write without a record of its own takes the
+// record of its table: an update without a record is no bare {}.
+func TestGenerateFromRecord(t *testing.T) {
+	s, err := spec.Load(context.Background(), "../../../testdata/gen/record.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ship := &rec{table: "ship", data: map[string]any{"id": json.Number("101"), "shipCode": "S1", "dockId": json.Number("31"), "name": "Falcon"}, from: "GetShips /Planet/P1/Ship", keys: map[string]bool{}}
+	rd := &reader{n: newNamer(s), k: newKnown(), gets: map[string]*fetched{}, recs: map[string]*rec{"ship": ship}, all: map[string][]*rec{"ship": {ship}}}
+	w := &writes{rd: rd, in: Input{Config: &Config{}}, byOp: map[string]*wop{}}
+	x := &wop{c: &cases.Case{Op: s.Op("UpdateShip")}, kind: kindUpdate, table: "ship"}
+	equal(t, "body", w.generate(x.c.Op, w.dataFor(x), true), `{"dockId":31,"name":"Falcon"}`)
+}
+
+// A POST body assembled from the data of a record gets other values in the
+// unique indexes of "tables"; an index of references only stays.
+func TestUnique(t *testing.T) {
+	s, err := spec.Load(context.Background(), "../../../testdata/gen/record.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Parse([]byte(`{"tables": {"Ship": {"unique": [{"name": "uidx_code", "fields": ["ship_code"]}, {"fields": ["dock_id"]}]}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := &writes{rd: &reader{n: newNamer(s)}, in: Input{Config: cfg}}
+	got, changed := w.unique(s.Op("CreateShip"), "ship", map[string]any{"shipCode": "S1", "dockId": json.Number("31"), "name": "Falcon"}, "t1")
+	equal(t, "body", got, `{"shipCode":"S1-t1","dockId":31,"name":"Falcon"}`)
+	if len(changed) != 1 || !strings.Contains(changed[0], `shipCode: S1 → S1-t1 (unique index uidx_code in "tables")`) {
+		t.Errorf("changed: %v", changed)
+	}
+	if got, changed := w.unique(s.Op("CreateShip"), "dock", map[string]any{"shipCode": "S1"}, "t1"); len(changed) > 0 || text(got) != `{"shipCode":"S1"}` {
+		t.Errorf("a table without entry: %v %v", got, changed)
 	}
 }

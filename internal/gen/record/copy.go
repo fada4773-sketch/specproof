@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"math/rand/v2"
 	"net/http"
 	"slices"
@@ -314,6 +315,64 @@ func dataField(o map[string]any, name string) string {
 		}
 	}
 	return ""
+}
+
+// unique gives a POST body assembled from the data of a record other values
+// in the unique indexes "tables" names for table t, as a copy gets them: a
+// POST with the values of a record the instance or the empty environment
+// holds violates the index. token is the one of the run for a body that is
+// sent, exampleToken for a body only the example shows. It returns the
+// changed fields as the log names them; an index of references only or a
+// field without another valid value stays.
+func (w *writes) unique(op *spec.Operation, t string, body any, token string) (any, []string) {
+	o, ok := body.(map[string]any)
+	if !ok || w.in.Config == nil {
+		return body, nil
+	}
+	tb := w.in.Config.table(t, w.rd.n)
+	if tb == nil {
+		return body, nil
+	}
+	var props openapi3.Schemas
+	if ref := requestSchema(op); ref != nil && ref.Value != nil {
+		props, _ = dict.Properties(ref.Value)
+	}
+	out := maps.Clone(o)
+	var changed []string
+	for _, u := range tb.Unique {
+		var cands []string
+		all, done := true, false
+		for _, f := range u.Fields {
+			k := dataField(out, f)
+			if k == "" || !filled(out[k]) {
+				all = false
+				break
+			}
+			done = done || slices.ContainsFunc(changed, func(c string) bool { return strings.HasPrefix(c, k+":") })
+			if !tb.ref(k) {
+				cands = append(cands, k)
+			}
+		}
+		if !all || done {
+			continue
+		}
+		name := u.Name
+		if name == "" {
+			name = strings.Join(u.Fields, ", ")
+		}
+		for _, k := range cands {
+			var s *openapi3.Schema
+			if p := propOf(props, k); p != nil {
+				s = p.Value
+			}
+			if v, ok := vary(out[k], s, token); ok {
+				changed = append(changed, fmt.Sprintf("%s: %s → %s (unique index %s in \"tables\")", k, text(out[k]), text(v), name))
+				out[k] = v
+				break
+			}
+		}
+	}
+	return out, changed
 }
 
 // vary returns another value than v that fits the schema: a text with the

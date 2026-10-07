@@ -488,6 +488,48 @@ func (em *emitter) remember(prev *emitter, op *spec.Operation) {
 	}
 }
 
+// own are the examples -spec holds at the places of an operation ("example"
+// and "examples", a $ref to components.examples resolved), taken before
+// stripAll removes them.
+func (em *emitter) own(op *spec.Operation) map[*yaml.Node][]*yaml.Node {
+	out := map[*yaml.Node][]*yaml.Node{}
+	for _, n := range em.holders(op) {
+		var kv []*yaml.Node
+		if ex := yamldoc.Get(n, "example"); ex != nil {
+			kv = append(kv, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "example"}, clone(ex))
+		}
+		if exs := yamldoc.Get(n, "examples"); exs != nil && exs.Kind == yaml.MappingNode {
+			named := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+			for _, name := range yamldoc.Keys(exs) {
+				e, err := em.doc.Resolve(yamldoc.Get(exs, name))
+				if err != nil || e == nil {
+					continue
+				}
+				named.Content = append(named.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: name}, clone(e))
+			}
+			if len(named.Content) > 0 {
+				kv = append(kv, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "examples"}, named)
+			}
+		}
+		if len(kv) > 0 {
+			out[n] = kv
+		}
+	}
+	return out
+}
+
+// restore puts back examples own took; it reports whether there were any.
+func (em *emitter) restore(kept map[*yaml.Node][]*yaml.Node) bool {
+	for n, kv := range kept {
+		for i := 0; i+1 < len(kv); i += 2 {
+			yamldoc.Delete(n, kv[i].Value)
+			n.Content = append(n.Content, kv[i], kv[i+1])
+			em.changed = true
+		}
+	}
+	return len(kept) > 0
+}
+
 // carry takes the examples of an unchanged operation from the output of the
 // last run.
 func (em *emitter) carry(op *spec.Operation) {

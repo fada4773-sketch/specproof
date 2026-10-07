@@ -2,6 +2,7 @@ package record
 
 import (
 	"fmt"
+	"maps"
 	"net/http"
 	"strings"
 
@@ -344,7 +345,7 @@ func (w *writes) queries(tag string) {
 			x.bodySrc = "no field of a selected record fits it"
 		}
 		if len(missing) > 0 {
-			x.body = w.generate(x.c.Op, body)
+			x.body = w.generate(x.c.Op, body, false)
 			w.forced(x, "no value read for its required fields "+strings.Join(missing, ", ")+"; they are generated")
 		}
 		w.send(x, http.MethodPost, "read "+x.c.Op.ID+" (a POST that only reads)")
@@ -495,7 +496,10 @@ func (w *writes) writeAll(xs []*wop) {
 			}
 			if w.in.All && x.url != "" {
 				if requestSchema(x.c.Op) != nil {
-					x.body = w.generate(x.c.Op, map[string]any{})
+					x.body = w.generate(x.c.Op, w.dataFor(x), true)
+					var changed []string
+					x.body, changed = w.unique(x.c.Op, w.rd.n.of(requestSchema(x.c.Op)), x.body, w.in.Token)
+					w.varied(x.c.Op, changed)
 				}
 				w.forced(x, "no record read fits its body; its body is assembled from the data of the run and generated values")
 				w.send(x, http.MethodPost, x.c.Op.ID+" (-all)")
@@ -525,14 +529,18 @@ func (w *writes) update(u *wop) {
 		}
 		w.forced(u, why+"; what no data has is generated")
 	}
-	u.body = w.bodyFor(u)
+	if u.forced && u.rec == nil {
+		u.body = w.generate(u.c.Op, w.dataFor(u), true)
+	} else {
+		u.body = w.bodyFor(u)
+	}
 	if u.body == nil && requestSchema(u.c.Op) != nil {
 		if !w.in.All {
 			w.res.note(CodeNotExecuted, u.c.Op.ID, "%s %s is not sent: the GET of its path answers a list, its body is one object, and no %s was selected",
 				u.c.Op.Method, u.c.Op.Path, u.table)
 			return
 		}
-		u.body = w.generate(u.c.Op, map[string]any{})
+		u.body = w.generate(u.c.Op, w.dataFor(u), true)
 		w.forced(u, fmt.Sprintf("the GET of its path answers a list, its body is one object, and no %s was selected; its body is assembled and generated", u.table))
 	}
 	resp, ok := w.send(u, u.c.Op.Method, "update "+u.c.Op.ID+" with the data it has")
@@ -575,14 +583,43 @@ func (w *writes) force(x *wop) bool {
 // generate is the body of a write -all sends although no data fits it:
 // assembled from the data of the run, a required field without data
 // generated.
-func (w *writes) generate(op *spec.Operation, src any) any {
+func (w *writes) generate(op *spec.Operation, src any, full bool) any {
 	a := w.assembler(op, spec.ModeRequest)
+	// full: the optional parts too, from the records of the run (seed and
+	// selected), so the body is no bare {}
+	a.create = a.create || full
 	body := a.build(requestSchema(op), src)
 	if w.filled == nil {
 		w.filled = map[string][]string{}
 	}
 	w.filled[op.ID] = a.origins("body")
 	return w.withBody(op, body, src)
+}
+
+// varied adds the fields unique changed to the origins of the body.
+func (w *writes) varied(op *spec.Operation, changed []string) {
+	if len(changed) == 0 {
+		return
+	}
+	if w.filled == nil {
+		w.filled = map[string][]string{}
+	}
+	for _, c := range changed {
+		w.filled[op.ID] = append(w.filled[op.ID], "body."+c)
+	}
+}
+
+// dataFor is the data a forced write assembles its body from: its record,
+// else the record of its table or of the DTO of its body (a seed record or
+// a selected one), else nothing.
+func (w *writes) dataFor(x *wop) map[string]any {
+	for _, r := range []*rec{x.rec, w.rd.recs[x.table], w.rd.recs[w.rd.n.of(requestSchema(x.c.Op))]} {
+		if r != nil {
+			x.bodySrc = r.origin()
+			return maps.Clone(r.data)
+		}
+	}
+	return map[string]any{}
 }
 
 // forced reports a write that only -all sends: the run lacks the data for
@@ -1037,8 +1074,19 @@ func (w *writes) offline() {
 				continue
 			}
 			x.body = w.requestBody(x.c.Op, r.data)
+			var src any = r.data
+			if w.in.Config != nil && (x.rec == nil || w.in.Config.seeded(r.table, w.rd.n) && r == w.rd.recs[r.table]) {
+				// the data of a record the environment holds already: the
+				// unique indexes of "tables" need other values
+				var changed []string
+				x.body, changed = w.unique(x.c.Op, x.table, x.body, exampleToken)
+				w.varied(x.c.Op, changed)
+				if b, ok := x.body.(map[string]any); ok && len(changed) > 0 {
+					src = fillIn(b, r.data)
+				}
+			}
 			// the answer shows the record, and what the body sent beyond it
-			x.resp = &response{Status: successStatus(x.c.Op), Body: w.assembler(x.c.Op, spec.ModeResponse).build(responseSchema(x.c.Op, 0), fillIn(r.data, x.body))}
+			x.resp = &response{Status: successStatus(x.c.Op), Body: w.assembler(x.c.Op, spec.ModeResponse).build(responseSchema(x.c.Op, 0), fillIn(src, x.body))}
 		case kindUpdate:
 			if r == nil {
 				continue

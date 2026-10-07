@@ -12,6 +12,7 @@ import (
 	"github.com/fada4773-sketch/specproof/internal/gen/scenario"
 	"github.com/fada4773-sketch/specproof/internal/gen/yamldoc"
 	"github.com/fada4773-sketch/specproof/internal/spec"
+	"gopkg.in/yaml.v3"
 )
 
 // Codes of the notes and problems.
@@ -23,6 +24,7 @@ const (
 	CodeSeedShort   = "SEED_SHORT"         // fewer records of a seed DTO pass than "count" asks for
 	CodeNotExecuted = "NOT_EXECUTED"       // a write the run cannot send nor build
 	CodeForced      = "FORCED"             // a write only -all sends
+	CodeSpecKept    = "SPEC_EXAMPLES"      // operations not in the run keep the examples of the spec
 	CodeBuilt       = "BUILT"              // a write not sent, its example built from the data read
 	CodeWriteFailed = "WRITE_FAILED"       // a write the instance rejected
 	CodeChanged     = "DATA_CHANGED"       // the instance answers differently after the writes
@@ -64,6 +66,7 @@ var codeInfos = map[string]codeInfo{
 	CodeSeedMissing: {Problem, "a DTO of the seed was not read", `check "params" and "select" of that DTO`},
 	CodeSeedShort:   {Warning, `fewer records of a seed DTO pass "select" than its "count" asks for; the seed holds the ones that do`, `lower "count", loosen "select" or add such records to the instance`},
 	CodeNotExecuted: {Warning, "a PUT, PATCH, DELETE or POST was neither sent nor built from the data read; it gets no example", "see the message: mostly a parameter without value"},
+	CodeSpecKept:    {Info, "operations not in the run (ExcludeOps, cases apitest skips) keep the examples of the spec", "nothing"},
 	CodeForced:      {Warning, "-all sent a write the run lacks data for: generated values, or a DELETE whose record nothing creates again", "check its answer in the log; restore data of the instance it changed"},
 	CodeBuilt:       {Info, "a write was not sent, to keep the data of the instance; its example is built from what the GETs read", "nothing; the example is fine"},
 	CodeWriteFailed: {Problem, "the instance rejected a write", "see the answer in the log"},
@@ -303,6 +306,14 @@ func Run(ctx context.Context, in Input) (*Result, error) {
 			ex.remember(prev, op)
 		}
 	}
+	// an operation not in the run (ExcludeOps, a case apitest skips) keeps
+	// the examples of -spec; without any it takes those of the last output
+	kept := map[string]map[*yaml.Node][]*yaml.Node{}
+	for _, op := range in.Spec.Ops {
+		if !ops[op.ID] {
+			kept[op.ID] = ex.own(op)
+		}
+	}
 	ex.stripAll()
 	// only the output of an earlier run passes its examples on; without
 	// "$recorded" the last output may be -spec itself
@@ -312,6 +323,15 @@ func Run(ctx context.Context, in Input) (*Result, error) {
 				ex.carry(op)
 			}
 		}
+	}
+	var restored []string
+	for _, op := range in.Spec.Ops {
+		if ex.restore(kept[op.ID]) {
+			restored = append(restored, op.ID)
+		}
+	}
+	if len(restored) > 0 {
+		res.note(CodeSpecKept, "spec", "%d operations not in the run keep the examples of the spec: %s", len(restored), strings.Join(restored, ", "))
 	}
 	done := map[string]bool{}
 	for _, c := range run {
