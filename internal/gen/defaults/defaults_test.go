@@ -173,7 +173,7 @@ func TestSpecialKeys(t *testing.T) {
 	d, err := Parse([]byte(`{
   "$snapshot": {"Book": {"from": "GetBooks", "count": 3}, "Ship": {"from": "GetShips"}},
   "$model": {"Book": {"keys": ["Code"]}},
-  "$apitest": {"MethodOrder": ["POST", "PUT", "GET", "DELETE"], "DeleteLast": true, "IgnoreFields": ["Message"]},
+  "$apitest": {"MethodOrder": ["POST", "PUT", "GET", "DELETE"], "DeleteLast": true, "LastInTag": ["archiveBook"], "IgnoreFields": ["Message"]},
   "Name": "x"
 }`))
 	if err != nil {
@@ -185,7 +185,7 @@ func TestSpecialKeys(t *testing.T) {
 	if s, _ := d.SnapshotFor("Ship"); s.Records() != 1 {
 		t.Errorf("default count: %d", s.Records())
 	}
-	if d.Model["Book"].Keys[0] != "Code" || !d.RunConfig().DeleteLast || d.RunConfig().IgnoreFields[0] != "Message" {
+	if d.Model["Book"].Keys[0] != "Code" || !d.RunConfig().DeleteLast || d.RunConfig().IgnoreFields[0] != "Message" || d.RunConfig().LastInTag[0] != "archiveBook" {
 		t.Errorf("model %v, run %+v", d.Model, d.RunConfig())
 	}
 	if d.Len() != 1 {

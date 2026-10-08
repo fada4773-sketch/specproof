@@ -320,7 +320,7 @@ then lists the bindings behind it, so you can see which operation takes
 which value from which tag.
 
 `record` reads `"$apitest"` from `defaults.json` (`Tags`, `DeleteLast`,
-`MethodOrder`, `IncludeOps`, `ExcludeOps`, `IgnoreFields`). After writing
+`LastInTag`, `MethodOrder`, `IncludeOps`, `ExcludeOps`, `IgnoreFields`). After writing
 the spec, it compares the file with the order apitest will run. If an entry
 runs earlier in apitest than an entry above it in the file, it reports
 `ORDER` with both lines. Then either move the entry or change `"$apitest"`

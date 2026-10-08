@@ -232,7 +232,10 @@ func (r *runner) prepare() error {
 		skipped := c.Kind.IsAuth() && slices.Contains(r.cfg.SkipAuthCases, c.Example)
 		return cases.Selected(c.Op, opt) && !skipped
 	}
-	popt := plan.Options{Tags: r.cfg.Tags, DeleteLast: r.cfg.DeleteLast}
+	if err := plan.CheckLastInTag(s, r.cfg.LastInTag); err != nil {
+		return fmt.Errorf("Config.LastInTag: %w", err)
+	}
+	popt := plan.Options{Tags: r.cfg.Tags, DeleteLast: r.cfg.DeleteLast, LastInTag: r.cfg.LastInTag}
 	if r.cfg.NumberCases {
 		// Numbers come from the plan without -run, so a case keeps its
 		// number when only a part of the run is selected.

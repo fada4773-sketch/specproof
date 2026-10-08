@@ -16,6 +16,11 @@ contain breaking changes, which are listed here.
 
 ### Features
 
+- `Config.LastInTag`: operations (operationId or `"METHOD /path"`) whose
+  cases run after all other cases of their tag, whatever their method, in
+  the order listed; the tag's DELETEs still follow, bindings still win.
+  An unknown operation stops the run. `"$apitest"` of the defaults takes
+  it too, so `apply` and `record` follow the same order.
 - `Config.CaseInsensitive`: the example comparison (and the read-back after
   writes) ignores the case of strings and field names; an exact field name
   wins, `IgnoreFields` match in any case too. The schema check stays

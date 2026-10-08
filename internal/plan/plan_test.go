@@ -136,3 +136,47 @@ func TestDeps(t *testing.T) {
 		}
 	}
 }
+
+// LastInTag puts operations after all other cases of their group, whatever
+// their method, in the order listed; the DELETEs still follow, and a case
+// that needs a value from a listed operation still runs after it.
+func TestLastInTag(t *testing.T) {
+	list, set := setup(t, "plan.yaml")
+	review := func(last ...string) []string {
+		t.Helper()
+		p, err := Build(list, all, set, Options{LastInTag: last})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, c := range p.Cases() {
+			if c.Group == "Review" {
+				out = append(out, c.Op.ID)
+			}
+		}
+		return out
+	}
+	for _, c := range []struct {
+		last []string
+		want string
+	}{
+		{nil, "createReview getReview listReviews deleteReview"},
+		{[]string{"getReview"}, "createReview listReviews getReview deleteReview"},
+		{[]string{"getReview", "listReviews"}, "createReview getReview listReviews deleteReview"},
+		{[]string{"listReviews", "GET /reviews/{reviewId}"}, "createReview listReviews getReview deleteReview"},
+		// getReview takes its id from createReview, so it waits for it
+		{[]string{"createReview"}, "listReviews createReview getReview deleteReview"},
+		{[]string{"deleteReview"}, "createReview getReview listReviews deleteReview"},
+	} {
+		if got := strings.Join(review(c.last...), " "); got != c.want {
+			t.Errorf("LastInTag %v:\n got  %s\n want %s", c.last, got, c.want)
+		}
+	}
+	s, err := spec.Load(t.Context(), "../../testdata/specs/plan.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckLastInTag(s, []string{"getReview", "archiveMoon"}); err == nil || !strings.Contains(err.Error(), `"archiveMoon" from LastInTag does not exist`) {
+		t.Errorf("unknown operation: %v", err)
+	}
+}

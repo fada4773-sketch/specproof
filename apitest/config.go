@@ -96,6 +96,13 @@ type Config struct {
 	// depend on them through bindings, so a DELETE can remove data that a
 	// later group uses through Params.
 	DeleteLast bool
+	// LastInTag runs the cases of these operations (operationId or
+	// "<METHOD> <path>") after all other cases of their tag, whatever their
+	// method, in the order listed, e.g. {"archiveDock"} for a POST that
+	// locks the dock. Only the DELETE cases of the tag follow them; a
+	// listed DELETE runs after the other DELETEs. Bindings still win: a case
+	// that needs a value from a listed operation runs after it.
+	LastInTag []string
 
 	// IgnoreFields are excluded from the value comparison at every level,
 	// e.g. "id" or "createdAt". JSON pointers ("/items/*/id") work as well.

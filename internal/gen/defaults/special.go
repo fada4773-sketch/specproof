@@ -84,6 +84,7 @@ type ModelFix struct {
 type Run struct {
 	MethodOrder  []string `json:"MethodOrder,omitempty"`
 	DeleteLast   bool     `json:"DeleteLast,omitempty"`
+	LastInTag    []string `json:"LastInTag,omitempty"`
 	Tags         []string `json:"Tags,omitempty"`
 	IncludeOps   []string `json:"IncludeOps,omitempty"`
 	ExcludeOps   []string `json:"ExcludeOps,omitempty"`
@@ -118,7 +119,7 @@ func (d *Defaults) special(key string, raw json.RawMessage) (handled bool, err e
 	case ApitestKey:
 		r := &Run{}
 		if err := strict(raw, r); err != nil {
-			return true, fmt.Errorf(`%q takes the apitest Config fields MethodOrder, DeleteLast, Tags, IncludeOps, ExcludeOps and IgnoreFields: %w`, key, err)
+			return true, fmt.Errorf(`%q takes the apitest Config fields MethodOrder, DeleteLast, LastInTag, Tags, IncludeOps, ExcludeOps and IgnoreFields: %w`, key, err)
 		}
 		if err := checkMethodOrder(r.MethodOrder); err != nil {
 			return true, fmt.Errorf("%q: %w", key, err)

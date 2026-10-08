@@ -46,7 +46,7 @@ func CheckOrder(s *spec.Spec, f *File, run defaults.Run) ([]Note, error) {
 			continue
 		}
 		if i < maxIdx {
-			notes = append(notes, Note{CodeOrder, st.where(), fmt.Sprintf("apitest runs it before %s (line %d), so it sees other data than recorded; move the entry above that one, or change the order of apitest (\"$apitest\": MethodOrder, Tags, DeleteLast)",
+			notes = append(notes, Note{CodeOrder, st.where(), fmt.Sprintf("apitest runs it before %s (line %d), so it sees other data than recorded; move the entry above that one, or change the order of apitest (\"$apitest\": MethodOrder, LastInTag, Tags, DeleteLast)",
 				maxStep, maxStep.Line)})
 			continue
 		}

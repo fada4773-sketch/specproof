@@ -531,6 +531,7 @@ apitest.Run(t, apitest.Config{
 | `ForbiddenToken` | Valid token with too few rights, for `forbidden` cases. Without it those cases are skipped. |
 | `Tags`, `IncludeOps`, `ExcludeOps` | Select groups (in this order) and operations (`operationId` or `"POST /path"`). Producers of selected cases always run as preconditions. |
 | `MethodOrder`, `DeleteLast` | Order of the regular cases within a group by method; DELETEs of all groups at the very end. |
+| `LastInTag` | Operations (`operationId` or `"POST /path"`) whose cases run after all other cases of their tag, whatever the method, in the order listed; only the tag's DELETEs follow. |
 | `NumberCases` | Prefix subtest names with their position (`07_Organization/…`) to show the execution order. |
 | `SkipAuthCases` | Authentication cases left out completely: `apitest.AuthUnauthorized`, `AuthInvalidToken`, `AuthForbidden`. |
 | `TamperToken` | Token of the `invalid-token` case: `apitest.TruncateToken` (default, first 100 characters), `apitest.TamperSignature` or your own function. |

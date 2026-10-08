@@ -1,6 +1,7 @@
 // Package plan orders the cases of a run (FR-ORDER): resource groups follow
 // the dependency graph of their bindings, cases within a group follow their
-// rank (create, read, list, update, 4xx, authentication, delete), and DELETE
+// rank (create, read, list, update, 4xx, authentication, delete; the
+// operations of Options.LastInTag after all but the deletes), and DELETE
 // cases of groups that others depend on (or of all groups with DeleteLast)
 // run last, in reverse order.
 package plan
@@ -13,6 +14,7 @@ import (
 
 	"github.com/fada4773-sketch/specproof/internal/bind"
 	"github.com/fada4773-sketch/specproof/internal/cases"
+	"github.com/fada4773-sketch/specproof/internal/spec"
 )
 
 // Segment is a consecutive part of a group's cases.
@@ -51,6 +53,25 @@ type Options struct {
 	// cases, in reverse group order, instead of only for groups that others
 	// depend on.
 	DeleteLast bool
+	// LastInTag are operations (operationId or "METHOD /path") whose cases
+	// run after all other cases of their group, whatever their method, in
+	// the order listed; only the DELETE cases of the group follow them.
+	LastInTag []string
+}
+
+// CheckLastInTag reports operations of LastInTag the spec does not have.
+func CheckLastInTag(s *spec.Spec, ids []string) error {
+	for _, id := range ids {
+		if s.Op(id) == nil {
+			return fmt.Errorf("operation %q from LastInTag does not exist in the spec (expected: operationId or \"METHOD /path\")", id)
+		}
+	}
+	return nil
+}
+
+// lastIndex is the position of a case's operation in LastInTag, or -1.
+func lastIndex(c *cases.Case, last []string) int {
+	return slices.IndexFunc(last, c.Op.Is)
 }
 
 // Build plans the cases. all must contain every case of the spec in the
@@ -129,7 +150,7 @@ func Build(all []*cases.Case, selected func(*cases.Case) bool, set *bind.Set, op
 
 	var deferred []Segment
 	for _, g := range groups {
-		ordered, err := orderWithin(byGroup[g], p.Deps)
+		ordered, err := orderWithin(byGroup[g], p.Deps, opt.LastInTag)
 		if err != nil {
 			return nil, err
 		}
@@ -261,15 +282,32 @@ func findCycle(names []string, edges map[string]map[string]bool) []string {
 }
 
 // orderWithin keeps the order of the ranks, refined by
-// x-apitest-order, and moves producers in front of their consumers.
-func orderWithin(list []*cases.Case, deps map[*cases.Case][]*cases.Case) ([]*cases.Case, error) {
+// x-apitest-order, puts the operations of last after all but the DELETE
+// cases, and moves producers in front of their consumers.
+func orderWithin(list []*cases.Case, deps map[*cases.Case][]*cases.Case, last []string) ([]*cases.Case, error) {
 	idx := map[*cases.Case]int{}
 	for i, c := range list {
 		idx[c] = i
 	}
+	// class: 0 regular, 1 listed in last, 2 DELETE
+	class := func(c *cases.Case) int {
+		switch {
+		case c.Rank == cases.RankDelete:
+			return 2
+		case lastIndex(c, last) >= 0:
+			return 1
+		}
+		return 0
+	}
 	sorted := append([]*cases.Case(nil), list...)
 	sort.SliceStable(sorted, func(i, j int) bool {
 		a, b := sorted[i], sorted[j]
+		if ca, cb := class(a), class(b); ca != cb {
+			return ca < cb
+		}
+		if la, lb := lastIndex(a, last), lastIndex(b, last); la != lb {
+			return la < lb // also a listed DELETE after the other DELETEs
+		}
 		if a.Rank != b.Rank {
 			return a.Rank < b.Rank
 		}

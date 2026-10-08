@@ -92,6 +92,44 @@ func TestMethodOrder(t *testing.T) {
 	}
 }
 
+// LastInTag runs listAuthors after every other case of Author, whatever
+// the method; only the DELETE of the tag follows. An unknown operation
+// stops the run before a request.
+func TestLastInTag(t *testing.T) {
+	cfg := bookstoreConfig(t, testserver.Faults{})
+	cfg.LastInTag = []string{"listAuthors"}
+	// the list runs after the PUT, so it shows the changed author
+	cfg.CompareMode = CompareSchema
+	out := runFake(t, cfg)
+	if out.res.Failed {
+		t.Fatalf("run failed:\n%s", out.ft.output())
+	}
+	names := order(out.res)
+	list, del := -1, -1
+	for i, n := range names {
+		switch {
+		case strings.HasPrefix(n, "Author/listAuthors/") && list < 0:
+			list = i
+		case strings.HasPrefix(n, "Author/deleteAuthor/") && del < 0:
+			del = i
+		}
+	}
+	for i, n := range names {
+		if strings.HasPrefix(n, "Author/") && !strings.HasPrefix(n, "Author/listAuthors/") && !strings.HasPrefix(n, "Author/deleteAuthor/") && i > list {
+			t.Errorf("%s runs after listAuthors:\n%s", n, strings.Join(names, "\n"))
+		}
+	}
+	if list < 0 || del < list {
+		t.Errorf("list=%d delete=%d:\n%s", list, del, strings.Join(names, "\n"))
+	}
+
+	cfg = bookstoreConfig(t, testserver.Faults{})
+	cfg.LastInTag = []string{"archiveAuthor"}
+	if out := runFake(t, cfg); !out.res.Failed || !strings.Contains(out.ft.output(), `Config.LastInTag: operation "archiveAuthor" from LastInTag does not exist`) {
+		t.Errorf("unknown operation:\n%s", out.ft.output())
+	}
+}
+
 func TestDeleteLast(t *testing.T) {
 	cfg := bookstoreConfig(t, testserver.Faults{})
 	cfg.DeleteLast = true

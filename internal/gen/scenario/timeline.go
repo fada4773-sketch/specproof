@@ -35,7 +35,10 @@ func Order(s *spec.Spec, run defaults.Run) ([]*cases.Case, *bind.Set, error) {
 	if err := cases.CheckOptions(s, opt); err != nil {
 		return nil, nil, fmt.Errorf("\"$apitest\": %w", err)
 	}
-	p, err := plan.Build(all, func(c *cases.Case) bool { return cases.Selected(c.Op, opt) }, binds, plan.Options{Tags: run.Tags, DeleteLast: run.DeleteLast})
+	if err := plan.CheckLastInTag(s, run.LastInTag); err != nil {
+		return nil, nil, fmt.Errorf("\"$apitest\": %w", err)
+	}
+	p, err := plan.Build(all, func(c *cases.Case) bool { return cases.Selected(c.Op, opt) }, binds, plan.Options{Tags: run.Tags, DeleteLast: run.DeleteLast, LastInTag: run.LastInTag})
 	if err != nil {
 		return nil, nil, err
 	}
