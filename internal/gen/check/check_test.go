@@ -114,3 +114,31 @@ paths:
 		t.Errorf("problems: %+v", r.Problems)
 	}
 }
+
+// Lint adds what apitest.Run warns about besides Run: the guessed binding
+// of {id}, every finding with its fix.
+func TestLint(t *testing.T) {
+	r := Lint(load(t, crew), nil)
+	kinds := map[string]int{}
+	for _, p := range r.Problems {
+		kinds[p.Kind]++
+		if p.Fix == "" {
+			t.Errorf("no fix: %+v", p)
+		}
+	}
+	if kinds[KindHeuristic] != 1 || kinds[KindNotBuildable] != 2 || kinds[KindExampleSchema] != 1 {
+		t.Errorf("kinds %v:\n%+v", kinds, r.Problems)
+	}
+	for _, p := range r.Problems {
+		if p.Kind == KindHeuristic && (p.Where != "paths./crews/{id}.get.parameters[id]" || !strings.Contains(p.Message, `parameter "id" is resolved heuristically from createCrew`) || !strings.Contains(p.Fix, "x-apitest-bind")) {
+			t.Errorf("heuristic: %+v", p)
+		}
+	}
+	explicit := strings.Replace(crew, "schema: { type: integer } }]\n      responses: { \"200\": { description: ok } }\n  /reports",
+		"schema: { type: integer }, x-apitest-bind: { from: createCrew, pointer: /id } }]\n      responses: { \"200\": { description: ok } }\n  /reports", 1)
+	for _, p := range Lint(load(t, explicit), nil).Problems {
+		if p.Kind == KindHeuristic {
+			t.Errorf("explicit binding still guessed: %+v", p)
+		}
+	}
+}

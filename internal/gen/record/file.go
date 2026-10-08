@@ -42,7 +42,8 @@ const header = `Examples for apitest, written by "apitest-gen record".
 Per tag the requests in the order they run, top to bottom. Each entry is
 "METHOD /path" (or the operationId) with:
   status:   new (send it), approved (sent, not sent again), repeat (send it
-            again), ignore (leave the entry out)
+            again), ignore (never sent; written with values that fit the
+            schema, generated where the entry has none)
   name:     example name, needed when an endpoint appears more than once
   path:     path parameters        query: query parameters
   body:     request body
@@ -86,7 +87,8 @@ type Step struct {
 	// Name is the example name; "" is the default example.
 	Name string
 	// Status says whether the request is sent: StatusNew and StatusRepeat
-	// are, StatusApproved is not again, StatusIgnore leaves the entry out.
+	// are, StatusApproved is not again, StatusIgnore never is; its examples
+	// fit the schema, generated where the entry has none.
 	// "" is an entry of an older file: new without answer, else approved.
 	Status string
 	Path   *yaml.Node // mapping of path parameters, nil without
@@ -349,7 +351,7 @@ const (
 	StatusNew      = "new"      // not sent yet: record sends it
 	StatusApproved = "approved" // sent and answered: not sent again
 	StatusRepeat   = "repeat"   // send it again on the next run
-	StatusIgnore   = "ignore"   // leave the entry out: not sent, not written
+	StatusIgnore   = "ignore"   // never sent; written with values that fit the schema
 )
 
 var statuses = []string{StatusNew, StatusApproved, StatusRepeat, StatusIgnore}

@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/fada4773-sketch/specproof/internal/gen/check"
 )
 
 const shop = "../../testdata/gen/shop.yaml"
@@ -565,7 +567,8 @@ func TestRecordCommand(t *testing.T) {
 		t.Fatalf("record: %d\n%s\n%s", code, out, errOut)
 	}
 	for _, want := range []string{"ENTRIES (requests to " + srv.URL + ")", "#01 POST /docks", "201 recorded", "(status new)", "9 entries: 9 recorded; 9 requests sent",
-		"FINDINGS", "ORDER", `"$apitest"`, "9 answers recorded and saved", "examples written"} {
+		"FINDINGS", "ORDER", `"$apitest"`, "9 answers recorded and saved", "examples written, 3 parameters got x-apitest-bind",
+		"BIND", "LINT (the written spec as apitest.Run sees it: ", "no findings: apitest.Run reports no warnings about the spec"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("record output misses %q:\n%s", want, out)
 		}
@@ -574,7 +577,7 @@ func TestRecordCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 	code, out, _ = cli("record", "-spec", spec, "-file", file, "-defaults", defs)
-	if code != 0 || strings.Contains(out, "FINDINGS") || !strings.Contains(out, "9 entries: 9 kept; 0 requests sent") || !strings.Contains(out, "every example is up to date") {
+	if code != 0 || strings.Contains(out, "FINDINGS") || !strings.Contains(out, "9 entries: 9 kept; 0 requests sent") || !strings.Contains(out, "every example is up to date") || !strings.Contains(out, "no findings") {
 		t.Errorf("offline run: %d\n%s", code, out)
 	}
 	fresh := httptest.NewServer(store())
@@ -607,5 +610,29 @@ func TestTable(t *testing.T) {
 	}
 	if got := (style{on: true}).paint(red, "x"); got != "\x1b[31mx\x1b[0m" {
 		t.Errorf("paint %q", got)
+	}
+}
+
+func TestLintFindings(t *testing.T) {
+	var b strings.Builder
+	lintFindings(&b, style{}, &check.Result{Cases: 4, Ready: 3, Problems: []check.Problem{
+		{Kind: check.KindHeuristic, Where: "paths./moons/{moonName}.get.parameters[moonName]", Message: `parameter "moonName" is resolved heuristically`, Fix: "declare x-apitest-bind"},
+		{Kind: check.KindNotBuildable, Where: "Moon/getMoon/default", Message: "no value for moonName", Fix: "give the case a value"},
+		{Kind: check.KindHeuristic, Where: "paths./planets/{planetId}.get.parameters[planetId]", Message: "guessed"},
+	}})
+	want := `
+LINT (the written spec as apitest.Run sees it: 3 of 4 cases can be sent)
+   1. HEURISTIC  paths./moons/{moonName}.get.parameters[moonName]
+      parameter "moonName" is resolved heuristically
+      fix: declare x-apitest-bind
+   2. NOT_BUILDABLE  Moon/getMoon/default
+      no value for moonName
+      fix: give the case a value
+   3. HEURISTIC  paths./planets/{planetId}.get.parameters[planetId]
+      guessed
+  3 findings: 2 HEURISTIC, 1 NOT_BUILDABLE
+`
+	if b.String() != want {
+		t.Errorf("lint:\n%s\nwant:\n%s", b.String(), want)
 	}
 }

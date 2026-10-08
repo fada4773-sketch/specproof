@@ -16,6 +16,25 @@ contain breaking changes, which are listed here.
 
 ### Features
 
+- `Config.CaseInsensitive`: the example comparison (and the read-back after
+  writes) ignores the case of strings and field names; an exact field name
+  wins, `IgnoreFields` match in any case too. The schema check stays
+  case-sensitive.
+- `apitest-gen record`: entries with `status: ignore` are still never sent,
+  but they are now written into the spec with values that fit the schema:
+  their own values and stored answer where they fit, the rest generated
+  (`-seed`). A generated answer gets `x-apitest-compare: schema` with the
+  comment `apitest-gen record: generated answer`, removed again once the
+  entry has a real answer. The status stays `ignore`. Note `GENERATED`.
+- `apitest-gen record`: every path parameter apitest would bind by guessing
+  is written as `x-apitest-bind` (source from the record file's `save`, or
+  the guess checked against the stored answer), once at a shared parameter;
+  note `BIND`. apitest no longer warns "resolved heuristically" for them.
+- `apitest-gen record`: after writing, a lint of the written spec (section
+  `LINT`) lists what `apitest.Run` would report before sending a request
+  (`NOT_BUILDABLE`, `EXAMPLE_SCHEMA`, `HEURISTIC`, `BINDING`,
+  `VALIDATION`, `AUTH`), each with place, message and fix.
+
 - `apitest-gen record` is rebuilt around one file, `examples.record.yaml`,
   the one place the examples live. Per tag it lists the requests in the
   order they run, each with its path and query parameters, its body, the
@@ -49,7 +68,7 @@ contain breaking changes, which are listed here.
 - `apitest-gen record`: every entry has a `status`. `new` and `repeat` are
   sent; a request that went through becomes `approved` and is never sent
   again, its stored answer and request give the values later entries need;
-  `ignore` leaves the entry out (not sent, not written into the spec). The
+  `ignore` is never sent (see above for how it is written). The
   entries before one to record are no longer sent again, so nothing is
   created twice; `DIFFERS` is gone. An approved answer that no longer fits
   the schema is `RESPONSE_STALE` (set `repeat`), an approved entry without

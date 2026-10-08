@@ -178,7 +178,7 @@ path of the spec, with its `{parameters}`.
 | `new` | Not sent yet. `record` sends it, stores the answer and sets `approved`. |
 | `approved` | Sent and answered. Never sent again; its stored answer gives the values later entries need and becomes the example. |
 | `repeat` | Send it again on the next run, store the new answer, then `approved`. |
-| `ignore` | Leave the entry out: it is neither sent nor written into the spec. A stored answer still gives its saved values. |
+| `ignore` | Never sent. apitest still runs the case, so the entry is written into the spec with values that fit the schema: its own values and stored answer where they fit, the rest generated from the schema (see [Ignored entries](#ignored-entries)). The status stays `ignore`, the record file is not changed. A stored answer still gives its saved values. |
 
 `-analyse` gives every new entry `status: new`, and every entry of the file
 without status one: `approved` if it has an answer, else `new`. A request
@@ -346,7 +346,7 @@ of these states:
 | `recorded` | Status `new` or `repeat`, or named by `-refresh`, and the instance answered 2xx. | The answer is stored, the status becomes `approved`. |
 | `kept` | Status `approved`. | Nothing is sent; the stored answer is written into the spec. |
 | `stale` | Status `approved`, but the stored answer no longer fits the schema. | Reported as `RESPONSE_STALE`; the old answer is still written. Set `status: repeat` to send it again. |
-| `ignored` | Status `ignore`. | Neither sent nor written. |
+| `ignored` | Status `ignore`. | Not sent; written with values that fit the schema, generated where needed (`GENERATED`). |
 | `failed` | The instance rejected the request (status other than 2xx, or no answer). | No more requests are sent; see below. |
 | `not sent` | An entry to send after a failed one. | Nothing; its status stays. |
 
@@ -370,10 +370,62 @@ those entries.
 | `response.body` | `example` of the response with the recorded status |
 | `ignore` | `x-apitest-ignore` of the operation, merged with the fields already listed there |
 | `filter` | `x-apitest-compare-unordered: true` on the response |
+| a path parameter apitest would only guess | `x-apitest-bind` of the parameter (see [Bindings](#bindings)) |
 
 The placeholders are filled in with the saved values of the stored answers.
 The spec therefore holds plain values (`dockId: 1`); apitest takes the real
 value from the earlier answer anyway, through its bindings.
+
+### Ignored entries
+
+An entry with `status: ignore` is never sent, but apitest runs its case,
+so it needs examples that fit the schema. `record` writes:
+
+- each path and query parameter: the value of the entry if it fits its
+  schema and has no open placeholder, else a generated one; required query
+  parameters without value get one too;
+- the body: the body of the entry if it fits, else a generated one (without
+  readOnly fields) if the body is required or the entry has one;
+- the answer: the stored answer if the entry has one that fits the schema,
+  else a generated answer (without writeOnly fields) at the lowest
+  documented 2xx.
+
+A generated answer cannot match what the instance returns, so that
+response gets `x-apitest-compare: schema # apitest-gen record: generated
+answer`: apitest checks it against the schema only. When the entry is
+recorded later (`status: new`), its answer replaces the generated one and
+`record` removes that extension again; one without the comment is left
+alone. The generated values depend on `-seed` only, so every run writes the
+same ones. Each ignored entry with generated values is listed as
+`GENERATED`, with what was generated and what could not be.
+
+### Bindings
+
+apitest binds a path parameter to an earlier answer through `x-apitest-bind`,
+an OpenAPI link, or a guess (`parameter "dockId" is resolved heuristically
+from createDock (body /id); make it explicit with x-apitest-bind or links`).
+`record` writes every guess as `x-apitest-bind`, so apitest no longer warns
+and a later change of the spec cannot change the guess:
+
+```yaml
+components:
+  parameters:
+    DockId:
+      name: dockId
+      in: path
+      x-apitest-bind: {from: createDock, pointer: /id}
+```
+
+The source is the `save` of the record file when the same operation saves
+the value (`header Location`, `request /code` become `header: Location`,
+`pointer: /code, source: request`). Otherwise it is the guess, checked
+against the stored answer of the producer: an explicit binding reads only
+that one place, while the guess also tries the `Location` header and the
+request body, so `record` takes the place the stored answer has the value
+at. If the record file takes the value from another operation than apitest
+guesses, the guess is kept and a `BIND` note shows both. A parameter several
+operations share (at the path, or a `$ref`) gets the binding once when all
+of them take the value from the same place, else each operation its own copy.
 
 **Named entries** (an endpoint that appears more than once) are written as
 `examples: {<name>: {value: …}}` at each of those places. apitest makes one case per
@@ -489,9 +541,12 @@ ENTRIES (requests to http://localhost:8080/api)
 FINDINGS
   ...
 
+LINT (the written spec as apitest.Run sees it: 12 of 12 cases can be sent)
+  no findings: apitest.Run reports no warnings about the spec
+
 FILES
   examples.record.yaml: 2 answers recorded and saved
-  openapi.yaml: 4 examples written
+  openapi.yaml: 4 examples written, 3 parameters got x-apitest-bind
 ```
 
 ## Findings
@@ -520,6 +575,34 @@ request the spec stays unchanged. Notes (`NOTE`) are information.
 | `NOT_RUN` | note | apitest does not run the case of an entry (`ExcludeOps`, `IncludeOps`, `Tags`, `x-apitest-skip`); its request still shapes the data of later entries. | Usually nothing. |
 | `NOT_IN_FILE` | note | apitest runs cases the file has no entry for; they keep the examples of the spec. | `record -analyse` adds them. |
 | `SKIPPED` | note | `-analyse` left out a case apitest cannot send. | See the reason. |
+| `GENERATED` | note | An ignored entry got generated values (or some could not be generated). | Nothing; set the values in the entry to choose them. |
+| `BIND` | note | A guessed binding was written as `x-apitest-bind`; or the record file takes the value from another operation than apitest; or the stored answer has no value where apitest guesses. | Check the source; declare `x-apitest-bind` yourself where it is wrong. |
+
+## Lint
+
+After the examples are in place, `record` loads the written spec the way
+apitest does and lists what `apitest.Run` would report about it before it
+sends a request, each finding with its place and how to fix it:
+
+```
+── LINT (the written spec as apitest.Run sees it: 11 of 12 cases can be sent)
+   1. HEURISTIC  paths./moons/{moonName}.get.parameters[moonName]
+      parameter "moonName" is resolved heuristically from createMoon (request body /name); make it explicit with x-apitest-bind or links
+      fix: declare where the value comes from: x-apitest-bind: {from: <operationId>, pointer: /field} …
+  1 findings: 1 HEURISTIC
+```
+
+| Kind | Meaning |
+|---|---|
+| `NOT_BUILDABLE` | apitest cannot send the case: a value is missing. |
+| `EXAMPLE_SCHEMA` | An example violates its schema. |
+| `HEURISTIC` | apitest only guesses where a parameter comes from (only for operations without entry, since `record` writes the others). |
+| `BINDING` | An `x-apitest-bind` or a link cannot be used. |
+| `VALIDATION` | The spec breaks a rule of OpenAPI. |
+| `AUTH` | An operation with security documents neither 401 nor 403. |
+
+The lint does not change the exit code: the spec is written already.
+`apitest-gen check` remains the check for CI.
 
 ## Common situations
 
@@ -579,8 +662,9 @@ record it again. If it still fits (a new optional field), set `repeat` to
 show the new field.
 
 **An endpoint you do not want sent** (it sends mail, it deletes something
-shared): `status: ignore`. It is neither sent nor written; the spec keeps
-its own examples there.
+shared): `status: ignore`. It is never sent; the spec gets examples that fit
+the schema, and a generated answer is compared by schema only (see
+[Ignored entries](#ignored-entries)).
 
 ## Limits
 

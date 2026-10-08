@@ -441,3 +441,45 @@ components:
 		}
 	}
 }
+
+// Config.CaseInsensitive accepts an answer that differs from the example in
+// the case of its strings and field names only; without it the case fails.
+func TestCaseInsensitive(t *testing.T) {
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "moons.yaml")
+	err := os.WriteFile(specPath, []byte(`
+openapi: 3.0.3
+info: { title: Moons, version: "1" }
+paths:
+  /moons/current:
+    get:
+      operationId: getMoon
+      tags: [Moon]
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  name: { type: string }
+                  planet: { type: string }
+              example: { name: Luna, planet: Earth }
+`), 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"name":"LUNA","Planet":"earth"}`))
+	})
+	cfg := Config{SpecPath: specPath, Handler: handler, DisableReports: true}
+	if out := runFake(t, cfg); !out.res.Failed || out.res.Cases[0].Status != StatusExampleMismatch {
+		t.Fatalf("case-sensitive run passed:\n%s", out.ft.output())
+	}
+	cfg.CaseInsensitive = true
+	if out := runFake(t, cfg); out.res.Failed {
+		t.Fatalf("case-insensitive run failed:\n%s", out.ft.output())
+	}
+}

@@ -55,6 +55,10 @@ type Options struct {
 	// Unordered compares all arrays independent of order (FR-CMP-07). Single
 	// arrays can be marked with x-apitest-compare-unordered in the schema.
 	Unordered bool
+	// IgnoreCase compares strings and field names without regard to case:
+	// "Nord" matches "nord", a field "Name" matches "name". An exact match of
+	// a field name wins.
+	IgnoreCase bool
 }
 
 // Values compares expected with actual. Both must be in canonical form
@@ -108,13 +112,17 @@ func (c *comparer) compare(ptr string, exp, act any, s *openapi3.Schema, present
 			if c.ignored(child, k) {
 				continue
 			}
-			av, ok := a[k]
-			c.compare(child, e[k], av, property(s, k), ok)
+			ak, ok := c.key(a, k)
+			ps := property(s, k)
+			if ps == nil && ak != k {
+				ps = property(s, ak)
+			}
+			c.compare(child, e[k], a[ak], ps, ok)
 		}
 		if c.opt.Mode == ModeExact {
 			for _, k := range sortedKeys(a) {
 				child := ptr + "/" + escape(k)
-				if _, ok := e[k]; ok || c.ignored(child, k) {
+				if _, ok := c.key(e, k); ok || c.ignored(child, k) {
 					continue
 				}
 				c.diffs = append(c.diffs, Diff{Pointer: child, Expected: Missing, Actual: Render(a[k]), Note: "extra field"})
@@ -148,10 +156,31 @@ func (c *comparer) compare(ptr string, exp, act any, s *openapi3.Schema, present
 			c.compare(child, e[i], a[i], is, true)
 		}
 	default:
-		if !Equal(exp, act) {
+		if !Equal(exp, act) && !c.foldEqual(exp, act) {
 			c.add(ptr, exp, act, true, "")
 		}
 	}
+}
+
+// key finds field k in m: by its name, with IgnoreCase also in another case.
+func (c *comparer) key(m map[string]any, k string) (string, bool) {
+	if _, ok := m[k]; ok || !c.opt.IgnoreCase {
+		return k, ok
+	}
+	for _, mk := range sortedKeys(m) {
+		if strings.EqualFold(mk, k) {
+			return mk, true
+		}
+	}
+	return k, false
+}
+
+// foldEqual reports whether two strings differ in case only, with
+// IgnoreCase.
+func (c *comparer) foldEqual(exp, act any) bool {
+	e, ok1 := exp.(string)
+	a, ok2 := act.(string)
+	return c.opt.IgnoreCase && ok1 && ok2 && strings.EqualFold(e, a)
 }
 
 // compareUnordered matches every expected element with a different actual
@@ -195,24 +224,24 @@ func unordered(s *openapi3.Schema) bool {
 func (c *comparer) ignored(ptr, name string) bool {
 	for _, ig := range c.opt.Ignore {
 		if strings.HasPrefix(ig, "/") {
-			if pointerMatch(ig, ptr) {
+			if pointerMatch(ig, ptr, c.opt.IgnoreCase) {
 				return true
 			}
-		} else if name != "" && ig == name {
+		} else if name != "" && (ig == name || c.opt.IgnoreCase && strings.EqualFold(ig, name)) {
 			return true
 		}
 	}
 	return false
 }
 
-func pointerMatch(pattern, ptr string) bool {
+func pointerMatch(pattern, ptr string, fold bool) bool {
 	pp := strings.Split(pattern, "/")
 	ap := strings.Split(ptr, "/")
 	if len(pp) != len(ap) {
 		return false
 	}
 	for i := range pp {
-		if pp[i] != "*" && pp[i] != ap[i] {
+		if pp[i] != "*" && pp[i] != ap[i] && (!fold || !strings.EqualFold(pp[i], ap[i])) {
 			return false
 		}
 	}

@@ -29,13 +29,16 @@ type Input struct {
 	// (except ignore): "all", a section or tag, an operationId,
 	// "METHOD /path" or "operationId/name".
 	Refresh []string
+	// Seed makes the values generated for ignored entries reproducible.
+	Seed uint64
 }
 
 // Run brings the record file and the spec together. It checks the file
 // against the spec; sends, in the order of the file, the entries with
 // status new or repeat (and those -refresh names), stores their answers
-// and sets them approved; then it writes every entry that is not ignored
-// into the spec as examples. Approved entries are never sent again: the
+// and sets them approved; then it writes every entry into the spec as
+// examples, an ignored one with values that fit the schema where its own
+// do not (it is never sent). Approved entries are never sent again: the
 // values later entries need come from their stored answers and requests.
 func Run(ctx context.Context, in Input) (*Result, error) {
 	res := &Result{}
@@ -99,8 +102,9 @@ func Run(ctx context.Context, in Input) (*Result, error) {
 	if !send(ctx, in, res, needs, v) {
 		return res, nil
 	}
-	w := newWriter(in.Doc, res)
+	w := newWriter(in.Doc, res, in.Seed)
 	w.write(f, v)
+	w.explicit(in.Spec, f)
 	res.SpecChanged = w.changed
 	return res, nil
 }

@@ -17,6 +17,7 @@ import (
 type writer struct {
 	doc     *yamldoc.Doc
 	res     *Result
+	seed    uint64 // for the values of ignored entries
 	changed bool
 	// done are the examples written per place and example name, to find a
 	// place several operations share and need different examples at
@@ -28,12 +29,12 @@ type written struct {
 	by    string
 }
 
-func newWriter(doc *yamldoc.Doc, res *Result) *writer {
-	return &writer{doc: doc, res: res, done: map[*yaml.Node]map[string]written{}}
+func newWriter(doc *yamldoc.Doc, res *Result, seed uint64) *writer {
+	return &writer{doc: doc, res: res, seed: seed, done: map[*yaml.Node]map[string]written{}}
 }
 
-// write writes every step whose answer is stored, with the saved values
-// of the stored answers filled in.
+// write writes every step, with the saved values of the stored answers
+// filled in; an ignored step gets values that fit the schema (ignored).
 func (w *writer) write(f *File, v *spec.Validator) {
 	count := map[string]int{}
 	for _, st := range f.Steps {
@@ -46,12 +47,10 @@ func (w *writer) write(f *File, v *spec.Validator) {
 		named := st.Name != "" || count[st.Op.ID] > 1
 		r, _ := st.request(vars)
 		if st.status() == StatusIgnore {
-			if st.Response != nil {
-				st.saveFrom(st.Response, nil, r, vars)
-			}
-			continue
+			w.ignored(st, r, named, v)
+		} else {
+			w.step(st, r, st.Response, named, v)
 		}
-		w.step(st, r, named, v)
 		if st.Response != nil {
 			st.saveFrom(st.Response, nil, r, vars)
 		}
@@ -71,9 +70,9 @@ func (w *writer) write(f *File, v *spec.Validator) {
 	}
 }
 
-// step writes the examples of one step: its parameters, its body and its
-// answer.
-func (w *writer) step(st *Step, r *request, named bool, v *spec.Validator) {
+// step writes the examples of one step: its parameters, its body and the
+// answer resp (nil: none).
+func (w *writer) step(st *Step, r *request, resp *Response, named bool, v *spec.Validator) {
 	op := st.Op
 	name := st.Example()
 	for _, in := range []string{openapi3.ParameterInPath, openapi3.ParameterInQuery} {
@@ -90,30 +89,33 @@ func (w *writer) step(st *Step, r *request, named bool, v *spec.Validator) {
 			w.place(st, pl, name, r.bodyNode, named, func() *place { return w.ownRequest(op) })
 		}
 	}
-	if st.Response == nil {
+	if resp == nil {
 		return
 	}
-	code := responseCode(op, st.Response.Status)
+	code := responseCode(op, resp.Status)
 	if code == "" {
-		w.res.problem(CodeStatus, st.where(), "the answer has status %d, which the spec does not document; document it or check the request", st.Response.Status)
+		w.res.problem(CodeStatus, st.where(), "the answer has status %d, which the spec does not document; document it or check the request", resp.Status)
 		return
 	}
 	if !named && code != lowestSuccess(op) {
 		w.res.problem(CodeStatus, st.where(), "the instance answers %d, but for an entry without name apitest expects the lowest documented 2xx (%s); give the entry a \"name\" or fix the spec",
-			st.Response.Status, lowestSuccess(op))
+			resp.Status, lowestSuccess(op))
 		return
 	}
-	if st.Response.Body == nil {
+	if resp.Body == nil {
 		return
 	}
 	pl := w.response(op, code)
 	if pl == nil {
 		return
 	}
-	if msg := firstViolation(v, pl.schema.Value, decode(st.Response.Body), spec.ModeResponse); msg != "" {
+	if msg := firstViolation(v, pl.schema.Value, decode(resp.Body), spec.ModeResponse); msg != "" {
 		w.res.note(CodeSchema, st.where(), "the stored answer violates the schema of the response %s (%s); apitest will report it", code, msg)
 	}
-	w.place(st, pl, name, st.Response.Body, named, func() *place { return w.ownResponse(op, code) })
+	w.place(st, pl, name, resp.Body, named, func() *place { return w.ownResponse(op, code) })
+	if resp == st.Response {
+		w.uncompareSchema(op, code)
+	}
 	if st.Filter != nil {
 		w.unordered(st, code)
 	}
@@ -124,12 +126,10 @@ func (w *writer) step(st *Step, r *request, named bool, v *spec.Validator) {
 // and apitest finds them wherever they are instead of comparing by position.
 // A response other operations share gets a copy first.
 func (w *writer) unordered(st *Step, code string) {
-	responses := yamldoc.Get(w.operation(st.Op), "responses")
-	if yamldoc.Ref(yamldoc.Get(responses, code)) != "" && !w.inline(responses, code) {
-		w.res.problem(CodeShared, st.where(), "the response %s cannot get its own copy for x-apitest-compare-unordered", code)
+	r := w.ownedResponse(st, code, "x-apitest-compare-unordered")
+	if r == nil {
 		return
 	}
-	r := yamldoc.Get(responses, code)
 	if n := yamldoc.Get(r, "x-apitest-compare-unordered"); n != nil && n.Value == "true" {
 		return
 	}

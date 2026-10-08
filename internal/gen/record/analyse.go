@@ -637,11 +637,11 @@ func (a *analyser) generate(ref *openapi3.SchemaRef, path string) (any, bool) {
 	if !r.OK {
 		return nil, false
 	}
-	return writable(spec.Normalize(r.Value), ref.Value, 0), true
+	return fitMode(spec.Normalize(r.Value), ref.Value, spec.ModeRequest), true
 }
 
-// writable removes the readOnly fields of a value.
-func writable(v any, s *openapi3.Schema, depth int) any {
+// strip removes the fields of a value whose schema drop names.
+func strip(v any, s *openapi3.Schema, drop func(*openapi3.Schema) bool, depth int) any {
 	if s == nil || depth > 20 {
 		return v
 	}
@@ -653,16 +653,16 @@ func writable(v any, s *openapi3.Schema, depth int) any {
 			if p == nil || p.Value == nil {
 				continue
 			}
-			if p.Value.ReadOnly {
+			if drop(p.Value) {
 				delete(x, k)
 				continue
 			}
-			x[k] = writable(c, p.Value, depth+1)
+			x[k] = strip(c, p.Value, drop, depth+1)
 		}
 	case []any:
 		if s.Items != nil {
 			for i, c := range x {
-				x[i] = writable(c, s.Items.Value, depth+1)
+				x[i] = strip(c, s.Items.Value, drop, depth+1)
 			}
 		}
 	}

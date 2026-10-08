@@ -102,6 +102,12 @@ type Config struct {
 	IgnoreFields []string
 	// CompareMode is the default comparison mode; empty means CompareSubset.
 	CompareMode CompareMode
+	// CaseInsensitive compares the response with the example, and the
+	// stored record with the body sent, without regard to case: the string
+	// "Nord" matches "nord" and the field "Name" matches "name"; an exact
+	// field name wins. It applies to IgnoreFields too. The schema check
+	// (enum, pattern, required fields) stays case-sensitive.
+	CaseInsensitive bool
 
 	// Strict makes NOT_BUILDABLE cases and expired deviations fail the test.
 	// apitest does not detect CI environments; the project decides.

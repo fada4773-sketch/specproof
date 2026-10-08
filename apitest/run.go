@@ -553,10 +553,11 @@ func (r *runner) checkResponse(o *outcome) {
 	}
 	if c.Expect.HasExample && mode != compare.ModeSchema && isJSON {
 		diffs := compare.Values(c.Expect.Example, decoded, compare.Options{
-			Mode:      mode,
-			Ignore:    r.ignore(c),
-			Schema:    compare.Schema(c.Expect.Response, resp.Header.Get("Content-Type")),
-			Unordered: c.Unordered,
+			Mode:       mode,
+			Ignore:     r.ignore(c),
+			Schema:     compare.Schema(c.Expect.Response, resp.Header.Get("Content-Type")),
+			Unordered:  c.Unordered,
+			IgnoreCase: r.cfg.CaseInsensitive,
 		})
 		if len(diffs) > 0 {
 			o.status, o.diffs = StatusExampleMismatch, diffs

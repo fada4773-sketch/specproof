@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,6 +18,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/fada4773-sketch/specproof/apitest"
+	"github.com/fada4773-sketch/specproof/internal/bind"
 	"github.com/fada4773-sketch/specproof/internal/cases"
 	"github.com/fada4773-sketch/specproof/internal/gen/defaults"
 	"github.com/fada4773-sketch/specproof/internal/gen/discover"
@@ -381,7 +383,7 @@ func TestRecordWritesStoredAnswers(t *testing.T) {
 
 // Only entries with status new or repeat are sent; a recorded one becomes
 // approved and is not sent again, its values come from the stored answer.
-// An ignored entry is neither sent nor written into the spec.
+// An ignored entry is not sent; its stored answer, which fits, is written.
 func TestRecordStatus(t *testing.T) {
 	specPath, filePath := workspace(t)
 	analyse(t, specPath, filePath)
@@ -421,14 +423,17 @@ func TestRecordStatus(t *testing.T) {
 	if !strings.Contains(text, "  - GET /ships/{shipId}:\n      status: approved\n") || !strings.Contains(text, "  - GET /docks:\n      status: ignore\n") {
 		t.Errorf("statuses:\n%s", text)
 	}
-	// an ignored entry is not written into the spec
+	// an ignored entry with a stored answer that fits is written as it is
 	b, _ := os.ReadFile(specFile)
 	if err := os.WriteFile(specPath, b, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	record(t, specPath, filePath, nil)
-	if strings.Contains(read(t, specPath), "- {capacity: 14, id: 1, name: How Life}") {
-		t.Errorf("the ignored list has an example:\n%s", read(t, specPath))
+	res = record(t, specPath, filePath, nil)
+	if got := read(t, specPath); !strings.Contains(got, "              example:\n                - {capacity: 19, id: 1, name: Where Team}\n") || strings.Contains(got, generatedMark) {
+		t.Errorf("the ignored list has not its stored answer:\n%s", got)
+	}
+	if strings.Contains(notes(res.Notes), CodeGenerated) {
+		t.Errorf("notes:\n%s", notes(res.Notes))
 	}
 	// approved without answer
 	edit(t, filePath, func(f *File) { yamldoc.Delete(step(t, f, "GET /ships/{shipId}").node, keyResponse) })
@@ -1231,5 +1236,147 @@ func TestFieldPointer(t *testing.T) {
 	}
 	if escapePointer("a/b~c") != "a~1b~0c" {
 		t.Error("escapePointer")
+	}
+}
+
+// An ignored entry is never sent, but apitest runs its case: its values
+// that fit stay, the others are generated from the schema, and a generated
+// answer makes apitest compare that response with the schema only. The
+// entry keeps status ignore and no answer; once it is recorded, its answer
+// replaces the generated one and x-apitest-compare goes again.
+func TestRecordIgnoredEntries(t *testing.T) {
+	specPath, filePath := workspace(t)
+	analyse(t, specPath, filePath)
+	edit(t, filePath, func(f *File) {
+		step(t, f, "GET /docks").setStatus(StatusIgnore)
+		bk := step(t, f, "GET /bookings/{bookingId}")
+		bk.setStatus(StatusIgnore)
+		// a value that violates the schema is replaced
+		_ = yamldoc.SetNode(bk.node, keyPath, valueNode(map[string]any{"bookingId": "first"}))
+		// a missing body is generated
+		yamldoc.Delete(step(t, f, "PUT /docks/{dockId}").node, keyBody)
+		step(t, f, "PUT /docks/{dockId}").setStatus(StatusIgnore)
+	})
+	sp := newStarport()
+	srv := httptest.NewServer(sp)
+	defer srv.Close()
+	res := record(t, specPath, filePath, srv)
+	if len(res.Problems) > 0 {
+		t.Fatalf("problems:\n%s", notes(res.Problems))
+	}
+	if res.Sent != 6 || slices.ContainsFunc(sp.sent, func(s string) bool { return s == "GET /docks" || strings.HasPrefix(s, "PUT") }) {
+		t.Errorf("sent %d: %v", res.Sent, sp.sent)
+	}
+	got := notes(res.Notes)
+	for _, want := range []string{
+		"GENERATED line 27 GET /docks: status ignore: not sent; generated from the schema: response 200 (apitest checks it against the schema only)",
+		"GET /bookings/{bookingId}: status ignore: not sent; generated from the schema: path bookingId, response 200",
+		"PUT /docks/{dockId}: status ignore: not sent; generated from the schema: body, response 200",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("notes miss %q:\n%s", want, got)
+		}
+	}
+	text := read(t, specPath)
+	if n := strings.Count(text, "x-apitest-compare: schema # "+generatedMark); n != 3 {
+		t.Errorf("%d responses compared by schema only, want 3:\n%s", n, text)
+	}
+	file := read(t, filePath)
+	for _, key := range []string{"GET /docks", "GET /bookings/{bookingId}", "PUT /docks/{dockId}"} {
+		st := step(t, mustLoad(t, filePath), key)
+		if st.Status != StatusIgnore || st.Response != nil {
+			t.Errorf("%s: status %q, answer %v:\n%s", key, st.Status, st.Response, file)
+		}
+	}
+	// the examples fit the schema and apitest passes a new instance
+	s := loadSpec(t, specPath)
+	for _, f := range s.Findings {
+		t.Errorf("finding %s %s: %s", f.Kind, f.Where, f.Message)
+	}
+	fresh := httptest.NewServer(newStarport())
+	defer fresh.Close()
+	apitest.Run(t, apitest.Config{SpecPath: specPath, BaseURL: fresh.URL, Tags: []string{"Dock", "Ship", "Booking"}, DeleteLast: true, DisableReports: true})
+
+	// recorded now: the answer replaces the generated one
+	edit(t, filePath, func(f *File) { step(t, f, "GET /docks").setStatus(StatusNew) })
+	srv2 := httptest.NewServer(newStarport())
+	defer srv2.Close()
+	if res := record(t, specPath, filePath, srv2, "all"); len(res.Problems) > 0 {
+		t.Fatalf("problems:\n%s", notes(res.Problems))
+	}
+	text = read(t, specPath)
+	if strings.Count(text, generatedMark) != 2 || !strings.Contains(text, "- {capacity: 19, id: 1, name: Where Team}\n  /docks/{dockId}:") {
+		t.Errorf("the recorded list does not replace the generated one:\n%s", text)
+	}
+}
+
+// The bindings apitest only guesses are written as x-apitest-bind, once at
+// a parameter all its operations share; apitest then has no guess left.
+func TestRecordWritesBindings(t *testing.T) {
+	specPath, filePath := workspace(t)
+	if set, err := bind.Resolve(loadSpec(t, specPath)); err != nil || len(set.Findings) != 5 {
+		t.Fatalf("heuristic bindings before: %v %+v", err, set)
+	}
+	analyse(t, specPath, filePath)
+	srv := httptest.NewServer(newStarport())
+	defer srv.Close()
+	res := record(t, specPath, filePath, srv)
+	if len(res.Problems) > 0 || res.Binds != 3 {
+		t.Fatalf("binds %d, problems:\n%s", res.Binds, notes(res.Problems))
+	}
+	text := read(t, specPath)
+	for _, want := range []string{
+		"      example: 1\n      x-apitest-bind: {from: createDock, pointer: /id}\n  responses:",
+		"x-apitest-bind: {from: createShip, pointer: /id}",
+		"x-apitest-bind: {from: createBooking, pointer: /id}",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("spec misses %q:\n%s", want, text)
+		}
+	}
+	if !strings.Contains(notes(res.Notes), "BIND PUT /docks/{dockId}: {dockId} takes its value from createDock (body /id); written as x-apitest-bind") {
+		t.Errorf("notes:\n%s", notes(res.Notes))
+	}
+	set, err := bind.Resolve(loadSpec(t, specPath))
+	if err != nil || len(set.Findings) != 0 {
+		t.Errorf("findings after: %v %+v", err, set.Findings)
+	}
+	// a second run writes nothing
+	if res := record(t, specPath, filePath, nil); res.Binds != 0 || res.SpecChanged {
+		t.Errorf("second run: %d binds, changed %v", res.Binds, res.SpecChanged)
+	}
+}
+
+// A guess the stored answer contradicts is not written; with a Location
+// header instead of a body, the binding reads the header.
+func TestBindSource(t *testing.T) {
+	specPath, filePath := workspace(t)
+	analyse(t, specPath, filePath)
+	sp := newStarport()
+	sp.location = true
+	srv := httptest.NewServer(sp)
+	defer srv.Close()
+	edit(t, filePath, func(f *File) {
+		ship := step(t, f, "POST /ships")
+		_ = yamldoc.SetNode(ship.node, keySave, valueNode(map[string]any{"shipId": "header Location"}))
+	})
+	res := record(t, specPath, filePath, srv)
+	if len(res.Problems) > 0 {
+		t.Fatalf("problems:\n%s", notes(res.Problems))
+	}
+	if !strings.Contains(read(t, specPath), "x-apitest-bind: {from: createShip, header: Location}") {
+		t.Errorf("spec:\n%s", read(t, specPath))
+	}
+	for _, c := range []struct{ from, want string }{
+		{"/id", "body /id"}, {"header Location", "header Location"}, {"request /code", "request body /code"},
+	} {
+		if src, ok := saveSource(c.from); !ok || src.String() != c.want {
+			t.Errorf("saveSource(%q) = %v %v", c.from, src, ok)
+		}
+	}
+	for _, from := range []string{"/", "request /", "request path dockId"} {
+		if _, ok := saveSource(from); ok {
+			t.Errorf("saveSource(%q) converts", from)
+		}
 	}
 }

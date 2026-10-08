@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/fada4773-sketch/specproof/internal/gen/check"
 	"github.com/fada4773-sketch/specproof/internal/gen/defaults"
 	"github.com/fada4773-sketch/specproof/internal/gen/record"
 	"github.com/fada4773-sketch/specproof/internal/gen/yamldoc"
@@ -42,7 +43,7 @@ func recordCommand(o *options, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	in := record.Input{Spec: s, Doc: doc, File: f}
+	in := record.Input{Spec: s, Doc: doc, File: f, Seed: o.seed}
 	if o.refresh != "" {
 		in.Refresh = strings.Split(o.refresh, ",")
 	}
@@ -64,6 +65,7 @@ func recordCommand(o *options, out io.Writer) error {
 		target = o.out
 	}
 	var orderNotes []record.Note
+	var lint *check.Result
 	written := false
 	if len(res.Problems) == 0 {
 		tmp, staged, err := stageSpec(doc, target)
@@ -74,6 +76,11 @@ func recordCommand(o *options, out io.Writer) error {
 		if orderNotes, err = record.CheckOrder(staged, f, run); err != nil {
 			return err
 		}
+		defs, err := defaults.LoadAll(o.defaults)
+		if err != nil {
+			return err
+		}
+		lint = check.Lint(staged, defs.Params())
 		if !o.dryRun && (res.SpecChanged || o.out != "") {
 			if err := commitSpec(tmp, target); err != nil {
 				return err
@@ -83,6 +90,9 @@ func recordCommand(o *options, out io.Writer) error {
 	}
 	notes := append(append([]record.Note{}, res.Notes...), orderNotes...)
 	recordFindings(out, st, res.Problems, notes)
+	if lint != nil {
+		lintFindings(out, st, lint)
+	}
 	section(out, st, "FILES")
 	if res.FileChanged {
 		if o.dryRun {
@@ -101,9 +111,9 @@ func recordCommand(o *options, out io.Writer) error {
 		fmt.Fprintf(out, "  %s: unchanged, the problems above come first\n", target)
 		return fmt.Errorf("%d problems", len(res.Problems))
 	case o.dryRun:
-		fmt.Fprintf(out, "  %s: %d examples would change (dry run)\n", target, res.Examples)
+		fmt.Fprintf(out, "  %s: %d examples and %d x-apitest-bind would change (dry run)\n", target, res.Examples, res.Binds)
 	case written:
-		fmt.Fprintf(out, "  %s: %d examples written\n", target, res.Examples)
+		fmt.Fprintf(out, "  %s: %d examples written, %d parameters got x-apitest-bind\n", target, res.Examples, res.Binds)
 	default:
 		fmt.Fprintf(out, "  %s: unchanged, every example is up to date\n", target)
 	}
@@ -235,4 +245,34 @@ func recordFindings(out io.Writer, st style, problems, notes []record.Note) {
 		rows = append(rows, []cell{{"NOTE", yellow}, {n.Code, yellow}, {n.Where, bold}, {n.Message, ""}})
 	}
 	table(out, st, []string{"", "CODE", "WHERE", "MESSAGE"}, rows)
+}
+
+// lintFindings writes what apitest.Run would report about the written
+// spec before it sends a request, each finding with its place and fix.
+func lintFindings(out io.Writer, st style, r *check.Result) {
+	section(out, st, fmt.Sprintf("LINT (the written spec as apitest.Run sees it: %d of %d cases can be sent)", r.Ready, r.Cases))
+	if len(r.Problems) == 0 {
+		fmt.Fprintln(out, st.paint(green, "  no findings: apitest.Run reports no warnings about the spec"))
+		return
+	}
+	for i, p := range r.Problems {
+		fmt.Fprintf(out, "  %s %s  %s\n", st.paint(dim, fmt.Sprintf("%2d.", i+1)), st.paint(yellow, p.Kind), st.paint(bold, p.Where))
+		fmt.Fprintf(out, "      %s\n", p.Message)
+		if p.Fix != "" {
+			fmt.Fprintf(out, "      %s %s\n", st.paint(cyan, "fix:"), p.Fix)
+		}
+	}
+	counts := map[string]int{}
+	var kinds []string
+	for _, p := range r.Problems {
+		if counts[p.Kind] == 0 {
+			kinds = append(kinds, p.Kind)
+		}
+		counts[p.Kind]++
+	}
+	var parts []string
+	for _, k := range kinds {
+		parts = append(parts, fmt.Sprintf("%d %s", counts[k], k))
+	}
+	fmt.Fprintf(out, "  %d findings: %s\n", len(r.Problems), strings.Join(parts, ", "))
 }

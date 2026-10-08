@@ -197,3 +197,28 @@ func TestUnorderedArrays(t *testing.T) {
 		t.Errorf("x-apitest-compare-unordered on the schema: %v", d)
 	}
 }
+
+// IgnoreCase matches strings and field names in any case; an exact field
+// name wins, numbers and types stay exact, and without it case counts.
+func TestIgnoreCase(t *testing.T) {
+	exp := decode(t, `{"name":"Nord","Pilot":{"callsign":"ALPHA"},"crew":["Ana","Ben"],"capacity":4,"createdBy":"x"}`)
+	act := decode(t, `{"Name":"nord","pilot":{"Callsign":"alpha"},"crew":["ana","BEN"],"capacity":4,"CreatedBy":"y"}`)
+	if d := Values(exp, act, Options{Mode: ModeSubset}); len(d) != 5 {
+		t.Errorf("case counts without IgnoreCase: got %+v", d)
+	}
+	opt := Options{Mode: ModeExact, IgnoreCase: true, Ignore: []string{"createdby"}}
+	if d := Values(exp, act, opt); len(d) != 0 {
+		t.Errorf("IgnoreCase: got %+v", d)
+	}
+	opt.Ignore = []string{"/PILOT/CALLSIGN", "createdBy"}
+	if d := Values(exp, decode(t, `{"Name":"nord","pilot":{"Callsign":"x"},"crew":["ana","ben"],"capacity":"4","CreatedBy":"z"}`), opt); !reflect.DeepEqual(pointers(d), []string{"/capacity"}) {
+		t.Errorf("pointer ignored in any case, numbers stay typed: got %+v", d)
+	}
+	// the exact name wins over one in another case
+	if d := Values(decode(t, `{"name":"a"}`), decode(t, `{"Name":"b","name":"A"}`), Options{Mode: ModeSubset, IgnoreCase: true}); len(d) != 0 {
+		t.Errorf("exact name first: got %+v", d)
+	}
+	if d := Values(decode(t, `{"name":"a"}`), decode(t, `{"name":"b"}`), Options{Mode: ModeSubset, IgnoreCase: true}); !reflect.DeepEqual(pointers(d), []string{"/name"}) {
+		t.Errorf("other values still differ: got %+v", d)
+	}
+}

@@ -34,6 +34,8 @@ const (
 	CodeNotRun      = "NOT_RUN"            // apitest does not run the case of an entry
 	CodeNotInFile   = "NOT_IN_FILE"        // apitest runs a case the file has no entry for
 	CodeSkipped     = "SKIPPED"            // -analyse leaves out a case it cannot build
+	CodeGenerated   = "GENERATED"          // values of an ignored entry generated from the schema
+	CodeBind        = "BIND"               // a binding written as x-apitest-bind
 )
 
 // Note is one finding of a run.
@@ -45,7 +47,7 @@ func (n Note) String() string { return fmt.Sprintf("%s %s: %s", n.Code, n.Where,
 const (
 	StateKept     = "kept"     // not sent; the stored answer is used
 	StateRecorded = "recorded" // sent, its answer is stored now, approved
-	StateIgnored  = "ignored"  // status ignore: not sent, not written
+	StateIgnored  = "ignored"  // status ignore: not sent, written with values that fit the schema
 	StateFailed   = "failed"   // the instance rejected it
 	StateStale    = "stale"    // the stored answer no longer fits the schema
 	StateNotSent  = "not sent" // after a failed request
@@ -73,7 +75,9 @@ type Result struct {
 	Sent int
 	// Examples is the number of examples written into the spec that differ
 	// from what it held.
-	Examples    int
+	Examples int
+	// Binds is the number of parameters that got x-apitest-bind.
+	Binds       int
 	FileChanged bool
 	SpecChanged bool
 }
@@ -115,7 +119,10 @@ func (f *File) bind(s *spec.Spec, res *Result) {
 		}
 		byOp[st.Op.ID] = append(byOp[st.Op.ID], st)
 		checkParams(st, res)
-		checkBody(st, res)
+		if st.status() != StatusIgnore {
+			// an ignored entry gets a generated body
+			checkBody(st, res)
+		}
 		for _, n := range st.uses() {
 			if !saved[n] {
 				res.problem(CodePlaceholder, st.where(), "{{%s}}: no entry above saves %q; add it to the \"save\" of the entry that creates it", n, n)
@@ -175,6 +182,9 @@ func checkParams(st *Step, res *Result) {
 				res.problem(CodeParam, st.where(), "%s has no %s parameter %q (it has: %s)", method(st.Op), in, k, strings.Join(paramNames(st.Op, in), ", "))
 			}
 		}
+	}
+	if st.status() == StatusIgnore {
+		return // an ignored entry gets generated values
 	}
 	_, path := mapping(st.Path)
 	_, query := mapping(st.Query)

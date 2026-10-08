@@ -71,9 +71,12 @@ Commands:
             entry; you check the order and the values. Without -analyse it
             sends, in the order of the file, the entries with status new or
             repeat (or named by -refresh) to -base-url, stores the answers,
-            sets them approved and writes every entry that is not ignored
-            into the spec; approved entries are never sent again; without
-            -base-url it only writes the stored answers
+            sets them approved and writes every entry into the spec, an
+            ignored one (never sent) with values that fit the schema;
+            guessed bindings become x-apitest-bind; approved entries are
+            never sent again; without -base-url it only writes the stored
+            answers; a lint of the written spec lists what apitest.Run
+            would report
   help      show this help
 
 Flags:

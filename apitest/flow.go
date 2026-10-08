@@ -324,10 +324,11 @@ func (r *runner) storedDiffs(o *outcome, vc *cases.Case, ex *exchange) []compare
 	}
 	ignore := append(append(r.ignore(o.c), vc.Ignore...), writeOnlyNames(o.c)...)
 	return compare.Values(o.c.Body, decodeJSON(ex.resp), compare.Options{
-		Mode:      compare.ModeSubset,
-		Ignore:    ignore,
-		Schema:    compare.Schema(vc.Expect.Response, ex.resp.Header.Get("Content-Type")),
-		Unordered: vc.Unordered,
+		Mode:       compare.ModeSubset,
+		Ignore:     ignore,
+		Schema:     compare.Schema(vc.Expect.Response, ex.resp.Header.Get("Content-Type")),
+		Unordered:  vc.Unordered,
+		IgnoreCase: r.cfg.CaseInsensitive,
 	})
 }
 

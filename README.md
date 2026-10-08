@@ -328,6 +328,8 @@ The expected example is compared as a **subset** by default: every field of the 
     x-apitest-compare: exact     # no additional fields allowed
 ```
 
+Strings are compared case-sensitively. If the API changes the case of values or field names (`"NORD"` for `"Nord"`), set `CaseInsensitive: true`.
+
 Arrays are compared in order. For arrays whose order does not matter, mark the schema:
 
 ```yaml
@@ -535,6 +537,7 @@ apitest.Run(t, apitest.Config{
 | `Params`, `Headers` | Fixed parameter values by name (or `"<operationId>.<name>"` for one operation), extra headers for every request. |
 | `IgnoreFields` | Field names or JSON pointers (`/items/*/id`) excluded from value comparison. |
 | `CompareMode` | `subset` (default), `exact` or `schema`. |
+| `CaseInsensitive` | Compare strings and field names of the example without regard to case (`"Nord"` matches `"nord"`, `Name` matches `name`); also the read-back after writes and `IgnoreFields`. The schema check stays case-sensitive. |
 | `Strict` | `NOT_BUILDABLE` cases and expired deviations fail the test. apitest does not detect CI itself. |
 | `DeviationsPath` | File with accepted deviations. |
 | `RequestTimeout` | Per request, default 10 s. Requests are never retried. |
@@ -639,7 +642,7 @@ apitest-gen -spec openapi.yaml -dict global-dict.json -defaults defaults.json -c
 - The examples go **into the spec, in place** (or `-out`), where apitest reads them: parameter examples, request bodies, 2xx responses, at the `$ref` target of shared objects. Comments and key order stay; a second run changes nothing. A default that violates a schema stops the run before anything is written.
 - **`-check`** (or `apitest-gen check`) then reports every case apitest could not send and every example that violates its schema, with exit code 1 for CI. It uses apitest's own case building, so it sees what a real run would see.
 - Before anything is saved, the written spec is played again the way apitest will run it; an example that does not fit the data at its case stops the run, and nothing is written.
-- **`apitest-gen record`** keeps the examples in one file, `examples.record.yaml`, for a test against an empty instance (a test container): per tag the requests in the order they run, each with its answer. `record -analyse` writes the entries, in apitest's order, with bodies from the schema and the ids of later requests linked to the answers of earlier ones (`save: { dockId: /id }`, `"{{dockId}}"`). `record -base-url <empty instance>` sends only the requests whose answer is missing or no longer fits the schema, stores the answers and writes every entry into the spec; without `-base-url` it only writes the stored answers, so everyone gets the same examples. See [docs/record.md](docs/record.md).
+- **`apitest-gen record`** keeps the examples in one file, `examples.record.yaml`, for a test against an empty instance (a test container): per tag the requests in the order they run, each with its answer. `record -analyse` writes the entries, in apitest's order, with bodies from the schema and the ids of later requests linked to the answers of earlier ones (`save: { dockId: /id }`, `"{{dockId}}"`). `record -base-url <empty instance>` sends only the requests whose answer is missing or no longer fits the schema, stores the answers and writes every entry into the spec; without `-base-url` it only writes the stored answers, so everyone gets the same examples. Entries with `status: ignore` are never sent but get examples that fit the schema, generated where needed. Bindings apitest would only guess are written as `x-apitest-bind`, and a lint of the written spec lists everything `apitest.Run` would still warn about. See [docs/record.md](docs/record.md).
 - **`apitest-gen review`** prints the resource model, evaluates what apitest would report as spec findings (missing 401/403, invalid examples, …), the cases it cannot send and the values the generator cannot create, and writes a fix for each into `defaults.json`. You check that file; the next `apitest-gen` run takes the entries into the spec.
 
 The flags you need most often:
