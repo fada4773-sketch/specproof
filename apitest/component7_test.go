@@ -172,7 +172,7 @@ func TestErrorCases(t *testing.T) {
 	}
 	names := order(out.res)
 	if indexOf(names, "Dock/createDock/conflict") < indexOf(names, "Dock/createDock/default") ||
-		indexOf(names, "Dock/deleteDock/not-found") > indexOf(names, "Dock/deleteDock/default") {
+		indexOf(names, "Dock/deleteDock/not-found") < indexOf(names, "Dock/deleteDock/default") {
 		t.Errorf("order:\n%s", strings.Join(names, "\n"))
 	}
 
@@ -311,5 +311,88 @@ paths:
 		if !strings.Contains(all, w) {
 			t.Errorf("not sent: %s\n%s", w, all)
 		}
+	}
+}
+
+// The not-found cases run after every other case: a PUT with an unknown key
+// that the API applies anyway (an upsert) must not change what the regular
+// cases of later tags see.
+func TestNotFoundRunsLast(t *testing.T) {
+	specPath := filepath.Join(t.TempDir(), "docks.yaml")
+	err := os.WriteFile(specPath, []byte(`
+openapi: 3.0.3
+info: { title: Starport, version: "1" }
+paths:
+  /docks:
+    post:
+      operationId: createDock
+      tags: [Dock]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, properties: { name: { type: string } } }
+            example: { name: Nord }
+      responses:
+        "201":
+          description: the dock
+          content:
+            application/json:
+              schema: { type: object, properties: { id: { type: integer }, name: { type: string } } }
+  /docks/{dockId}:
+    put:
+      operationId: updateDock
+      tags: [Dock]
+      parameters:
+        - { name: dockId, in: path, required: true, schema: { type: string, pattern: "^\\d{3}$" } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, properties: { name: { type: string } } }
+            example: { name: Sued }
+      responses:
+        "200": { description: updated }
+        "404": { description: no such dock }
+  /stats:
+    get:
+      operationId: getStats
+      tags: [Stats]
+      responses:
+        "200":
+          description: the counts
+          content:
+            application/json:
+              schema: { type: object, properties: { docks: { type: integer } } }
+              example: { docks: 1 }
+`), 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	docks := map[string]bool{}
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		switch r.Method {
+		case http.MethodPost:
+			docks["100"] = true
+			w.WriteHeader(201)
+			_, _ = w.Write([]byte(`{"id":100,"name":"Nord"}`))
+		case http.MethodPut:
+			docks[strings.TrimPrefix(r.URL.Path, "/docks/")] = true // upsert
+			w.WriteHeader(200)
+		default:
+			_, _ = fmt.Fprintf(w, `{"docks":%d}`, len(docks))
+		}
+	})
+	out := runFake(t, Config{SpecPath: specPath, Handler: handler, ErrorCases: true, TolerateErrorCases: true, DisableReports: true})
+	got := statuses(out.res)
+	if got["Stats/getStats/default"] != StatusPassed || got["Dock/updateDock/not-found"] != StatusTolerated {
+		t.Fatalf("statuses: %v\n%s", got, out.ft.output())
+	}
+	if names := order(out.res); names[len(names)-1] != "Dock/updateDock/not-found" {
+		t.Errorf("not-found is not last:\n%s", strings.Join(names, "\n"))
 	}
 }

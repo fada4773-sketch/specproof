@@ -12,6 +12,18 @@ contain breaking changes, which are listed here.
 - Reports are only written when `Config.ReportPath` is set; the default
   `apitest-report/<test name>.md` is gone. `ReportJSON` needs `ReportPath`.
   `DisableReports` still turns reports off where a path is set.
+- New order: every regular case (2xx) of the run first, DELETEs included,
+  then the 4xx and 5xx examples, `conflict` and authentication cases, the
+  `not-found` cases last. A wrong answer to one of those (a DELETE without
+  token that the API accepts, an upsert with an unknown key) no longer
+  changes what the regular cases check. The authentication cases of a
+  DELETE now run after it; the regular DELETE is no longer skipped when an
+  unauthorized DELETE succeeded (FR-ORDER-07). `AfterGroup` runs after the
+  last case of the group, in the second phase.
+- `conflict` sends the body twice (the first answer makes sure the record
+  exists) and deletes the records it created with the regular DELETE of
+  the tag.
+
 ### Moved
 
 - The project lives at `github.com/fada4773-sketch/specproof`. The library

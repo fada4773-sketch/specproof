@@ -132,7 +132,7 @@ Writing requests are only sent to `localhost` and loopback addresses. For a test
 1. **Load** the spec (OpenAPI 3.0, 3.1, or Swagger 2.0, which is converted). Invalid specs stop the run before the first request, with the location in the spec. Examples that do not match their own schema are reported as spec findings.
 2. **Derive cases** from examples. Each case is named `<Tag>/<operationId>/<example>`.
 3. **Resolve parameters** in this order: value from an earlier response (binding) → `Config.Params` → named parameter example → parameter `example` → schema `example` → `default` → first `enum` value. Optional query parameters are only set from the first four sources.
-4. **Order** the cases per resource group (the first tag): create → read → list → update → 4xx examples → authentication cases → delete. Groups follow the dependency graph of their bindings; DELETEs of groups that others depend on run last, in reverse order.
+4. **Order** the cases in two phases. First every regular case (2xx) of the run, per resource group (the first tag): create → read → list → update → delete; groups follow the dependency graph of their bindings, and DELETEs of groups that others depend on run after all groups, in reverse order. Then the other cases in the same group order: 4xx and 5xx examples, `conflict`, authentication cases; the `not-found` cases last. A wrong answer to one of them (a DELETE without token that the API accepts, an upsert with an unknown key) cannot change what the regular cases check.
 5. **Check** every response in three stages: status code, schema (types, required fields, formats, `additionalProperties`, headers, content type), and the expected example (subset by default). Undocumented status codes fail, even 2xx.
 6. **Verify writes**: after POST, PUT and PATCH the resource is read back with GET and compared with what was sent; after DELETE, GET must return 404.
 7. **Test authentication** for operations with `security`: without token (`unauthorized`, expects 401), with a manipulated token (`invalid-token`, expects 401 or 403), and optionally with a valid token that lacks rights (`forbidden`, expects 403).
@@ -240,7 +240,7 @@ With `ErrorCases: true` apitest provokes two errors itself, for every operation 
 | Case | When | Request | Expected |
 |---|---|---|---|
 | `<Tag>/<op>/not-found` | the operation has a path parameter and documents `404` | the last path parameter gets a key no record has: `999999999` for integers, a UUID, `apitest-not-found` for strings (within `minimum`/`maximum`/`maxLength`), the highest value of a `pattern` (`^\d{3}$` → `999`), or `x-apitest-not-found` of the parameter; all other values as in the regular case, and a required parameter without value (no example, or its producer failed) gets one generated from its schema, so the case is sent anyway | 404, body checked against the schema |
-| `<Tag>/<op>/conflict` | a POST with a body that documents `409` | the body of the regular case a second time, right after it | 409, body checked against the schema |
+| `<Tag>/<op>/conflict` | a POST with a body that documents `409` | the body of the regular case twice: the first answer only makes sure the record exists (its DELETE may have run already), the second must be 409; every record the case creates is deleted again with the regular DELETE of the tag | 409, body checked against the schema |
 
 5xx and other errors come from named examples (see above). With `TolerateErrorCases: true` an error case that gets another answer (`204` instead of `404`, `500` instead of `409`) is `TOLERATED` instead of failing the test; this covers the generated cases and named examples that expect 404, 409 or 5xx, while other 4xx examples (400, 422) still fail. The report analyses every error case: a matrix *expected → received* and per case the request, both statuses and the answer.
 
@@ -402,7 +402,7 @@ apitest.Run(t, apitest.Config{
 
 By default the manipulated token is the first 100 characters of the real one: a JWT loses its signature and the end of its payload, so neither a verifier nor an API that only decodes tokens (behind a validating gateway) can accept it. To test the signature check itself, set `TamperToken: apitest.TamperSignature`; the token then keeps header and claims and only the signature is broken. Both tokens are redacted to `***` in the report. If the API accepts the manipulated token, the case fails with a hint saying what was sent. That is a finding about the API, not a token the library forgot to change.
 
-Authentication cases run while the resource still exists, right before the DELETE. If the API accepts an unauthorized DELETE, that case fails and the regular DELETE is skipped with a reference to it. Operations that require a token but document neither 401 nor 403 get no authentication cases; the report lists them.
+Authentication cases run after all regular cases, so a DELETE the API accepts without a valid token cannot remove a record a regular case needs; that case fails (the record is gone by then, so the API typically answers 404 instead of 401). Operations that require a token but document neither 401 nor 403 get no authentication cases; the report lists them.
 
 Tokens that expire can be fetched on demand, e.g. from the login endpoint of the API:
 

@@ -36,7 +36,6 @@ var executionOrder = []string{
 	"Author/getAuthor/default",
 	"Author/listAuthors/default",
 	"Author/updateAuthor/default",
-	"Author/createAuthor/missing-name",
 	"Book/createBook/default",
 	"Book/getBook/default",
 	"Book/updateBook/default",
@@ -51,6 +50,13 @@ var executionOrder = []string{
 	"System/getStats/default",
 	"Book/deleteBook/default",
 	"Author/deleteAuthor/default",
+	// the other cases after every regular one
+	"Author/createAuthor/missing-name",
+}
+
+// isRegular reports whether a Bookstore case expects a 2xx answer.
+func isRegular(name string) bool {
+	return !isAuthCase(name) && !strings.HasSuffix(name, "/missing-name")
 }
 
 // securedOps are the operations that document 401; each gets an

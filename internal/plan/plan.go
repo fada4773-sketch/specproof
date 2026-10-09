@@ -1,9 +1,11 @@
 // Package plan orders the cases of a run (FR-ORDER): resource groups follow
 // the dependency graph of their bindings, cases within a group follow their
 // rank (create, read, list, update, 4xx, authentication, delete; the
-// operations of Options.LastInTag after all but the deletes), and DELETE
+// operations of Options.LastInTag after all but the deletes), DELETE
 // cases of groups that others depend on (or of all groups with DeleteLast)
-// run last, in reverse order.
+// run after all groups, in reverse order. All regular cases of the run come
+// first, then the 4xx/5xx examples, conflict and authentication cases, and
+// the generated not-found cases at the very end.
 package plan
 
 import (
@@ -155,29 +157,71 @@ func Build(all []*cases.Case, selected func(*cases.Case) bool, set *bind.Set, op
 		}
 	}
 
-	var deferred []Segment
+	var segs, deferred, late []Segment
 	for _, g := range groups {
 		ordered, err := orderWithin(byGroup[g], p.Deps, opt.LastInTag)
 		if err != nil {
 			return nil, err
 		}
-		var main, deletes []*cases.Case
+		var main, deletes, notFound []*cases.Case
 		for _, c := range ordered {
-			if c.Rank == cases.RankDelete {
+			switch {
+			case c.Kind == cases.NotFound:
+				notFound = append(notFound, c)
+			case c.Rank == cases.RankDelete:
 				deletes = append(deletes, c)
-			} else {
+			default:
 				main = append(main, c)
 			}
 		}
+		if len(notFound) > 0 {
+			late = append(late, Segment{Group: g, Cases: notFound})
+		}
 		if (hasDependents[g] || opt.DeleteLast) && len(deletes) > 0 {
-			p.Segments = append(p.Segments, Segment{Group: g, Cases: main, First: true})
-			deferred = append(deferred, Segment{Group: g, Cases: deletes, Last: true})
+			segs = append(segs, Segment{Group: g, Cases: main})
+			deferred = append(deferred, Segment{Group: g, Cases: deletes})
 			continue
 		}
-		p.Segments = append(p.Segments, Segment{Group: g, Cases: append(main, deletes...), First: true, Last: true})
+		segs = append(segs, Segment{Group: g, Cases: append(main, deletes...)})
 	}
 	for i := len(deferred) - 1; i >= 0; i-- {
-		p.Segments = append(p.Segments, deferred[i])
+		segs = append(segs, deferred[i])
+	}
+	// First every regular case of the run, in the order above, DELETEs
+	// included; then the other cases (4xx and 5xx examples, conflict,
+	// authentication) in the same order; the not-found cases last: a write
+	// with an unknown key that the API applies anyway (an upsert, a key that
+	// does exist) must not change the data any other case checks.
+	var regular, other []Segment
+	for _, sg := range segs {
+		var pos, rest []*cases.Case
+		for _, c := range sg.Cases {
+			if c.Kind == cases.Positive {
+				pos = append(pos, c)
+			} else {
+				rest = append(rest, c)
+			}
+		}
+		if len(pos) > 0 {
+			regular = append(regular, Segment{Group: sg.Group, Cases: pos})
+		}
+		if len(rest) > 0 {
+			other = append(other, Segment{Group: sg.Group, Cases: rest})
+		}
+	}
+	p.Segments = append(append(regular, other...), late...)
+	// BeforeGroup runs before the first case of a group, AfterGroup after
+	// its last one.
+	first, last := map[string]int{}, map[string]int{}
+	for i, sg := range p.Segments {
+		if _, ok := first[sg.Group]; !ok {
+			first[sg.Group] = i
+		}
+		last[sg.Group] = i
+	}
+	for i := range p.Segments {
+		p.Segments[i].First = first[p.Segments[i].Group] == i
+		p.Segments[i].Last = last[p.Segments[i].Group] == i
 	}
 	return p, nil
 }

@@ -77,9 +77,6 @@ type runner struct {
 	// producers remembers the first positive result of each producing
 	// operation, to explain skipped dependents (FR-ORDER-04).
 	producers map[string]*outcome
-	// gone records DELETE operations whose resource an authentication case
-	// deleted by mistake (FR-ORDER-07).
-	gone map[string]string
 	// tokenExp is the expiry of a static JWT (FR-AUTH-06).
 	tokenExp time.Time
 	// tokenCleaned is set once a token had to be cleaned (see cleanToken).
@@ -147,7 +144,6 @@ func run(t tester, cfg Config) *Result {
 		validator: spec.NewValidator(),
 		values:    map[string]any{},
 		producers: map[string]*outcome{},
-		gone:      map[string]string{},
 	}
 	if r.now == nil {
 		r.now = time.Now
@@ -441,10 +437,6 @@ func (r *runner) check(ctx context.Context, c *cases.Case) *outcome {
 	case c.Kind == cases.Forbidden && r.cfg.ForbiddenToken == nil:
 		o.status, o.message = StatusSkipped, "Config.ForbiddenToken is not set (FR-CASE-11)"
 		return o
-	case !c.Kind.IsAuth() && c.Op.Method == http.MethodDelete && r.gone[c.Op.ID] != "":
-		o.status = StatusSkipped
-		o.message = fmt.Sprintf("the resource was already deleted by %s, which the API should have rejected (FR-ORDER-07)", r.gone[c.Op.ID])
-		return o
 	}
 	if msg := r.missingDependency(c); msg != "" {
 		o.status, o.message = StatusSkipped, msg
@@ -469,6 +461,24 @@ func (r *runner) check(ctx context.Context, c *cases.Case) *outcome {
 		return o
 	}
 
+	if c.Kind == cases.Conflict {
+		// The regular POST ran in the first phase and its record may be
+		// deleted since: send the body once more, so the record exists,
+		// then the request that must conflict. The first answer does not
+		// count (201 if the record was gone, 409 if it was still there).
+		// Every record the case creates is deleted again afterwards.
+		first, err := r.prime(ctx, c, p)
+		if err != nil {
+			o.status, o.message = StatusError, "conflict: the first request failed: "+err.Error()
+			return o
+		}
+		defer func() {
+			r.cleanup(ctx, c, first)
+			if o.resp != nil {
+				r.cleanup(ctx, c, o.resp)
+			}
+		}()
+	}
 	rctx, cancel := context.WithTimeout(ctx, r.cfg.RequestTimeout)
 	defer cancel()
 	req, err := p.Request(rctx)
@@ -495,9 +505,6 @@ func (r *runner) check(ctx context.Context, c *cases.Case) *outcome {
 	o.status = StatusPassed
 
 	r.checkResponse(o)
-	if c.Kind.IsAuth() && c.Op.Method == http.MethodDelete && resp.Status/100 == 2 {
-		r.gone[c.Op.ID] = c.Name
-	}
 	r.checkTokenExpiry(o)
 	success := resp.Status/100 == 2 && c.Kind == cases.Positive
 	if success {
@@ -519,6 +526,57 @@ func (r *runner) check(ctx context.Context, c *cases.Case) *outcome {
 		}
 	}
 	return o
+}
+
+// prime sends the request of a case once without checking the answer.
+func (r *runner) prime(ctx context.Context, c *cases.Case, p *exec.Prepared) (*exec.Response, error) {
+	rctx, cancel := context.WithTimeout(ctx, r.cfg.RequestTimeout)
+	defer cancel()
+	req, err := p.Request(rctx)
+	if err != nil {
+		return nil, err
+	}
+	if hook := r.cfg.Hooks.BeforeRequest; hook != nil {
+		hc := hookCase(c)
+		if err := safeCall("BeforeRequest", func() error { return hook(rctx, hc, req) }); err != nil {
+			return nil, err
+		}
+	}
+	return exec.Do(r.client, req, r.cfg.RequestTimeout)
+}
+
+// cleanup deletes the record a conflict case created (resp is a 2xx answer
+// of its POST) with the regular DELETE of the group that takes its key from
+// that POST. Without such a DELETE, or without the key in the answer, the
+// record stays. The answer of the DELETE is not checked.
+func (r *runner) cleanup(ctx context.Context, c *cases.Case, resp *exec.Response) {
+	if resp == nil || resp.Status/100 != 2 {
+		return
+	}
+	values := map[string]any{}
+	for _, b := range r.binds.By(c.Op) {
+		if v, ok := bind.Extract(b.Source, b.Kind, resp.Header, decodeJSON(resp), c.Body); ok {
+			values[b.Key()] = v
+		}
+	}
+	for _, dc := range r.cases {
+		if dc.Kind != cases.Positive || dc.Op.Method != http.MethodDelete || dc.Group != c.Group {
+			continue
+		}
+		bound := false
+		for _, b := range r.binds.Of(dc.Op) {
+			if _, ok := values[b.Key()]; ok && b.Producer == c.Op {
+				bound = true
+			}
+		}
+		if !bound {
+			continue
+		}
+		if p, _, err := r.prepareRequest(ctx, dc, values); err == nil {
+			_, _ = r.prime(ctx, dc, p)
+		}
+		return
+	}
 }
 
 // checkResponse runs stages 1 to 3 (FR-CMP). Each stage only runs if the

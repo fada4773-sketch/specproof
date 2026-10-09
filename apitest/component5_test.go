@@ -115,7 +115,7 @@ func TestLastInTag(t *testing.T) {
 		}
 	}
 	for i, n := range names {
-		if strings.HasPrefix(n, "Author/") && !strings.HasPrefix(n, "Author/listAuthors/") && !strings.HasPrefix(n, "Author/deleteAuthor/") && i > list {
+		if isRegular(n) && strings.HasPrefix(n, "Author/") && !strings.HasPrefix(n, "Author/listAuthors/") && !strings.HasPrefix(n, "Author/deleteAuthor/") && i > list {
 			t.Errorf("%s runs after listAuthors:\n%s", n, strings.Join(names, "\n"))
 		}
 	}
@@ -139,6 +139,9 @@ func TestDeleteLast(t *testing.T) {
 	}
 	firstDelete := -1
 	for i, c := range out.res.Cases {
+		if !isRegular(c.Name) {
+			continue // the other cases run after every regular one
+		}
 		isDelete := strings.HasPrefix(c.Operation, "delete")
 		switch {
 		case isDelete && firstDelete < 0:

@@ -111,25 +111,19 @@ func TestTPL2_07_Order(t *testing.T) {
 	if !reflect.DeepEqual(regular, executionOrder) {
 		t.Errorf("order of the regular cases:\n got  %v\n want %v", regular, executionOrder)
 	}
-	// Authentication cases run after the 4xx examples of their group and,
-	// for DELETE, right before the DELETE.
-	pos := map[string]int{}
-	for i, n := range all {
-		pos[n] = i
-	}
-	for _, c := range out.res.Cases {
-		if !isAuthCase(c.Name) {
-			continue
-		}
-		del := c.Group + "/" + c.Operation + "/default"
+	// Every regular case runs first, DELETEs included; then the 4xx
+	// examples and the authentication cases, in the order of the groups.
+	seenOther := ""
+	for _, n := range all {
 		switch {
-		case strings.HasPrefix(c.Operation, "delete"):
-			if pos[c.Name] > pos[del] || pos[del]-pos[c.Name] > 3 {
-				t.Errorf("%s must run right before %s", c.Name, del)
-			}
-		case c.Group == "Author" && pos[c.Name] < pos["Author/createAuthor/missing-name"]:
-			t.Errorf("%s must run after the 4xx examples", c.Name)
+		case !isRegular(n) && seenOther == "":
+			seenOther = n
+		case isRegular(n) && seenOther != "":
+			t.Errorf("regular case %s runs after %s", n, seenOther)
 		}
+	}
+	if seenOther != "Author/createAuthor/missing-name" {
+		t.Errorf("first other case: %s", seenOther)
 	}
 }
 

@@ -35,9 +35,6 @@ func withSuffix(suffix string, s Status) map[string]Status {
 func TestTPL2_17_IgnoreAuth(t *testing.T) {
 	out := runFake(t, bookstoreConfig(t, testserver.Faults{IgnoreAuth: true}))
 	changed := withSuffix("/unauthorized", StatusFailed)
-	for _, op := range deleteOps {
-		changed[op+"/default"] = StatusSkipped
-	}
 	assertOnlyChanged(t, out.res, changed)
 	if len(withSuffix("/unauthorized", StatusFailed)) != 17 {
 		t.Error("every operation documenting 401 needs an unauthorized case")
@@ -46,18 +43,12 @@ func TestTPL2_17_IgnoreAuth(t *testing.T) {
 
 func TestTPL2_26_IgnoreSignature(t *testing.T) {
 	out := runFake(t, bookstoreConfig(t, testserver.Faults{IgnoreSignature: true}))
-	changed := withSuffix("/invalid-token", StatusFailed)
-	for _, op := range deleteOps {
-		changed[op+"/default"] = StatusSkipped
-	}
-	assertOnlyChanged(t, out.res, changed)
+	assertOnlyChanged(t, out.res, withSuffix("/invalid-token", StatusFailed))
 }
 
 func TestTPL2_27_IgnoreRolesAndMissingForbiddenToken(t *testing.T) {
 	out := runFake(t, bookstoreConfig(t, testserver.Faults{IgnoreRoles: true}))
-	changed := withSuffix("/forbidden", StatusFailed)
-	changed["Review/deleteReview/default"] = StatusSkipped
-	assertOnlyChanged(t, out.res, changed)
+	assertOnlyChanged(t, out.res, withSuffix("/forbidden", StatusFailed))
 
 	cfg := bookstoreConfig(t, testserver.Faults{})
 	cfg.ForbiddenToken = nil
@@ -71,15 +62,17 @@ func TestTPL2_27_IgnoreRolesAndMissingForbiddenToken(t *testing.T) {
 	}
 }
 
+// The authentication cases of a DELETE run after the regular DELETE, so a
+// DELETE the API accepts without token cannot remove the record the regular
+// case needs: the regular DELETE passes, the unauthorized one fails.
 func TestTPL2_28_UnauthorizedDeleteSucceeds(t *testing.T) {
 	out := runFake(t, bookstoreConfig(t, testserver.Faults{IgnoreAuth: true}))
 	for _, op := range deleteOps {
 		if s := statuses(out.res)[op+"/unauthorized"]; s != StatusFailed {
 			t.Errorf("%s/unauthorized: %s", op, s)
 		}
-		msg := message(out.res, op+"/default")
-		if !strings.Contains(msg, "already deleted by "+op+"/unauthorized") {
-			t.Errorf("%s/default must name the cause: %q", op, msg)
+		if s := statuses(out.res)[op+"/default"]; s != StatusPassed {
+			t.Errorf("%s/default: %s %q", op, s, message(out.res, op+"/default"))
 		}
 	}
 }
