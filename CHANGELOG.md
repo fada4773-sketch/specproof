@@ -16,6 +16,23 @@ contain breaking changes, which are listed here.
 
 ### Features
 
+- Error cases: `Config.ErrorCases` generates `not-found` (an unknown key in
+  the last path parameter of every operation that documents 404; the key
+  from `x-apitest-not-found` or the schema) and `conflict` (the body of a
+  POST that documents 409 sent a second time). Named request examples paired
+  with a 5xx response example now test that error too.
+  `Config.TolerateErrorCases` reports error cases that get another answer
+  (generated ones and named 404/409/5xx examples) as the new status
+  `TOLERATED` instead of failing the test.
+- HTML report: a self-contained dashboard (`<name>.html`, next to the
+  Markdown report; `Config.DisableHTMLReport` turns it off) with key
+  figures, status ring, tags, response time histogram and percentiles,
+  status codes, slowest requests, error case analysis (expected → received)
+  and every case with search, filters and details; light and dark theme.
+- The Markdown report is redesigned: a result line, a Mermaid chart of the
+  statuses, key figures, tags, response times, status codes, slowest
+  requests and the error case analysis. The JSON report gives each case
+  `kind`, `expected`, `errorCase` and `tolerated`.
 - `Config.LastInTag`: operations (operationId or `"METHOD /path"`) whose
   cases run after all other cases of their tag, whatever their method, in
   the order listed; the tag's DELETEs still follow, bindings still win.

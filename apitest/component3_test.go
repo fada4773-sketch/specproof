@@ -173,7 +173,7 @@ func TestVerifyPolling(t *testing.T) {
 func TestAuthCasesAreNotNamedExamples(t *testing.T) {
 	out := runFake(t, bookstoreConfig(t, testserver.Faults{}))
 	// The Bookstore has 3 named request examples: valid-author, missing-name, rename.
-	if !strings.Contains(out.report, "- Named examples executed: 3 of 3 (100 %)") {
+	if !strings.Contains(out.report, "| Named examples executed | 3 | 3 |") {
 		t.Errorf("authentication cases must not count as named examples:\n%s", out.report)
 	}
 }

@@ -1,5 +1,5 @@
-// Package report renders the Markdown report (FR-REP)
-// and writes it atomically.
+// Package report renders the reports (FR-REP): Markdown for pull requests
+// and CI, and a self-contained HTML dashboard; both are written atomically.
 package report
 
 import "time"
@@ -13,12 +13,13 @@ const (
 	DataMismatch    = "DATA_MISMATCH"
 	Error           = "ERROR"
 	Deviation       = "DEVIATION"
+	Tolerated       = "TOLERATED"
 	NotBuildable    = "NOT_BUILDABLE"
 	Skipped         = "SKIPPED"
 )
 
 // StatusOrder is the order of statuses in the summary table.
-var StatusOrder = []string{Passed, Failed, SchemaViolation, ExampleMismatch, DataMismatch, Error, Deviation, NotBuildable, Skipped}
+var StatusOrder = []string{Passed, Failed, SchemaViolation, ExampleMismatch, DataMismatch, Error, Deviation, Tolerated, NotBuildable, Skipped}
 
 // IsError reports whether a status belongs to the "Errors" section.
 func IsError(status string) bool {
@@ -55,6 +56,8 @@ type Report struct {
 	// PassedDetails renders passed cases with their details instead of
 	// one table row each.
 	PassedDetails bool
+	// Tolerate is Config.TolerateErrorCases.
+	Tolerate bool
 }
 
 // DeviationEntry is one entry of the deviations file and how it was used.
@@ -93,10 +96,21 @@ type Uncovered struct {
 
 // Case is the result of one case.
 type Case struct {
-	Name     string
-	Number   string // position in the run, e.g. "007"; "" without numbering
-	Group    string
-	Status   string
+	Name      string
+	Number    string // position in the run, e.g. "007"; "" without numbering
+	Group     string
+	Operation string // operationId or "METHOD /path"
+	Status    string
+	// Kind is the kind of case: "regular", "negative", "not-found",
+	// "conflict", "server-error", "unauthorized", …
+	Kind string
+	// ErrorCase marks a case that tests a documented error (404, 409, 5xx).
+	ErrorCase bool
+	// Tolerated is the status a TOLERATED case would have had.
+	Tolerated string
+	// Code is the HTTP status received, 0 without answer.
+	Code     int
+	Duration time.Duration
 	Message  string // one line
 	Method   string
 	Target   string // path and query

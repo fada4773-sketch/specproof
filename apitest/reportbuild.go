@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -42,6 +43,7 @@ func (r *runner) writeReport() {
 		NotSelected: r.notSelected,
 
 		PassedDetails: r.cfg.ReportPassedDetails,
+		Tolerate:      r.cfg.TolerateErrorCases,
 	}
 	if s := r.spec; s != nil {
 		rep.SpecFile = s.Path
@@ -78,6 +80,12 @@ func (r *runner) writeReport() {
 		r.failed = true
 		r.t.Errorf("apitest: %v", err)
 	}
+	if !r.cfg.DisableHTMLReport {
+		if err := report.WriteHTML(htmlPath(r.reportPath), rep); err != nil {
+			r.failed = true
+			r.t.Errorf("apitest: %v", err)
+		}
+	}
 	if r.cfg.ReportJSON {
 		if err := r.writeJSON(); err != nil {
 			r.failed = true
@@ -91,11 +99,20 @@ func (r *runner) reportCase(o *outcome) report.Case {
 		Name:         o.c.Name,
 		Number:       r.number(o.c),
 		Group:        o.c.Group,
+		Operation:    o.c.Op.ID,
 		Status:       string(o.status),
+		Kind:         o.c.Kind.String(),
+		ErrorCase:    o.c.ErrorCase(),
+		Tolerated:    string(o.tolerated),
+		Code:         o.code,
+		Duration:     o.duration,
 		Message:      o.message,
 		Expected:     o.expected,
 		Actual:       o.actual,
 		Precondition: o.precondition,
+	}
+	if rc.Expected == "" && o.c.Expect.Code != "" {
+		rc.Expected = o.c.Expect.String()
 	}
 	if p := o.prepared; p != nil {
 		rc.Method, rc.Target = p.Method, r.red.String(p.Target)
@@ -111,7 +128,7 @@ func (r *runner) reportCase(o *outcome) report.Case {
 	for _, p := range o.problems {
 		rc.Problems = append(rc.Problems, r.red.String(p.String()))
 	}
-	detailed := report.IsError(rc.Status) || o.status == StatusDeviation ||
+	detailed := report.IsError(rc.Status) || o.status == StatusDeviation || o.status == StatusTolerated ||
 		(r.cfg.ReportPassedDetails && o.status == StatusPassed)
 	if detailed {
 		if !r.cfg.OmitBodies {
@@ -312,6 +329,11 @@ func collectWriteOnly(s *openapi3.Schema, out *[]string, depth int) {
 	}
 }
 
+// htmlPath is the path of the HTML report next to the Markdown one.
+func htmlPath(md string) string {
+	return strings.TrimSuffix(md, filepath.Ext(md)) + ".html"
+}
+
 // coverage computes the coverage section of the report.
 func (r *runner) coverage() report.Coverage {
 	var cov report.Coverage
@@ -330,7 +352,7 @@ func (r *runner) coverage() report.Coverage {
 	var ops []string
 	seen := map[string]bool{}
 	for _, c := range r.cases {
-		if c.Example != cases.DefaultExample && !c.Kind.IsAuth() {
+		if c.Example != cases.DefaultExample && !c.Kind.Generated() {
 			examples++
 			if o, ok := byName[c.Name]; ok && o.resp != nil {
 				examplesRun++

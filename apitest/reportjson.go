@@ -35,6 +35,10 @@ type jsonCase struct {
 	StatusCode   int    `json:"statusCode,omitempty"`
 	DurationMs   int64  `json:"durationMs"`
 	Precondition bool   `json:"precondition,omitempty"`
+	Kind         string `json:"kind"`                // regular, negative, not-found, conflict, server-error, unauthorized, …
+	Expected     string `json:"expected,omitempty"`  // expected status, e.g. "404"
+	ErrorCase    bool   `json:"errorCase,omitempty"` // tests a documented 404, 409 or 5xx
+	Tolerated    Status `json:"tolerated,omitempty"` // the status a TOLERATED case would have had
 	Deviation    int    `json:"deviation,omitempty"` // entry number in the deviations file
 }
 
@@ -60,6 +64,10 @@ func (r *runner) writeJSON() error {
 			Name: o.c.Name, Number: r.numbers[o.c], Group: o.c.Group, Operation: o.c.Op.ID, Example: o.c.Example,
 			Status: o.status, Message: o.message, StatusCode: o.code,
 			DurationMs: o.duration.Milliseconds(), Precondition: o.precondition,
+			Kind: o.c.Kind.String(), ErrorCase: o.c.ErrorCase(), Tolerated: o.tolerated,
+		}
+		if o.c.Expect.Code != "" {
+			jc.Expected = o.c.Expect.String()
 		}
 		if p := o.prepared; p != nil {
 			jc.Method, jc.Target = p.Method, r.red.String(p.Target)

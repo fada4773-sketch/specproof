@@ -1,0 +1,412 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>apitest · {{.Title}}</title>
+<style>
+:root{
+  --bg:#f5f6f8;--card:#ffffff;--text:#1b2230;--muted:#667085;--line:#e3e7ee;--soft:#f0f2f6;
+  --accent:#4f5fe8;--pass:#16a36a;--fail:#e5484d;--dev:#d9a400;--tol:#f08c00;--skip:#98a2b3;
+  --fail2:#c93a3f;--fail3:#f2777a;--fail4:#a12c30;--fail5:#ff9b9e;
+  --c2:#16a36a;--c3:#3b82f6;--c4:#f08c00;--c5:#e5484d;
+  --shadow:0 1px 2px rgba(16,24,40,.06),0 1px 3px rgba(16,24,40,.08);
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#0f1218;--card:#171b23;--text:#e6e9ef;--muted:#98a2b3;--line:#272d38;--soft:#1e232d;
+  --accent:#8b95ff;--shadow:0 1px 2px rgba(0,0,0,.4);
+}}
+:root[data-theme="dark"]{
+  --bg:#0f1218;--card:#171b23;--text:#e6e9ef;--muted:#98a2b3;--line:#272d38;--soft:#1e232d;
+  --accent:#8b95ff;--shadow:0 1px 2px rgba(0,0,0,.4);
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+a{color:var(--accent);text-decoration:none}
+code,pre,.mono{font-family:var(--mono);font-size:12.5px}
+.wrap{max-width:1280px;margin:0 auto;padding:0 20px 48px}
+header.top{background:var(--card);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5}
+header.top .wrap{display:flex;align-items:center;gap:16px;padding-top:12px;padding-bottom:12px;flex-wrap:wrap}
+.brand{font-weight:700;letter-spacing:.2px}
+.brand span{color:var(--muted);font-weight:500}
+nav{display:flex;gap:4px;flex-wrap:wrap;margin-left:auto}
+nav a{color:var(--muted);padding:6px 10px;border-radius:8px;font-weight:500}
+nav a:hover{background:var(--soft);color:var(--text)}
+button.theme{border:1px solid var(--line);background:var(--card);color:var(--text);border-radius:8px;padding:6px 10px;cursor:pointer}
+.hero{display:flex;align-items:flex-start;justify-content:space-between;gap:24px;margin:28px 0 18px;flex-wrap:wrap}
+.hero h1{margin:0 0 6px;font-size:26px;line-height:1.2}
+.meta{display:flex;flex-wrap:wrap;gap:6px 14px;color:var(--muted);font-size:13px}
+.meta b{color:var(--text);font-weight:600}
+.badge{display:inline-flex;align-items:center;gap:8px;padding:10px 18px;border-radius:999px;font-weight:700;font-size:16px}
+.badge.ok{background:color-mix(in srgb,var(--pass) 14%,transparent);color:var(--pass)}
+.badge.bad{background:color-mix(in srgb,var(--fail) 14%,transparent);color:var(--fail)}
+.alert{border:1px solid color-mix(in srgb,var(--fail) 40%,transparent);background:color-mix(in srgb,var(--fail) 8%,var(--card));padding:12px 16px;border-radius:12px;margin:0 0 16px}
+.warn{border-color:color-mix(in srgb,var(--dev) 45%,transparent);background:color-mix(in srgb,var(--dev) 8%,var(--card))}
+.grid{display:grid;gap:16px}
+.kpis{grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-bottom:16px}
+.kpi .v{white-space:nowrap}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);padding:16px 18px;min-width:0}
+.kpi .l{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.5px;font-weight:600}
+.kpi .v{font-size:26px;font-weight:700;margin-top:4px;line-height:1.15}
+.kpi .s{color:var(--muted);font-size:12.5px;margin-top:2px}
+.kpi.pass .v{color:var(--pass)}.kpi.fail .v{color:var(--fail)}.kpi.tol .v{color:var(--tol)}
+.charts{grid-template-columns:repeat(auto-fit,minmax(380px,1fr));align-items:start}
+.card h2,.card h3{margin:0 0 14px;font-size:15px}
+.card h2 small,.card h3 small{color:var(--muted);font-weight:500;margin-left:6px}
+section{margin-top:28px}
+section>h2{font-size:19px;margin:0 0 12px}
+.donutbox{display:flex;align-items:center;gap:22px;flex-wrap:wrap}
+.donut{width:170px;height:170px;flex:none}
+.donut .ring{stroke:var(--soft)}
+.donut-n{font-size:8px;font-weight:700;fill:var(--text);text-anchor:middle}
+.donut-l{font-size:3px;fill:var(--muted);text-anchor:middle;text-transform:uppercase;letter-spacing:.3px}
+.legend{display:grid;gap:6px;flex:1;min-width:180px}
+.legend div{display:flex;align-items:center;gap:8px}
+.legend .n{margin-left:auto;font-variant-numeric:tabular-nums;color:var(--muted)}
+.dot{width:10px;height:10px;border-radius:3px;flex:none}
+.s-passed{stroke:var(--pass);background:var(--pass)}
+.s-failed{stroke:var(--fail);background:var(--fail)}
+.s-schema-violation{stroke:var(--fail2);background:var(--fail2)}
+.s-example-mismatch{stroke:var(--fail3);background:var(--fail3)}
+.s-data-mismatch{stroke:var(--fail4);background:var(--fail4)}
+.s-error{stroke:var(--fail5);background:var(--fail5)}
+.s-deviation{stroke:var(--dev);background:var(--dev)}
+.s-tolerated{stroke:var(--tol);background:var(--tol)}
+.s-not-buildable,.s-skipped{stroke:var(--skip);background:var(--skip)}
+.stack{display:flex;height:12px;border-radius:6px;overflow:hidden;background:var(--soft)}
+.stack span{display:block;height:100%}
+.rows{display:grid;gap:10px}
+.row{display:grid;grid-template-columns:minmax(90px,170px) 1fr auto;gap:12px;align-items:center}
+.row .name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
+.row .num{color:var(--muted);font-variant-numeric:tabular-nums;font-size:12.5px;white-space:nowrap}
+.hbar{height:10px;border-radius:5px;background:var(--soft);overflow:hidden}
+.hbar span{display:block;height:100%;border-radius:5px;background:var(--accent)}
+.c2xx{background:var(--c2)!important}.c3xx{background:var(--c3)!important}.c4xx{background:var(--c4)!important}.c5xx{background:var(--c5)!important}
+.cols{display:flex;align-items:flex-end;gap:8px;height:170px;padding-top:6px}
+.cols .col{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;min-width:0}
+.cols .col i{display:block;width:100%;max-width:46px;background:linear-gradient(180deg,var(--accent),color-mix(in srgb,var(--accent) 60%,transparent));border-radius:6px 6px 2px 2px;min-height:2px}
+.cols .col b{font-size:12px;margin-bottom:4px;font-variant-numeric:tabular-nums}
+.cols .col small{color:var(--muted);font-size:10.5px;margin-top:6px;text-align:center;line-height:1.15;height:2.3em}
+.pcts{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:16px}
+.pcts div{background:var(--soft);border-radius:10px;padding:8px;text-align:center}
+.pcts small{display:block;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.4px}
+.pcts b{font-variant-numeric:tabular-nums}
+.slow .row{grid-template-columns:28px minmax(160px,2fr) 3fr 70px}
+.slow .rank{color:var(--muted);font-variant-numeric:tabular-nums;text-align:right}
+.slow .sub{display:block;color:var(--muted);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.slow .hbar{height:14px}
+table{width:100%;border-collapse:collapse}
+th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-size:12px;text-transform:uppercase;letter-spacing:.4px;color:var(--muted);font-weight:600;background:var(--soft)}
+td.r,th.r{text-align:right;font-variant-numeric:tabular-nums}
+.tablecard{padding:0;overflow:auto}
+.tablecard table{min-width:760px}
+.pill{display:inline-block;padding:2px 9px;border-radius:999px;font-size:11.5px;font-weight:700;letter-spacing:.2px;white-space:nowrap;color:#fff}
+.pill.passed{background:var(--pass)}.pill.failed{background:var(--fail)}.pill.schema-violation{background:var(--fail2)}
+.pill.example-mismatch{background:var(--fail3)}.pill.data-mismatch{background:var(--fail4)}.pill.error{background:var(--fail5);color:#3a0d0f}
+.pill.deviation{background:var(--dev);color:#2c2300}.pill.tolerated{background:var(--tol)}
+.pill.not-buildable,.pill.skipped{background:var(--skip)}
+.tag{display:inline-block;padding:1px 7px;border-radius:6px;background:var(--soft);color:var(--muted);font-size:11.5px;margin-left:6px}
+.matrix td,.matrix th{text-align:center;min-width:64px}
+.matrix th:first-child,.matrix td:first-child{text-align:left}
+.cell.ok{background:color-mix(in srgb,var(--pass) calc(var(--a)*100%),transparent);font-weight:700}
+.cell.bad{background:color-mix(in srgb,var(--fail) calc(var(--a)*100%),transparent);font-weight:700}
+.cell.empty{color:var(--muted)}
+.split{display:grid;grid-template-columns:minmax(280px,1fr) 2fr;gap:16px}
+@media (max-width:900px){.split{grid-template-columns:1fr}.charts{grid-template-columns:1fr}}
+.toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:14px 16px;border-bottom:1px solid var(--line)}
+.toolbar input{flex:1;min-width:220px;padding:8px 12px;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--text);font:inherit}
+.chip{border:1px solid var(--line);background:var(--card);color:var(--text);border-radius:999px;padding:5px 11px;font:inherit;font-size:12.5px;cursor:pointer;display:inline-flex;gap:6px;align-items:center}
+.chip[aria-pressed="false"]{opacity:.45}
+tr.case{cursor:pointer}
+tr.case:hover td{background:var(--soft)}
+tr.case td.name{max-width:420px;word-break:break-word}
+tr.case td:first-child{white-space:nowrap}
+tr.case .caret{display:inline-block;width:14px;color:var(--muted);transition:transform .15s}
+tr.case.open .caret{transform:rotate(90deg)}
+tr.detail td{background:var(--soft);padding:16px 18px}
+tr.detail[hidden]{display:none}
+.timebar{display:flex;align-items:center;gap:8px;justify-content:flex-end}
+.timebar .hbar{width:70px;height:6px}
+.msg{margin:0 0 12px;font-weight:500}
+.kv{display:grid;grid-template-columns:max-content 1fr;gap:4px 14px;margin-bottom:12px}
+.kv dt{color:var(--muted)}.kv dd{margin:0}
+.box{border:1px solid var(--line);border-radius:10px;background:var(--card);margin:10px 0;overflow:hidden}
+.box>summary{padding:8px 12px;cursor:pointer;font-weight:600;font-size:13px}
+.box pre{margin:0;padding:12px;overflow:auto;max-height:420px;border-top:1px solid var(--line);white-space:pre-wrap;word-break:break-word}
+.copy{float:right;margin:-2px 0 0;border:1px solid var(--line);background:var(--card);color:var(--text);border-radius:6px;padding:2px 8px;cursor:pointer;font-size:12px}
+.muted{color:var(--muted)}
+.empty-state{padding:24px;text-align:center;color:var(--muted)}
+ul.plain{margin:0;padding-left:18px}
+footer{margin-top:36px;color:var(--muted);font-size:12.5px;text-align:center}
+</style>
+</head>
+<body>
+<header class="top"><div class="wrap">
+  <div class="brand">🧪 apitest <span>report</span></div>
+  <nav>
+    <a href="#dashboard">Dashboard</a>
+    {{if .S.Errors.Cases}}<a href="#errorcases">Error cases</a>{{end}}
+    <a href="#cases">Cases</a>
+    <a href="#coverage">Coverage</a>
+    {{if .R.Deviations}}<a href="#deviations">Deviations</a>{{end}}
+    {{if or .R.Findings .R.Warnings}}<a href="#hints">Hints</a>{{end}}
+  </nav>
+  <button class="theme" type="button" id="theme" title="Toggle light/dark">◐</button>
+</div></header>
+
+<main class="wrap">
+  <div class="hero">
+    <div>
+      <h1>{{.Title}}</h1>
+      <div class="meta">
+        <span>Spec <b class="mono">{{.R.SpecFile}}</b>{{if .R.OpenAPI}} · OpenAPI {{.R.OpenAPI}}{{end}}</span>
+        <span>Base URL <b class="mono">{{.R.BaseURL}}</b></span>
+        <span>Started <b>{{.Started}}</b></span>
+        <span>Duration <b>{{.Duration}}</b></span>
+        <span>Strict <b>{{if .R.Strict}}yes{{else}}no{{end}}</b></span>
+      </div>
+    </div>
+    {{if .R.Passed}}<div class="badge ok">✓ Passed</div>{{else}}<div class="badge bad">✕ Failed</div>{{end}}
+  </div>
+
+  {{if .R.Aborted}}<div class="alert"><b>Run aborted:</b> {{.R.Aborted}}</div>{{end}}
+  {{if .R.NotSelected}}<div class="alert warn">{{.R.NotSelected}} more cases were not selected by <code>go test -run</code>.</div>{{end}}
+
+  <section id="dashboard" style="margin-top:0">
+    <div class="grid kpis">
+      <div class="card kpi"><div class="l">Cases</div><div class="v">{{.S.Total}}</div><div class="s">{{.Run}} run · {{.S.Executed}} answered</div></div>
+      <div class="card kpi pass"><div class="l">Do not fail</div><div class="v">{{.PassRate}}</div><div class="s">{{.S.Good}} of {{.Run}} run</div></div>
+      <div class="card kpi {{if .S.Bad}}fail{{end}}"><div class="l">Fail</div><div class="v">{{.S.Bad}}</div><div class="s">failed, schema, example, data, error</div></div>
+      <div class="card kpi {{if index .S.Counts "TOLERATED"}}tol{{end}}"><div class="l">Tolerated · deviations</div><div class="v">{{index .S.Counts "TOLERATED"}} · {{index .S.Counts "DEVIATION"}}</div><div class="s">do not fail the test</div></div>
+      <div class="card kpi"><div class="l">Response time p95</div><div class="v">{{ms .S.P95}}</div><div class="s">avg {{ms .S.Avg}} · p50 {{ms .S.P50}}</div></div>
+      <div class="card kpi"><div class="l">Slowest request</div><div class="v">{{ms .S.Max}}</div><div class="s">{{ms .S.Sum}} in requests in total</div></div>
+      <div class="card kpi"><div class="l">Coverage</div><div class="v">{{.Coverage}}</div><div class="s">{{.R.Coverage.OperationsCovered}} of {{.R.Coverage.Operations}} operations</div></div>
+    </div>
+
+    <div class="grid charts">
+      <div class="card">
+        <h3>Cases by status</h3>
+        <div class="donutbox">
+          {{.Donut}}
+          <div class="legend">
+            {{range .Statuses}}<div><span class="dot s-{{status .Status}}"></span>{{words .Status}}<span class="n">{{.Count}} · {{.Pct}} %</span></div>{{end}}
+          </div>
+        </div>
+      </div>
+
+      <div class="grid">
+      <div class="card">
+        <h3>Tags <small>cases by status</small></h3>
+        <div class="rows">
+          {{range .Groups}}<div class="row">
+            <div class="name" title="{{.Name}}">{{.Name}}</div>
+            <div class="stack">{{range .Parts}}<span class="s-{{status .Status}}" style="width: {{.Pct}}%" title="{{.Status}}: {{.Count}}"></span>{{end}}</div>
+            <div class="num">{{.Passed}}/{{.Total}} · {{ms .Duration}}</div>
+          </div>{{end}}
+        </div>
+      </div>
+
+      {{if .S.Executed}}
+      <div class="card">
+        <h3>Status codes <small>answers per code</small></h3>
+        <div class="rows">
+          {{range .Codes}}<div class="row"><div class="name mono">{{.Label}}</div><div class="hbar"><span class="{{.Class}}" style="width: {{.Pct}}%"></span></div><div class="num">{{.Value}}</div></div>{{end}}
+        </div>
+      </div>
+      {{end}}
+      </div>
+      {{if .S.Executed}}
+      <div class="card">
+        <h3>Response times <small>requests per range</small></h3>
+        <div class="cols">
+          {{range .Hist}}<div class="col"><b>{{.Value}}</b><i style="height: {{.Pct}}%"></i><small>{{.Label}}</small></div>{{end}}
+        </div>
+        <div class="pcts">
+          <div><small>avg</small><b>{{ms .S.Avg}}</b></div>
+          <div><small>p50</small><b>{{ms .S.P50}}</b></div>
+          <div><small>p90</small><b>{{ms .S.P90}}</b></div>
+          <div><small>p95</small><b>{{ms .S.P95}}</b></div>
+          <div><small>p99</small><b>{{ms .S.P99}}</b></div>
+          <div><small>max</small><b>{{ms .S.Max}}</b></div>
+        </div>
+      </div>
+
+      {{end}}
+    </div>
+
+    {{if .Slowest}}
+    <div class="card slow" style="margin-top:16px">
+      <h3>Slowest requests <small>top {{len .Slowest}}</small></h3>
+      <div class="rows">
+        {{range $i, $s := .Slowest}}<div class="row">
+          <div class="rank">{{inc $i}}</div>
+          <div style="min-width:0"><span class="mono">{{$s.Label}}</span><span class="sub">{{$s.Sub}}</span></div>
+          <div class="hbar"><span class="s-{{$s.Class}}" style="width: {{$s.Pct}}%"></span></div>
+          <div class="num" style="text-align:right">{{$s.Value}}</div>
+        </div>{{end}}
+      </div>
+    </div>
+    {{end}}
+  </section>
+
+  {{if .S.Errors.Cases}}
+  <section id="errorcases">
+    <h2>Error cases</h2>
+    <div class="split">
+      <div class="card">
+        <h3>Expected → received</h3>
+        <p class="muted" style="margin-top:-6px">{{len .S.Errors.Cases}} error cases · <b style="color:var(--pass)">{{.S.Errors.AsDocumented}} as documented</b> · <b style="color:var(--tol)">{{.S.Errors.Other}} other</b>{{if .R.Tolerate}} (tolerated: they do not fail the test){{end}}</p>
+        <table class="matrix">
+          <thead><tr><th>expected</th>{{range .S.Errors.Actual}}<th>{{.}}</th>{{end}}</tr></thead>
+          <tbody>{{range .Matrix}}<tr><td><b>{{.Expected}}</b></td>{{range .Cells}}{{if .Count}}<td class="cell {{.Class}}" style="--a: {{.Alpha}}">{{.Count}}</td>{{else}}<td class="cell empty">·</td>{{end}}{{end}}</tr>{{end}}</tbody>
+        </table>
+      </div>
+      <div class="card tablecard">
+        <table>
+          <thead><tr><th>Case</th><th>Request</th><th class="r">Expected</th><th class="r">Received</th><th>Result</th><th>Answer</th></tr></thead>
+          <tbody>
+          {{range .S.Errors.Cases}}<tr>
+            <td>{{label .}}{{with kind .Kind}}<span class="tag">{{.}}</span>{{end}}</td>
+            <td class="mono">{{.Method}} {{.Target}}</td>
+            <td class="r mono">{{.Expected}}</td>
+            <td class="r mono">{{if .Code}}{{.Code}}{{else}}–{{end}}</td>
+            <td><span class="pill {{status .Status}}">{{.Status}}</span>{{if .Tolerated}}<div class="muted" style="font-size:12px">would be {{.Tolerated}}</div>{{end}}</td>
+            <td class="muted">{{excerpt .}}</td>
+          </tr>{{end}}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+  {{end}}
+
+  <section id="cases">
+    <h2>Cases</h2>
+    <div class="card tablecard">
+      <div class="toolbar">
+        <input id="q" type="search" placeholder="Search case, path, status, message …" aria-label="search">
+        {{range .Filters}}<button class="chip" type="button" aria-pressed="true" data-status="{{.Status}}"><span class="dot s-{{status .Status}}"></span>{{words .Status}} {{.Count}}</button>{{end}}
+      </div>
+      <table id="casetable">
+        <thead><tr><th style="width:60px">#</th><th>Case</th><th>Request</th><th>Status</th><th class="r">Code</th><th class="r">Time</th></tr></thead>
+        <tbody>
+        {{range .Cases}}
+        <tr class="case" data-status="{{.Status}}" data-search="{{.Search}}" {{if .Details}}data-id="{{.ID}}" tabindex="0"{{end}}>
+          <td class="muted">{{if .Details}}<span class="caret">▸</span>{{end}}{{if .Number}}{{.Number}}{{else}}{{.ID}}{{end}}</td>
+          <td class="name">{{.Name}}{{with kind .Kind}}<span class="tag">{{.}}</span>{{end}}{{if .Precondition}}<span class="tag">precondition</span>{{end}}</td>
+          <td class="mono">{{.Method}} {{.Target}}</td>
+          <td><span class="pill {{status .Status}}">{{.Status}}</span></td>
+          <td class="r mono">{{.Received}}</td>
+          <td class="r"><div class="timebar">{{ms .Duration}}{{if .Duration}}<div class="hbar"><span style="width: {{.BarPct}}%"></span></div>{{end}}</div></td>
+        </tr>
+        {{if .Details}}<tr class="detail" id="d{{.ID}}" hidden><td colspan="6">
+          {{if .Message}}<p class="msg">{{.Message}}</p>{{end}}
+          <dl class="kv">
+            {{if .Expected}}<dt>Expected</dt><dd>{{.Expected}}</dd>{{end}}
+            {{if .Actual}}<dt>Actual</dt><dd>{{.Actual}}</dd>{{end}}
+            {{if .Tolerated}}<dt>Without tolerance</dt><dd>{{.Tolerated}}</dd>{{end}}
+            {{if .Operation}}<dt>Operation</dt><dd class="mono">{{.Operation}}</dd>{{end}}
+          </dl>
+          {{if .Diffs}}<table><thead><tr><th>Pointer</th><th>Expected</th><th>Actual</th></tr></thead><tbody>
+            {{range .Diffs}}<tr><td class="mono">{{.Pointer}}</td><td class="mono">{{.Expected}}</td><td class="mono">{{.Actual}}{{if .Note}} <span class="muted">({{.Note}})</span>{{end}}</td></tr>{{end}}
+          </tbody></table>{{end}}
+          {{if .Problems}}<div class="box" style="padding:10px 14px"><b>Schema errors</b><ul class="plain">{{range .Problems}}<li class="mono">{{.}}</li>{{end}}</ul></div>{{end}}
+          {{if .Precondition}}<p class="muted">This case ran only as a precondition of a selected case.</p>{{end}}
+          {{range bodies .Case}}<details class="box"><summary>{{.Title}}{{if .Original}} <span class="muted">(truncated, {{.Original}} bytes)</span>{{end}}</summary><pre>{{.Text}}</pre></details>{{end}}
+          {{if .Curl}}<details class="box"><summary>Reproduce <button class="copy" type="button">copy</button></summary><pre class="curl">{{.Curl}}</pre></details>{{end}}
+        </td></tr>{{end}}
+        {{end}}
+        </tbody>
+      </table>
+      <div class="empty-state" id="none" hidden>No case matches the filter.</div>
+    </div>
+  </section>
+
+  <section id="coverage">
+    <h2>Coverage</h2>
+    <div class="grid charts">
+      <div class="card">
+        <div class="rows">
+          <div class="row"><div class="name">Operations</div><div class="hbar"><span class="c2xx" style="width: {{.CovPct}}%"></span></div><div class="num">{{.R.Coverage.OperationsCovered}} / {{.R.Coverage.Operations}}</div></div>
+          <div class="row"><div class="name">Named examples</div><div class="hbar"><span style="width: {{.ExPct}}%"></span></div><div class="num">{{.R.Coverage.ExamplesCovered}} / {{.R.Coverage.Examples}}</div></div>
+        </div>
+      </div>
+      {{if .R.Coverage.Uncovered}}<div class="card tablecard"><table>
+        <thead><tr><th>Uncovered operation</th><th>Reason</th></tr></thead>
+        <tbody>{{range .R.Coverage.Uncovered}}<tr><td class="mono">{{.Operation}}</td><td class="muted">{{.Reason}}</td></tr>{{end}}</tbody>
+      </table></div>{{end}}
+    </div>
+  </section>
+
+  {{if .R.Deviations}}
+  <section id="deviations">
+    <h2>Deviations <small class="muted mono" style="font-size:13px">{{.R.DeviationsFile}}</small></h2>
+    <div class="card tablecard"><table>
+      <thead><tr><th class="r">#</th><th>Case</th><th>Deviation</th><th>Reason</th><th>Ticket</th><th>Valid until</th><th class="r">Used</th><th>State</th></tr></thead>
+      <tbody>{{range .R.Deviations}}<tr><td class="r">{{.Index}}</td><td class="mono">{{.Case}}</td><td>{{.Rule}}</td><td>{{.Reason}}</td><td>{{.Ticket}}</td><td>{{.Expires}}</td><td class="r">{{.Uses}}</td><td>{{devstate .}}</td></tr>{{end}}</tbody>
+    </table></div>
+  </section>
+  {{end}}
+
+  {{if or .R.Findings .R.Warnings}}
+  <section id="hints">
+    <h2>Hints</h2>
+    <div class="grid charts">
+      {{if .R.Warnings}}<div class="card"><h3>Warnings <small>{{len .R.Warnings}}</small></h3><ul class="plain">{{range .R.Warnings}}<li>{{.}}</li>{{end}}</ul></div>{{end}}
+      {{if .R.Findings}}<div class="card tablecard"><table>
+        <thead><tr><th>Spec location</th><th>Finding</th></tr></thead>
+        <tbody>{{range .R.Findings}}<tr><td class="mono">{{.Where}}</td><td>{{.Message}}</td></tr>{{end}}</tbody>
+      </table></div>{{end}}
+    </div>
+  </section>
+  {{end}}
+
+  <footer>Generated by apitest {{.R.Version}} with {{.R.GoVersion}}</footer>
+</main>
+
+<script>
+(function(){
+  var root=document.documentElement;
+  try{var t=localStorage.getItem("apitest-theme");if(t)root.setAttribute("data-theme",t)}catch(e){}
+  document.getElementById("theme").addEventListener("click",function(){
+    var dark=root.getAttribute("data-theme")==="dark"||(!root.getAttribute("data-theme")&&matchMedia("(prefers-color-scheme: dark)").matches);
+    var next=dark?"light":"dark";root.setAttribute("data-theme",next);
+    try{localStorage.setItem("apitest-theme",next)}catch(e){}
+  });
+  function toggle(row){
+    var d=document.getElementById("d"+row.getAttribute("data-id"));if(!d)return;
+    d.hidden=!d.hidden;row.classList.toggle("open",!d.hidden);
+  }
+  document.querySelectorAll("tr.case[data-id]").forEach(function(row){
+    row.addEventListener("click",function(){toggle(row)});
+    row.addEventListener("keydown",function(e){if(e.key==="Enter"||e.key===" "){e.preventDefault();toggle(row)}});
+  });
+  var q=document.getElementById("q"),chips=document.querySelectorAll(".chip"),none=document.getElementById("none");
+  function apply(){
+    var text=q.value.trim().toLowerCase(),on={};
+    chips.forEach(function(c){on[c.getAttribute("data-status")]=c.getAttribute("aria-pressed")==="true"});
+    var shown=0;
+    document.querySelectorAll("tr.case").forEach(function(row){
+      var ok=on[row.getAttribute("data-status")]!==false&&(!text||row.getAttribute("data-search").indexOf(text)>=0);
+      row.hidden=!ok;if(ok)shown++;
+      var d=row.getAttribute("data-id")&&document.getElementById("d"+row.getAttribute("data-id"));
+      if(d&&!ok){d.hidden=true;row.classList.remove("open")}
+    });
+    none.hidden=shown>0;
+  }
+  q.addEventListener("input",apply);
+  chips.forEach(function(c){c.addEventListener("click",function(){c.setAttribute("aria-pressed",c.getAttribute("aria-pressed")==="true"?"false":"true");apply()})});
+  document.querySelectorAll("button.copy").forEach(function(b){
+    b.addEventListener("click",function(e){
+      e.preventDefault();e.stopPropagation();
+      var pre=b.closest("details").querySelector("pre");
+      if(navigator.clipboard)navigator.clipboard.writeText(pre.textContent).then(function(){b.textContent="copied";setTimeout(function(){b.textContent="copy"},1500)});
+    });
+  });
+  if(location.hash==="#errors"){var first=document.querySelector("tr.case[data-id]");if(first)toggle(first)}
+})();
+</script>
+</body>
+</html>

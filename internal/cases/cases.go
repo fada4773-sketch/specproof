@@ -34,10 +34,35 @@ const (
 	Unauthorized      // sent without token, expects 401 (FR-CASE-08)
 	InvalidToken      // sent with a manipulated token, expects 401 or 403 (FR-CASE-10)
 	Forbidden         // sent with Config.ForbiddenToken, expects 403 (FR-CASE-11)
+	NotFound          // generated: an unknown key in the path, expects 404
+	Conflict          // generated: a POST sent a second time, expects 409
+	ServerError       // named request example matched to a 5xx response
 )
 
 // IsAuth reports whether k is one of the authentication kinds.
-func (k Kind) IsAuth() bool { return k >= Unauthorized }
+func (k Kind) IsAuth() bool { return k == Unauthorized || k == InvalidToken || k == Forbidden }
+
+// Generated reports whether apitest builds cases of kind k itself instead
+// of taking them from named examples of the spec.
+func (k Kind) Generated() bool { return k.IsAuth() || k == NotFound || k == Conflict }
+
+// String names the kind for reports.
+func (k Kind) String() string {
+	return [...]string{"regular", "negative", "unauthorized", "invalid-token", "forbidden", "not-found", "conflict", "server-error"}[k]
+}
+
+// ErrorCase reports whether c tests an error answer Config.TolerateErrorCases
+// covers: a generated 404 or 409, a named example that expects 404 or 409,
+// or one that expects 5xx.
+func (c *Case) ErrorCase() bool {
+	switch c.Kind {
+	case NotFound, Conflict, ServerError:
+		return true
+	case Negative:
+		return c.Expect.Status == http.StatusNotFound || c.Expect.Status == http.StatusConflict
+	}
+	return false
+}
 
 // Names of the authentication cases.
 const (
@@ -108,6 +133,11 @@ type Case struct {
 	// (FR-CMP-07).
 	Unordered bool
 
+	// NotFoundParam is the path parameter a NotFound case sends
+	// NotFoundValue in, a key no record has.
+	NotFoundParam string
+	NotFoundValue any
+
 	// Skip is set by x-apitest-skip (FR-CASE-07).
 	Skip string
 	// NotBuildable explains why the case cannot be sent (FR-CASE-06).
@@ -119,6 +149,9 @@ type Options struct {
 	Tags       []string // only these tags, in this order; empty = all
 	IncludeOps []string // only these operations; empty = all
 	ExcludeOps []string
+	// ErrorCases adds the generated error cases: not-found (404) and
+	// conflict (409), see errorCases.
+	ErrorCases bool
 }
 
 // Build derives all cases for the selected operations, in execution order.
@@ -131,7 +164,7 @@ func Build(s *spec.Spec, opt Options) ([]*Case, error) {
 		if !selected(op, opt) {
 			continue
 		}
-		all = append(all, forOperation(op)...)
+		all = append(all, forOperation(op, opt.ErrorCases)...)
 	}
 	seen := map[string]bool{}
 	for _, c := range all {
@@ -232,7 +265,7 @@ func groupOrder(all []*Case, tags []string) map[string]int {
 	return order
 }
 
-func forOperation(op *spec.Operation) []*Case {
+func forOperation(op *spec.Operation, errorCases bool) []*Case {
 	base := func(example string) *Case {
 		c := &Case{
 			Name:    Name(group(op), op.ID, example),
@@ -300,7 +333,11 @@ func forOperation(op *spec.Operation) []*Case {
 		expect(c)
 		c.Rank = rank(c)
 	}
-	return append(out, authCases(op, out)...)
+	extra := authCases(op, out)
+	if errorCases {
+		extra = append(extra, generatedErrors(op, out)...)
+	}
+	return append(out, extra...)
 }
 
 // ParamSource returns the example name used for named parameter examples.
@@ -510,8 +547,11 @@ func expect(c *Case) {
 				c.Expect.Example, c.Expect.HasExample = spec.Normalize(ex.Value.Value), true
 				c.Expect.ExampleWhere = fmt.Sprintf("%s.responses.%s.content[%s].examples.%s", c.Op.Where, code, mt, c.Example)
 				c.addResponseExtensions(r, ex.Value)
-				if c.Expect.Status/100 == 4 || c.Expect.Class == 4 {
+				switch {
+				case c.Expect.Status/100 == 4 || c.Expect.Class == 4:
 					c.Kind = Negative
+				case c.Expect.Status/100 == 5 || c.Expect.Class == 5:
+					c.Kind = ServerError
 				}
 				return
 			}
@@ -619,7 +659,7 @@ func sortedMedia(content openapi3.Content) []string {
 // rank implements the order within a group: create, read, list, update,
 // 4xx examples, authentication cases, delete.
 func rank(c *Case) int {
-	if c.Kind == Negative {
+	if c.Kind == Negative || c.Kind == ServerError {
 		return 5
 	}
 	switch c.Op.Method {

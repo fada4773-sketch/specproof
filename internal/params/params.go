@@ -57,6 +57,9 @@ type Inputs struct {
 	OpID     string            // operation of the case, for "<operationId>.<name>" keys
 	// Binding returns a bound value for a parameter, if any (rank 1).
 	Binding func(p *openapi3.Parameter) (any, bool)
+	// Override sets path parameters by name before any other source: the
+	// unknown key of a not-found case.
+	Override map[string]any
 }
 
 // Value is a resolved parameter value.
@@ -79,6 +82,9 @@ func Resolve(p *openapi3.Parameter, in Inputs) (Value, bool) {
 }
 
 func resolve(p *openapi3.Parameter, in Inputs) (Value, bool) {
+	if v, ok := in.Override[p.Name]; ok && p.In == openapi3.ParameterInPath {
+		return Value{spec.Normalize(v), RankBinding}, true
+	}
 	if in.Binding != nil {
 		if v, ok := in.Binding(p); ok {
 			return Value{spec.Normalize(v), RankBinding}, true

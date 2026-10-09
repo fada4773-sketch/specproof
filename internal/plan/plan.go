@@ -89,6 +89,13 @@ func Build(all []*cases.Case, selected func(*cases.Case) bool, set *bind.Set, op
 	}
 	for _, c := range all {
 		seen := map[*cases.Case]bool{}
+		if c.Kind == cases.Conflict {
+			// the second POST needs the first one
+			for _, pc := range producers[c.Op.ID] {
+				seen[pc] = true
+				p.Deps[c] = append(p.Deps[c], pc)
+			}
+		}
 		for _, b := range set.Of(c.Op) {
 			for _, pc := range producers[b.Producer.ID] {
 				if pc != c && !seen[pc] {

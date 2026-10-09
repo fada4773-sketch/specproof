@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -269,15 +270,27 @@ func TestTPL2_21_AbortMidRun(t *testing.T) {
 	}
 }
 
-// normalize removes values that differ between runs of the same state.
+// timing matches the response times and durations of a report.
+var timing = regexp.MustCompile(`[0-9.]+ ?(µs|ms|s)\b|[█░]+`)
+
+// normalize removes values that differ between runs of the same state:
+// the times, the base URL, the dashboard (its figures are times) and the
+// Date header.
 func normalize(report string) string {
 	var out []string
+	dashboard := false
 	for _, line := range strings.Split(report, "\n") {
-		if strings.HasPrefix(line, "| Start |") || strings.HasPrefix(line, "| Duration |") || strings.HasPrefix(line, "| Base URL |") ||
+		switch {
+		case strings.HasPrefix(line, "## 📈 Dashboard"):
+			dashboard = true
+		case strings.HasPrefix(line, "## ") || strings.HasPrefix(line, "<details"):
+			dashboard = false
+		}
+		if dashboard || strings.HasPrefix(line, "| `/") || strings.Contains(line, "⏱") ||
 			strings.HasPrefix(strings.TrimSpace(line), "Date: ") { // response header, differs when a second passes
 			continue
 		}
-		out = append(out, line)
+		out = append(out, timing.ReplaceAllString(line, "T"))
 	}
 	return strings.Join(out, "\n")
 }

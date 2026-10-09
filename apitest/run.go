@@ -118,6 +118,8 @@ type outcome struct {
 	precondition bool
 	deviation    *deviations.Entry
 	expired      bool
+	// tolerated is the failing status of a TOLERATED error case.
+	tolerated Status
 }
 
 // exchange is an additional request made for a case, e.g. the GET check.
@@ -222,7 +224,7 @@ func (r *runner) prepare() error {
 	}
 	r.findings = append(r.findings, r.binds.Findings...)
 	r.findings = append(r.findings, cases.AuthFindings(s)...)
-	all, err := cases.Build(s, cases.Options{})
+	all, err := cases.Build(s, cases.Options{ErrorCases: r.cfg.ErrorCases})
 	if err != nil {
 		return err
 	}
@@ -383,6 +385,7 @@ func (r *runner) runCase(c *cases.Case, groupSkip string) {
 			o = r.check(ctx, c)
 		}
 		r.applyDeviation(o)
+		r.tolerate(o)
 		o.message = r.red.String(o.message)
 		r.results = append(r.results, o)
 		if c.Kind == cases.Positive && r.producers[c.Op.ID] == nil {
@@ -413,7 +416,7 @@ func (r *runner) runCase(c *cases.Case, groupSkip string) {
 			}
 		case o.status == StatusSkipped || o.status == StatusNotBuildable:
 			st.Skipf("%s: %s", o.status, o.message)
-		case o.status == StatusDeviation:
+		case o.status == StatusDeviation || o.status == StatusTolerated:
 			st.Logf("%s: %s", o.status, o.message)
 		}
 	})
@@ -584,6 +587,21 @@ func (r *runner) ignore(c *cases.Case) []string {
 
 // applyDeviation turns a failing outcome into DEVIATION if an entry of the
 // deviations file matches exactly (FR-DEV-01).
+// tolerate turns a failing error case into TOLERATED with
+// Config.TolerateErrorCases: an answer that differs from the documented
+// error (status, schema) does not fail the test, the report analyses it.
+// Network errors and timeouts still fail.
+func (r *runner) tolerate(o *outcome) {
+	if !r.cfg.TolerateErrorCases || !o.c.ErrorCase() {
+		return
+	}
+	switch o.status {
+	case StatusFailed, StatusSchemaViolation, StatusExampleMismatch:
+		o.tolerated, o.status = o.status, StatusTolerated
+		o.message = fmt.Sprintf("tolerated (%s): %s", o.tolerated, o.message)
+	}
+}
+
 func (r *runner) applyDeviation(o *outcome) {
 	if r.devs == nil {
 		return
@@ -725,6 +743,7 @@ func (r *runner) result(res *Result) *Result {
 			StatusCode:   o.code,
 			Duration:     o.duration,
 			Precondition: o.precondition,
+			Tolerated:    o.tolerated,
 		})
 	}
 	res.Summary = Summary{

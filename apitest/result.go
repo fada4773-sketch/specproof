@@ -14,6 +14,7 @@ const (
 	StatusDataMismatch    Status = "DATA_MISMATCH"    // written data was not stored as sent
 	StatusError           Status = "ERROR"            // network error, timeout, panic in a hook
 	StatusDeviation       Status = "DEVIATION"        // deviation allowed by the deviations file
+	StatusTolerated       Status = "TOLERATED"        // error case with another answer, Config.TolerateErrorCases
 	StatusNotBuildable    Status = "NOT_BUILDABLE"    // no value for a required parameter or body
 	StatusSkipped         Status = "SKIPPED"          // skipped on purpose or because of a failed dependency
 )
@@ -45,6 +46,8 @@ type CaseResult struct {
 	// Precondition is set if the case only ran because a selected case
 	// needed one of its values (FR-GO-02).
 	Precondition bool
+	// Tolerated is the status a TOLERATED case would have had.
+	Tolerated Status
 }
 
 // Summary aggregates a run.

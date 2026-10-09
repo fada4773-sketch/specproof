@@ -104,6 +104,21 @@ type Config struct {
 	// that needs a value from a listed operation runs after it.
 	LastInTag []string
 
+	// ErrorCases adds error cases apitest provokes itself: "not-found"
+	// sends an unknown key in the last path parameter of every operation
+	// that documents 404 (x-apitest-not-found at the parameter sets the
+	// key), "conflict" sends the body of a POST that documents 409 a second
+	// time. Their answers are checked against the schema of the documented
+	// response only. 5xx and other errors are tested through named examples:
+	// a request example named like a response example under that status.
+	ErrorCases bool
+	// TolerateErrorCases reports error cases that get another answer than
+	// documented as TOLERATED instead of failing the test: the generated
+	// not-found and conflict cases, and named examples that expect 404, 409
+	// or 5xx. Other 4xx examples (400, 422 …) still fail. The report
+	// analyses every error case: what was expected, what came instead.
+	TolerateErrorCases bool
+
 	// IgnoreFields are excluded from the value comparison at every level,
 	// e.g. "id" or "createdAt". JSON pointers ("/items/*/id") work as well.
 	IgnoreFields []string
@@ -144,6 +159,10 @@ type Config struct {
 	// ReportJSON additionally writes the results as JSON next to the report,
 	// with the extension ".json" (FR-REP-07).
 	ReportJSON bool
+	// DisableHTMLReport writes no HTML report. By default a self-contained
+	// HTML dashboard is written next to the Markdown report, with the
+	// extension ".html".
+	DisableHTMLReport bool
 	// OmitBodies leaves request and response bodies out of the report.
 	OmitBodies bool
 	// ReportPassedDetails shows request, response, headers and curl command

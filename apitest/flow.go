@@ -56,11 +56,16 @@ func (r *runner) prepareRequest(ctx context.Context, c *cases.Case, overrides ma
 			r.red.AddSecret(token)
 		}
 	}
+	var override map[string]any
+	if c.NotFoundParam != "" {
+		override = map[string]any{c.NotFoundParam: c.NotFoundValue}
+	}
 	p, err := exec.Prepare(c, exec.Input{
 		Base: r.base,
 		Params: params.Inputs{
-			Fixed: r.cfg.Params,
-			OpID:  c.Op.ID,
+			Fixed:    r.cfg.Params,
+			OpID:     c.Op.ID,
+			Override: override,
 			Binding: func(p *openapi3.Parameter) (any, bool) {
 				b := r.binds.For(c.Op, p)
 				if b == nil {
@@ -84,7 +89,7 @@ func (r *runner) prepareRequest(ctx context.Context, c *cases.Case, overrides ma
 // returns "" if all values are there (FR-ORDER-04).
 func (r *runner) missingDependency(c *cases.Case) string {
 	for _, b := range r.binds.Of(c.Op) {
-		if _, ok := r.values[b.Key()]; ok {
+		if _, ok := r.values[b.Key()]; ok || b.Param.Name == c.NotFoundParam {
 			continue
 		}
 		po := r.producers[b.Producer.ID]
