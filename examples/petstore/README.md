@@ -19,7 +19,7 @@ go test -tags=integration -count=1 -v -run 'TestPetstore/pet/getPetById' ./...
 APITEST_STRICT=true go test -tags=integration -count=1 ./...
 ```
 
-The report is written to `apitest-report/TestPetstore.md`, the results additionally to `apitest-report/TestPetstore.json`.
+The report is written to `apitest-report/TestPetstore.md` (set `APITEST_PETSTORE_REPORT` for another path), the dashboard to `apitest-report/TestPetstore.html`, the results additionally to `apitest-report/TestPetstore.json`.
 
 ## Requirements
 

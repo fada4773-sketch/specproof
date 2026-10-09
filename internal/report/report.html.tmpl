@@ -6,140 +6,174 @@
 <title>apitest · {{.Title}}</title>
 <style>
 :root{
-  --bg:#f5f6f8;--card:#ffffff;--text:#1b2230;--muted:#667085;--line:#e3e7ee;--soft:#f0f2f6;
-  --accent:#4f5fe8;--pass:#16a36a;--fail:#e5484d;--dev:#d9a400;--tol:#f08c00;--skip:#98a2b3;
-  --fail2:#c93a3f;--fail3:#f2777a;--fail4:#a12c30;--fail5:#ff9b9e;
-  --c2:#16a36a;--c3:#3b82f6;--c4:#f08c00;--c5:#e5484d;
-  --shadow:0 1px 2px rgba(16,24,40,.06),0 1px 3px rgba(16,24,40,.08);
+  --bg:#f4f5f7;--card:#ffffff;--text:#1a2130;--muted:#6b7385;--line:#e4e7ec;--soft:#f1f3f6;--head:#f8f9fb;
+  --accent:#4f5fe8;--pass:#14a06a;--fail:#e5484d;--dev:#d4a000;--tol:#ee8a00;--skip:#9aa3b2;
+  --fail2:#c4363b;--fail3:#f0777a;--fail4:#9e2a2e;--fail5:#ff9fa2;
+  --c2:#14a06a;--c3:#3b82f6;--c4:#ee8a00;--c5:#e5484d;
+  --shadow:0 1px 2px rgba(16,24,40,.05),0 1px 3px rgba(16,24,40,.07);
   --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --r:12px;color-scheme:light;
 }
 @media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
-  --bg:#0f1218;--card:#171b23;--text:#e6e9ef;--muted:#98a2b3;--line:#272d38;--soft:#1e232d;
-  --accent:#8b95ff;--shadow:0 1px 2px rgba(0,0,0,.4);
+  --bg:#0e1117;--card:#161a22;--text:#e5e8ee;--muted:#9aa3b2;--line:#262c37;--soft:#1d222c;--head:#1a1f28;
+  --accent:#8c96ff;--shadow:0 1px 2px rgba(0,0,0,.5);color-scheme:dark;
 }}
 :root[data-theme="dark"]{
-  --bg:#0f1218;--card:#171b23;--text:#e6e9ef;--muted:#98a2b3;--line:#272d38;--soft:#1e232d;
-  --accent:#8b95ff;--shadow:0 1px 2px rgba(0,0,0,.4);
+  --bg:#0e1117;--card:#161a22;--text:#e5e8ee;--muted:#9aa3b2;--line:#262c37;--soft:#1d222c;--head:#1a1f28;
+  --accent:#8c96ff;--shadow:0 1px 2px rgba(0,0,0,.5);color-scheme:dark;
 }
+:root[data-theme="light"]{color-scheme:light}
 *{box-sizing:border-box}
+html{scroll-padding-top:72px}
 body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
-a{color:var(--accent);text-decoration:none}
 code,pre,.mono{font-family:var(--mono);font-size:12.5px}
-.wrap{max-width:1280px;margin:0 auto;padding:0 20px 48px}
-header.top{background:var(--card);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5}
-header.top .wrap{display:flex;align-items:center;gap:16px;padding-top:12px;padding-bottom:12px;flex-wrap:wrap}
-.brand{font-weight:700;letter-spacing:.2px}
+.wrap{max-width:1440px;margin:0 auto;padding:0 24px 56px}
+.muted{color:var(--muted)}
+.num{font-variant-numeric:tabular-nums}
+.ell{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* top bar */
+header.top{background:var(--card);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:10}
+header.top .wrap{display:flex;align-items:center;gap:16px;padding-top:10px;padding-bottom:10px}
+.brand{font-weight:700;white-space:nowrap}
 .brand span{color:var(--muted);font-weight:500}
-nav{display:flex;gap:4px;flex-wrap:wrap;margin-left:auto}
-nav a{color:var(--muted);padding:6px 10px;border-radius:8px;font-weight:500}
+nav{display:flex;gap:2px;margin-left:auto;overflow-x:auto;scrollbar-width:none}
+nav::-webkit-scrollbar{display:none}
+nav a{color:var(--muted);padding:6px 10px;border-radius:8px;font-weight:500;text-decoration:none;white-space:nowrap}
 nav a:hover{background:var(--soft);color:var(--text)}
-button.theme{border:1px solid var(--line);background:var(--card);color:var(--text);border-radius:8px;padding:6px 10px;cursor:pointer}
-.hero{display:flex;align-items:flex-start;justify-content:space-between;gap:24px;margin:28px 0 18px;flex-wrap:wrap}
-.hero h1{margin:0 0 6px;font-size:26px;line-height:1.2}
-.meta{display:flex;flex-wrap:wrap;gap:6px 14px;color:var(--muted);font-size:13px}
+.iconbtn{border:1px solid var(--line);background:var(--card);color:var(--text);border-radius:8px;padding:5px 10px;cursor:pointer}
+
+/* hero */
+.hero{display:flex;align-items:center;justify-content:space-between;gap:24px;margin:26px 0 18px}
+.hero h1{margin:0 0 6px;font-size:24px;line-height:1.2}
+.meta{display:flex;flex-wrap:wrap;gap:4px 18px;color:var(--muted);font-size:13px}
 .meta b{color:var(--text);font-weight:600}
-.badge{display:inline-flex;align-items:center;gap:8px;padding:10px 18px;border-radius:999px;font-weight:700;font-size:16px}
+.badge{flex:none;display:inline-flex;align-items:center;gap:8px;padding:9px 18px;border-radius:999px;font-weight:700;font-size:15px}
 .badge.ok{background:color-mix(in srgb,var(--pass) 14%,transparent);color:var(--pass)}
 .badge.bad{background:color-mix(in srgb,var(--fail) 14%,transparent);color:var(--fail)}
-.alert{border:1px solid color-mix(in srgb,var(--fail) 40%,transparent);background:color-mix(in srgb,var(--fail) 8%,var(--card));padding:12px 16px;border-radius:12px;margin:0 0 16px}
-.warn{border-color:color-mix(in srgb,var(--dev) 45%,transparent);background:color-mix(in srgb,var(--dev) 8%,var(--card))}
-.grid{display:grid;gap:16px}
-.kpis{grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-bottom:16px}
-.kpi .v{white-space:nowrap}
-.card{background:var(--card);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);padding:16px 18px;min-width:0}
-.kpi .l{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.5px;font-weight:600}
-.kpi .v{font-size:26px;font-weight:700;margin-top:4px;line-height:1.15}
-.kpi .s{color:var(--muted);font-size:12.5px;margin-top:2px}
+.alert{border:1px solid color-mix(in srgb,var(--fail) 40%,transparent);background:color-mix(in srgb,var(--fail) 7%,var(--card));padding:10px 16px;border-radius:var(--r);margin:0 0 16px}
+.alert.warn{border-color:color-mix(in srgb,var(--dev) 45%,transparent);background:color-mix(in srgb,var(--dev) 8%,var(--card))}
+
+/* cards and grids */
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow);min-width:0}
+.pad{padding:16px 18px}
+.card h3{margin:0;font-size:14.5px;display:flex;align-items:baseline;gap:8px}
+.card h3 small{color:var(--muted);font-weight:500;font-size:12.5px}
+.cardhead{display:flex;align-items:baseline;justify-content:space-between;gap:12px;padding:14px 18px;border-bottom:1px solid var(--line)}
+section{margin-top:30px}
+section>h2{font-size:18px;margin:0 0 12px;display:flex;align-items:baseline;gap:10px}
+section>h2 small{color:var(--muted);font-weight:500;font-size:13px}
+.kpis{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:12px}
+.three{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;margin-top:16px}
+.three>.card{display:flex;flex-direction:column}
+.stack-v{display:grid;gap:16px;margin-top:16px}
+@media (max-width:1200px){.kpis{grid-template-columns:repeat(4,minmax(0,1fr))}.three{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:760px){.kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.three{grid-template-columns:1fr}.hero{flex-direction:column;align-items:flex-start}.wrap{padding:0 16px 40px}}
+
+/* KPIs */
+.kpi{padding:14px 16px}
+.kpi .l{color:var(--muted);font-size:11.5px;text-transform:uppercase;letter-spacing:.5px;font-weight:600}
+.kpi .v{font-size:24px;font-weight:700;margin-top:2px;line-height:1.2;white-space:nowrap}
+.kpi .s{color:var(--muted);font-size:12px;margin-top:2px}
 .kpi.pass .v{color:var(--pass)}.kpi.fail .v{color:var(--fail)}.kpi.tol .v{color:var(--tol)}
-.charts{grid-template-columns:repeat(auto-fit,minmax(380px,1fr));align-items:start}
-.card h2,.card h3{margin:0 0 14px;font-size:15px}
-.card h2 small,.card h3 small{color:var(--muted);font-weight:500;margin-left:6px}
-section{margin-top:28px}
-section>h2{font-size:19px;margin:0 0 12px}
-.donutbox{display:flex;align-items:center;gap:22px;flex-wrap:wrap}
-.donut{width:170px;height:170px;flex:none}
+
+/* status colors */
+.s-passed{--c:var(--pass)}.s-failed{--c:var(--fail)}.s-schema-violation{--c:var(--fail2)}.s-example-mismatch{--c:var(--fail3)}
+.s-data-mismatch{--c:var(--fail4)}.s-error{--c:var(--fail5)}.s-deviation{--c:var(--dev)}.s-tolerated{--c:var(--tol)}
+.s-not-buildable,.s-skipped{--c:var(--skip)}
+.dot{width:10px;height:10px;border-radius:3px;flex:none;background:var(--c)}
+.seg{stroke:var(--c)}
+
+/* donut */
+.donutbox{display:flex;align-items:center;gap:20px;padding:14px 18px 18px;flex:1}
+.donut{width:150px;height:150px;flex:none}
 .donut .ring{stroke:var(--soft)}
 .donut-n{font-size:8px;font-weight:700;fill:var(--text);text-anchor:middle}
 .donut-l{font-size:3px;fill:var(--muted);text-anchor:middle;text-transform:uppercase;letter-spacing:.3px}
-.legend{display:grid;gap:6px;flex:1;min-width:180px}
-.legend div{display:flex;align-items:center;gap:8px}
-.legend .n{margin-left:auto;font-variant-numeric:tabular-nums;color:var(--muted)}
-.dot{width:10px;height:10px;border-radius:3px;flex:none}
-.s-passed{stroke:var(--pass);background:var(--pass)}
-.s-failed{stroke:var(--fail);background:var(--fail)}
-.s-schema-violation{stroke:var(--fail2);background:var(--fail2)}
-.s-example-mismatch{stroke:var(--fail3);background:var(--fail3)}
-.s-data-mismatch{stroke:var(--fail4);background:var(--fail4)}
-.s-error{stroke:var(--fail5);background:var(--fail5)}
-.s-deviation{stroke:var(--dev);background:var(--dev)}
-.s-tolerated{stroke:var(--tol);background:var(--tol)}
-.s-not-buildable,.s-skipped{stroke:var(--skip);background:var(--skip)}
-.stack{display:flex;height:12px;border-radius:6px;overflow:hidden;background:var(--soft)}
-.stack span{display:block;height:100%}
-.rows{display:grid;gap:10px}
-.row{display:grid;grid-template-columns:minmax(90px,170px) 1fr auto;gap:12px;align-items:center}
-.row .name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
-.row .num{color:var(--muted);font-variant-numeric:tabular-nums;font-size:12.5px;white-space:nowrap}
-.hbar{height:10px;border-radius:5px;background:var(--soft);overflow:hidden}
-.hbar span{display:block;height:100%;border-radius:5px;background:var(--accent)}
+.legend{display:grid;gap:5px;flex:1;min-width:0;font-size:13px}
+.legend div{display:flex;align-items:center;gap:8px;min-width:0}
+.legend .n{margin-left:auto;color:var(--muted);white-space:nowrap}
+
+/* bars */
+.track{height:8px;border-radius:4px;background:var(--soft);overflow:hidden}
+.track>span{display:block;height:100%;border-radius:4px;background:var(--accent)}
+.track.thick{height:12px}
+.stackbar{display:flex;height:12px;border-radius:6px;overflow:hidden;background:var(--soft)}
+.stackbar span{display:block;height:100%;background:var(--c)}
 .c2xx{background:var(--c2)!important}.c3xx{background:var(--c3)!important}.c4xx{background:var(--c4)!important}.c5xx{background:var(--c5)!important}
-.cols{display:flex;align-items:flex-end;gap:8px;height:170px;padding-top:6px}
-.cols .col{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;min-width:0}
-.cols .col i{display:block;width:100%;max-width:46px;background:linear-gradient(180deg,var(--accent),color-mix(in srgb,var(--accent) 60%,transparent));border-radius:6px 6px 2px 2px;min-height:2px}
-.cols .col b{font-size:12px;margin-bottom:4px;font-variant-numeric:tabular-nums}
-.cols .col small{color:var(--muted);font-size:10.5px;margin-top:6px;text-align:center;line-height:1.15;height:2.3em}
-.pcts{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:16px}
-.pcts div{background:var(--soft);border-radius:10px;padding:8px;text-align:center}
-.pcts small{display:block;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.4px}
-.pcts b{font-variant-numeric:tabular-nums}
-.slow .row{grid-template-columns:28px minmax(160px,2fr) 3fr 70px}
-.slow .rank{color:var(--muted);font-variant-numeric:tabular-nums;text-align:right}
-.slow .sub{display:block;color:var(--muted);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.slow .hbar{height:14px}
+
+/* histogram */
+.hist{display:flex;align-items:flex-end;gap:6px;height:140px;padding:16px 18px 0}
+.hist .col{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;min-width:0}
+.hist .col i{display:block;width:100%;max-width:40px;background:var(--accent);opacity:.85;border-radius:5px 5px 2px 2px;min-height:2px}
+.hist .col b{font-size:11.5px;margin-bottom:3px;font-weight:600}
+.histl{display:flex;gap:6px;padding:6px 18px 0}
+.histl small{flex:1;color:var(--muted);font-size:10.5px;text-align:center;line-height:1.2;min-width:0}
+.pcts{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:0;margin:14px 18px 18px;border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.pcts div{padding:7px 4px;text-align:center;border-right:1px solid var(--line)}
+.pcts div:last-child{border-right:0}
+.pcts small{display:block;color:var(--muted);font-size:10.5px;text-transform:uppercase;letter-spacing:.4px}
+.pcts b{font-size:13px;white-space:nowrap}
+
+/* status codes */
+.codes{display:grid;gap:8px;padding:14px 18px 18px}
+.codes .r{display:grid;grid-template-columns:52px 1fr 44px;gap:10px;align-items:center;font-size:13px}
+.codes .r span:last-child{text-align:right;color:var(--muted)}
+
+/* tables */
 table{width:100%;border-collapse:collapse}
-th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
-th{font-size:12px;text-transform:uppercase;letter-spacing:.4px;color:var(--muted);font-weight:600;background:var(--soft)}
-td.r,th.r{text-align:right;font-variant-numeric:tabular-nums}
-.tablecard{padding:0;overflow:auto}
-.tablecard table{min-width:760px}
-.pill{display:inline-block;padding:2px 9px;border-radius:999px;font-size:11.5px;font-weight:700;letter-spacing:.2px;white-space:nowrap;color:#fff}
-.pill.passed{background:var(--pass)}.pill.failed{background:var(--fail)}.pill.schema-violation{background:var(--fail2)}
-.pill.example-mismatch{background:var(--fail3)}.pill.data-mismatch{background:var(--fail4)}.pill.error{background:var(--fail5);color:#3a0d0f}
-.pill.deviation{background:var(--dev);color:#2c2300}.pill.tolerated{background:var(--tol)}
-.pill.not-buildable,.pill.skipped{background:var(--skip)}
-.tag{display:inline-block;padding:1px 7px;border-radius:6px;background:var(--soft);color:var(--muted);font-size:11.5px;margin-left:6px}
-.matrix td,.matrix th{text-align:center;min-width:64px}
-.matrix th:first-child,.matrix td:first-child{text-align:left}
+th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:middle}
+tbody tr:last-child td{border-bottom:0}
+th{font-size:11.5px;text-transform:uppercase;letter-spacing:.4px;color:var(--muted);font-weight:600;background:var(--head);white-space:nowrap}
+td.r,th.r{text-align:right}
+td.c,th.c{text-align:center}
+table.fixed{table-layout:fixed}
+.scroll{overflow-x:auto}
+.pill{display:inline-block;padding:2px 9px;border-radius:999px;font-size:11px;font-weight:700;letter-spacing:.2px;white-space:nowrap;color:#fff;background:var(--c)}
+.pill.s-error,.pill.s-deviation{color:#2b1a00}
+.tag{display:inline-block;padding:0 7px;border-radius:6px;background:var(--soft);color:var(--muted);font-size:11px;margin-left:6px;vertical-align:1px;white-space:nowrap}
+.two{display:block;min-width:0}
+.two .sub{display:block;color:var(--muted);font-size:12px}
+.method{display:inline-block;min-width:54px;font-weight:700;font-size:11.5px}
+
+/* error matrix */
+.matrixwrap{padding:14px 18px 18px;overflow-x:auto}
+.matrix{width:auto;min-width:320px}
+.matrix th,.matrix td{text-align:center;min-width:62px;border:1px solid var(--line)}
+.matrix th:first-child,.matrix td:first-child{text-align:left;min-width:110px}
 .cell.ok{background:color-mix(in srgb,var(--pass) calc(var(--a)*100%),transparent);font-weight:700}
 .cell.bad{background:color-mix(in srgb,var(--fail) calc(var(--a)*100%),transparent);font-weight:700}
 .cell.empty{color:var(--muted)}
-.split{display:grid;grid-template-columns:minmax(280px,1fr) 2fr;gap:16px}
-@media (max-width:900px){.split{grid-template-columns:1fr}.charts{grid-template-columns:1fr}}
-.toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:14px 16px;border-bottom:1px solid var(--line)}
-.toolbar input{flex:1;min-width:220px;padding:8px 12px;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--text);font:inherit}
-.chip{border:1px solid var(--line);background:var(--card);color:var(--text);border-radius:999px;padding:5px 11px;font:inherit;font-size:12.5px;cursor:pointer;display:inline-flex;gap:6px;align-items:center}
-.chip[aria-pressed="false"]{opacity:.45}
-tr.case{cursor:pointer}
+.errsum{display:flex;gap:18px;flex-wrap:wrap;padding:14px 18px 0;font-size:13px}
+.errsum b{font-size:18px;margin-right:4px}
+
+/* cases */
+.toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:12px 16px;border-bottom:1px solid var(--line)}
+.toolbar input{flex:1 1 260px;padding:7px 12px;border:1px solid var(--line);border-radius:9px;background:var(--bg);color:var(--text);font:inherit}
+.chip{border:1px solid var(--line);background:var(--card);color:var(--text);border-radius:999px;padding:4px 10px;font:inherit;font-size:12px;cursor:pointer;display:inline-flex;gap:6px;align-items:center}
+.chip[aria-pressed="false"]{opacity:.4}
+tr.case{cursor:default}
+tr.case[data-id]{cursor:pointer}
 tr.case:hover td{background:var(--soft)}
-tr.case td.name{max-width:420px;word-break:break-word}
-tr.case td:first-child{white-space:nowrap}
-tr.case .caret{display:inline-block;width:14px;color:var(--muted);transition:transform .15s}
+.caret{display:inline-block;width:12px;color:var(--muted);transition:transform .15s}
 tr.case.open .caret{transform:rotate(90deg)}
-tr.detail td{background:var(--soft);padding:16px 18px}
-tr.detail[hidden]{display:none}
-.timebar{display:flex;align-items:center;gap:8px;justify-content:flex-end}
-.timebar .hbar{width:70px;height:6px}
-.msg{margin:0 0 12px;font-weight:500}
-.kv{display:grid;grid-template-columns:max-content 1fr;gap:4px 14px;margin-bottom:12px}
-.kv dt{color:var(--muted)}.kv dd{margin:0}
+tr.detail td{background:var(--soft);padding:16px 20px;white-space:normal}
+tr.detail[hidden],tr.case[hidden]{display:none}
+.timecell{display:flex;align-items:center;gap:8px;justify-content:flex-end}
+.timecell .track{width:56px;height:6px;flex:none}
+.msg{margin:0 0 12px;font-weight:500;overflow-wrap:anywhere}
+.kv{display:grid;grid-template-columns:max-content 1fr;gap:3px 16px;margin:0 0 12px}
+.kv dt{color:var(--muted)}.kv dd{margin:0;overflow-wrap:anywhere}
 .box{border:1px solid var(--line);border-radius:10px;background:var(--card);margin:10px 0;overflow:hidden}
 .box>summary{padding:8px 12px;cursor:pointer;font-weight:600;font-size:13px}
-.box pre{margin:0;padding:12px;overflow:auto;max-height:420px;border-top:1px solid var(--line);white-space:pre-wrap;word-break:break-word}
-.copy{float:right;margin:-2px 0 0;border:1px solid var(--line);background:var(--card);color:var(--text);border-radius:6px;padding:2px 8px;cursor:pointer;font-size:12px}
-.muted{color:var(--muted)}
+.box pre{margin:0;padding:12px;overflow:auto;max-height:420px;border-top:1px solid var(--line);white-space:pre-wrap;overflow-wrap:anywhere}
+.copy{float:right;border:1px solid var(--line);background:var(--card);color:var(--text);border-radius:6px;padding:1px 8px;cursor:pointer;font-size:12px}
+.innertable{border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--card);margin-bottom:12px}
+.innertable td{overflow-wrap:anywhere}
 .empty-state{padding:24px;text-align:center;color:var(--muted)}
-ul.plain{margin:0;padding-left:18px}
-footer{margin-top:36px;color:var(--muted);font-size:12.5px;text-align:center}
+ul.plain{margin:0;padding:14px 18px 16px 34px}
+ul.plain li{margin:3px 0}
+footer{margin-top:40px;color:var(--muted);font-size:12.5px;text-align:center}
 </style>
 </head>
 <body>
@@ -147,18 +181,20 @@ footer{margin-top:36px;color:var(--muted);font-size:12.5px;text-align:center}
   <div class="brand">🧪 apitest <span>report</span></div>
   <nav>
     <a href="#dashboard">Dashboard</a>
+    <a href="#tags">Tags</a>
+    {{if .Slowest}}<a href="#slowest">Slowest</a>{{end}}
     {{if .S.Errors.Cases}}<a href="#errorcases">Error cases</a>{{end}}
     <a href="#cases">Cases</a>
     <a href="#coverage">Coverage</a>
     {{if .R.Deviations}}<a href="#deviations">Deviations</a>{{end}}
     {{if or .R.Findings .R.Warnings}}<a href="#hints">Hints</a>{{end}}
   </nav>
-  <button class="theme" type="button" id="theme" title="Toggle light/dark">◐</button>
+  <button class="iconbtn" type="button" id="theme" title="Light / dark">◐</button>
 </div></header>
 
 <main class="wrap">
   <div class="hero">
-    <div>
+    <div style="min-width:0">
       <h1>{{.Title}}</h1>
       <div class="meta">
         <span>Spec <b class="mono">{{.R.SpecFile}}</b>{{if .R.OpenAPI}} · OpenAPI {{.R.OpenAPI}}{{end}}</span>
@@ -174,106 +210,127 @@ footer{margin-top:36px;color:var(--muted);font-size:12.5px;text-align:center}
   {{if .R.Aborted}}<div class="alert"><b>Run aborted:</b> {{.R.Aborted}}</div>{{end}}
   {{if .R.NotSelected}}<div class="alert warn">{{.R.NotSelected}} more cases were not selected by <code>go test -run</code>.</div>{{end}}
 
-  <section id="dashboard" style="margin-top:0">
-    <div class="grid kpis">
-      <div class="card kpi"><div class="l">Cases</div><div class="v">{{.S.Total}}</div><div class="s">{{.Run}} run · {{.S.Executed}} answered</div></div>
-      <div class="card kpi pass"><div class="l">Do not fail</div><div class="v">{{.PassRate}}</div><div class="s">{{.S.Good}} of {{.Run}} run</div></div>
-      <div class="card kpi {{if .S.Bad}}fail{{end}}"><div class="l">Fail</div><div class="v">{{.S.Bad}}</div><div class="s">failed, schema, example, data, error</div></div>
-      <div class="card kpi {{if index .S.Counts "TOLERATED"}}tol{{end}}"><div class="l">Tolerated · deviations</div><div class="v">{{index .S.Counts "TOLERATED"}} · {{index .S.Counts "DEVIATION"}}</div><div class="s">do not fail the test</div></div>
-      <div class="card kpi"><div class="l">Response time p95</div><div class="v">{{ms .S.P95}}</div><div class="s">avg {{ms .S.Avg}} · p50 {{ms .S.P50}}</div></div>
-      <div class="card kpi"><div class="l">Slowest request</div><div class="v">{{ms .S.Max}}</div><div class="s">{{ms .S.Sum}} in requests in total</div></div>
-      <div class="card kpi"><div class="l">Coverage</div><div class="v">{{.Coverage}}</div><div class="s">{{.R.Coverage.OperationsCovered}} of {{.R.Coverage.Operations}} operations</div></div>
+  <div id="dashboard">
+    <div class="kpis">
+      <div class="card kpi"><div class="l">Cases</div><div class="v num">{{.S.Total}}</div><div class="s ell">{{.Run}} run · {{.S.Executed}} answered</div></div>
+      <div class="card kpi pass"><div class="l">Do not fail</div><div class="v num">{{.PassRate}}</div><div class="s ell">{{.S.Good}} of {{.Run}} run</div></div>
+      <div class="card kpi {{if .S.Bad}}fail{{end}}"><div class="l">Fail</div><div class="v num">{{.S.Bad}}</div><div class="s ell">fail the test</div></div>
+      <div class="card kpi {{if index .S.Counts "TOLERATED"}}tol{{end}}"><div class="l">Tolerated · dev.</div><div class="v num">{{index .S.Counts "TOLERATED"}} · {{index .S.Counts "DEVIATION"}}</div><div class="s ell">do not fail the test</div></div>
+      <div class="card kpi"><div class="l">p95</div><div class="v num">{{ms .S.P95}}</div><div class="s ell">avg {{ms .S.Avg}} · p50 {{ms .S.P50}}</div></div>
+      <div class="card kpi"><div class="l">Slowest</div><div class="v num">{{ms .S.Max}}</div><div class="s ell">{{ms .S.Sum}} in requests</div></div>
+      <div class="card kpi"><div class="l">Coverage</div><div class="v num">{{.Coverage}}</div><div class="s ell">{{.R.Coverage.OperationsCovered}} of {{.R.Coverage.Operations}} operations</div></div>
     </div>
 
-    <div class="grid charts">
+    <div class="three">
       <div class="card">
-        <h3>Cases by status</h3>
+        <div class="cardhead"><h3>Cases by status</h3></div>
         <div class="donutbox">
           {{.Donut}}
           <div class="legend">
-            {{range .Statuses}}<div><span class="dot s-{{status .Status}}"></span>{{words .Status}}<span class="n">{{.Count}} · {{.Pct}} %</span></div>{{end}}
+            {{range .Statuses}}<div class="s-{{status .Status}}"><span class="dot"></span><span class="ell">{{words .Status}}</span><span class="n num">{{.Count}} · {{.Pct}} %</span></div>{{end}}
           </div>
         </div>
       </div>
 
-      <div class="grid">
       <div class="card">
-        <h3>Tags <small>cases by status</small></h3>
-        <div class="rows">
-          {{range .Groups}}<div class="row">
-            <div class="name" title="{{.Name}}">{{.Name}}</div>
-            <div class="stack">{{range .Parts}}<span class="s-{{status .Status}}" style="width: {{.Pct}}%" title="{{.Status}}: {{.Count}}"></span>{{end}}</div>
-            <div class="num">{{.Passed}}/{{.Total}} · {{ms .Duration}}</div>
-          </div>{{end}}
-        </div>
-      </div>
-
-      {{if .S.Executed}}
-      <div class="card">
-        <h3>Status codes <small>answers per code</small></h3>
-        <div class="rows">
-          {{range .Codes}}<div class="row"><div class="name mono">{{.Label}}</div><div class="hbar"><span class="{{.Class}}" style="width: {{.Pct}}%"></span></div><div class="num">{{.Value}}</div></div>{{end}}
-        </div>
-      </div>
-      {{end}}
-      </div>
-      {{if .S.Executed}}
-      <div class="card">
-        <h3>Response times <small>requests per range</small></h3>
-        <div class="cols">
-          {{range .Hist}}<div class="col"><b>{{.Value}}</b><i style="height: {{.Pct}}%"></i><small>{{.Label}}</small></div>{{end}}
-        </div>
+        <div class="cardhead"><h3>Response times <small>requests per range</small></h3></div>
+        {{if .S.Executed}}
+        <div class="hist">{{range .Hist}}<div class="col"><b class="num">{{if .Pct}}{{.Value}}{{end}}</b><i style="height: {{.Pct}}%" title="{{.Label}}: {{.Value}}"></i></div>{{end}}</div>
+        <div class="histl">{{range .Hist}}<small>{{.Label}}</small>{{end}}</div>
         <div class="pcts">
-          <div><small>avg</small><b>{{ms .S.Avg}}</b></div>
-          <div><small>p50</small><b>{{ms .S.P50}}</b></div>
-          <div><small>p90</small><b>{{ms .S.P90}}</b></div>
-          <div><small>p95</small><b>{{ms .S.P95}}</b></div>
-          <div><small>p99</small><b>{{ms .S.P99}}</b></div>
-          <div><small>max</small><b>{{ms .S.Max}}</b></div>
+          <div><small>avg</small><b class="num">{{ms .S.Avg}}</b></div>
+          <div><small>p50</small><b class="num">{{ms .S.P50}}</b></div>
+          <div><small>p90</small><b class="num">{{ms .S.P90}}</b></div>
+          <div><small>p95</small><b class="num">{{ms .S.P95}}</b></div>
+          <div><small>p99</small><b class="num">{{ms .S.P99}}</b></div>
+          <div><small>max</small><b class="num">{{ms .S.Max}}</b></div>
         </div>
+        {{else}}<div class="empty-state">No request was answered.</div>{{end}}
       </div>
 
-      {{end}}
-    </div>
-
-    {{if .Slowest}}
-    <div class="card slow" style="margin-top:16px">
-      <h3>Slowest requests <small>top {{len .Slowest}}</small></h3>
-      <div class="rows">
-        {{range $i, $s := .Slowest}}<div class="row">
-          <div class="rank">{{inc $i}}</div>
-          <div style="min-width:0"><span class="mono">{{$s.Label}}</span><span class="sub">{{$s.Sub}}</span></div>
-          <div class="hbar"><span class="s-{{$s.Class}}" style="width: {{$s.Pct}}%"></span></div>
-          <div class="num" style="text-align:right">{{$s.Value}}</div>
-        </div>{{end}}
+      <div class="card">
+        <div class="cardhead"><h3>Status codes <small>answers per code</small></h3></div>
+        {{if .Codes}}<div class="codes">
+          {{range .Codes}}<div class="r"><b class="mono">{{.Label}}</b><div class="track thick"><span class="{{.Class}}" style="width: {{.Pct}}%"></span></div><span class="num">{{.Value}}</span></div>{{end}}
+        </div>{{else}}<div class="empty-state">No answers.</div>{{end}}
       </div>
     </div>
-    {{end}}
+  </div>
+
+  <section id="tags">
+    <h2>Tags <small>{{len .Groups}} tags</small></h2>
+    <div class="card scroll">
+      <table class="fixed" style="min-width:820px">
+        <colgroup><col style="width:22%"><col style="width:70px"><col><col style="width:60px"><col style="width:60px"><col style="width:70px"><col style="width:70px"><col style="width:90px"><col style="width:90px"></colgroup>
+        <thead><tr><th>Tag</th><th class="r">Cases</th><th>Status</th><th class="r">✓</th><th class="r">✕</th><th class="r">tol./dev.</th><th class="r">not run</th><th class="r">Avg</th><th class="r">Total</th></tr></thead>
+        <tbody>
+        {{range .Groups}}<tr>
+          <td class="ell" title="{{.Name}}"><b>{{.Name}}</b></td>
+          <td class="r num">{{.Total}}</td>
+          <td><div class="stackbar">{{range .Parts}}<span class="s-{{status .Status}}" style="width: {{.Pct}}%" title="{{.Status}}: {{.Count}}"></span>{{end}}</div></td>
+          <td class="r num" style="color:var(--pass)">{{.Passed}}</td>
+          <td class="r num" {{if .Bad}}style="color:var(--fail);font-weight:700"{{end}}>{{.Bad}}</td>
+          <td class="r num">{{.Other}}</td>
+          <td class="r num muted">{{.NotRun}}</td>
+          <td class="r num">{{ms .Avg}}</td>
+          <td class="r num muted">{{ms .Duration}}</td>
+        </tr>{{end}}
+        </tbody>
+      </table>
+    </div>
   </section>
+
+  {{if .Slowest}}
+  <section id="slowest">
+    <h2>Slowest requests <small>top {{len .Slowest}}</small></h2>
+    <div class="card scroll">
+      <table class="fixed" style="min-width:820px">
+        <colgroup><col style="width:44px"><col style="width:46%"><col style="width:150px"><col style="width:64px"><col><col style="width:84px"></colgroup>
+        <thead><tr><th class="r">#</th><th>Request · case</th><th>Status</th><th class="r">Code</th><th></th><th class="r">Time</th></tr></thead>
+        <tbody>
+        {{range $i, $s := .Slowest}}<tr>
+          <td class="r muted num">{{inc $i}}</td>
+          <td><span class="two"><span class="mono ell" style="display:block" title="{{$s.Method}} {{$s.Target}}"><span class="method">{{$s.Method}}</span>{{$s.Target}}</span><span class="sub ell" title="{{label $s.Case}}">{{label $s.Case}}</span></span></td>
+          <td><span class="pill s-{{status $s.Status}}">{{$s.Status}}</span></td>
+          <td class="r mono">{{$s.Code}}</td>
+          <td><div class="track thick"><span style="width: {{$s.Pct}}%"></span></div></td>
+          <td class="r num"><b>{{ms $s.Duration}}</b></td>
+        </tr>{{end}}
+        </tbody>
+      </table>
+    </div>
+  </section>
+  {{end}}
 
   {{if .S.Errors.Cases}}
   <section id="errorcases">
-    <h2>Error cases</h2>
-    <div class="split">
+    <h2>Error cases <small>expected error answers (404, 409, 5xx) and what came instead</small></h2>
+    <div class="stack-v" style="margin-top:0">
       <div class="card">
-        <h3>Expected → received</h3>
-        <p class="muted" style="margin-top:-6px">{{len .S.Errors.Cases}} error cases · <b style="color:var(--pass)">{{.S.Errors.AsDocumented}} as documented</b> · <b style="color:var(--tol)">{{.S.Errors.Other}} other</b>{{if .R.Tolerate}} (tolerated: they do not fail the test){{end}}</p>
-        <table class="matrix">
-          <thead><tr><th>expected</th>{{range .S.Errors.Actual}}<th>{{.}}</th>{{end}}</tr></thead>
-          <tbody>{{range .Matrix}}<tr><td><b>{{.Expected}}</b></td>{{range .Cells}}{{if .Count}}<td class="cell {{.Class}}" style="--a: {{.Alpha}}">{{.Count}}</td>{{else}}<td class="cell empty">·</td>{{end}}{{end}}</tr>{{end}}</tbody>
-        </table>
+        <div class="errsum">
+          <span><b class="num">{{len .S.Errors.Cases}}</b>error cases</span>
+          <span style="color:var(--pass)"><b class="num">{{.S.Errors.AsDocumented}}</b>as documented</span>
+          <span style="color:var(--tol)"><b class="num">{{.S.Errors.Other}}</b>other{{if .R.Tolerate}} · tolerated, they do not fail the test{{end}}</span>
+        </div>
+        <div class="matrixwrap">
+          <table class="matrix">
+            <thead><tr><th>expected ↓ · got →</th>{{range .S.Errors.Actual}}<th class="mono">{{.}}</th>{{end}}</tr></thead>
+            <tbody>{{range .Matrix}}<tr><td class="mono"><b>{{.Expected}}</b></td>{{range .Cells}}{{if .Count}}<td class="cell {{.Class}} num" style="--a: {{.Alpha}}">{{.Count}}</td>{{else}}<td class="cell empty">·</td>{{end}}{{end}}</tr>{{end}}</tbody>
+          </table>
+        </div>
       </div>
-      <div class="card tablecard">
-        <table>
-          <thead><tr><th>Case</th><th>Request</th><th class="r">Expected</th><th class="r">Received</th><th>Result</th><th>Answer</th></tr></thead>
+      <div class="card scroll">
+        <table class="fixed" style="min-width:900px">
+          <colgroup><col style="width:27%"><col style="width:28%"><col style="width:76px"><col style="width:66px"><col style="width:150px"><col></colgroup>
+          <thead><tr><th>Case</th><th>Request</th><th class="r">Expected</th><th class="r">Got</th><th>Result</th><th>Answer</th></tr></thead>
           <tbody>
           {{range .S.Errors.Cases}}<tr>
-            <td>{{label .}}{{with kind .Kind}}<span class="tag">{{.}}</span>{{end}}</td>
-            <td class="mono">{{.Method}} {{.Target}}</td>
+            <td><span class="two"><span class="ell" style="display:block" title="{{label .}}">{{label .}}</span>{{with kind .Kind}}<span class="sub">{{.}}</span>{{end}}</span></td>
+            <td class="mono ell" title="{{.Method}} {{.Target}}"><span class="method">{{.Method}}</span>{{.Target}}</td>
             <td class="r mono">{{.Expected}}</td>
-            <td class="r mono">{{if .Code}}{{.Code}}{{else}}–{{end}}</td>
-            <td><span class="pill {{status .Status}}">{{.Status}}</span>{{if .Tolerated}}<div class="muted" style="font-size:12px">would be {{.Tolerated}}</div>{{end}}</td>
-            <td class="muted">{{excerpt .}}</td>
+            <td class="r mono"><b>{{if .Code}}{{.Code}}{{else}}–{{end}}</b></td>
+            <td><span class="pill s-{{status .Status}}">{{.Status}}</span>{{if .Tolerated}}<div class="muted" style="font-size:11.5px">would be {{.Tolerated}}</div>{{end}}</td>
+            <td class="muted ell" title="{{excerpt .}}">{{excerpt .}}</td>
           </tr>{{end}}
           </tbody>
         </table>
@@ -283,36 +340,40 @@ footer{margin-top:36px;color:var(--muted);font-size:12.5px;text-align:center}
   {{end}}
 
   <section id="cases">
-    <h2>Cases</h2>
-    <div class="card tablecard">
+    <h2>Cases <small>{{.S.Total}} cases · click a row for details</small></h2>
+    <div class="card">
       <div class="toolbar">
         <input id="q" type="search" placeholder="Search case, path, status, message …" aria-label="search">
-        {{range .Filters}}<button class="chip" type="button" aria-pressed="true" data-status="{{.Status}}"><span class="dot s-{{status .Status}}"></span>{{words .Status}} {{.Count}}</button>{{end}}
+        {{range .Filters}}<button class="chip s-{{status .Status}}" type="button" aria-pressed="true" data-status="{{.Status}}"><span class="dot"></span>{{words .Status}} {{.Count}}</button>{{end}}
       </div>
-      <table id="casetable">
-        <thead><tr><th style="width:60px">#</th><th>Case</th><th>Request</th><th>Status</th><th class="r">Code</th><th class="r">Time</th></tr></thead>
+      <div class="scroll">
+      <table class="fixed" id="casetable" style="min-width:900px">
+        <colgroup><col style="width:64px"><col style="width:34%"><col><col style="width:160px"><col style="width:64px"><col style="width:130px"></colgroup>
+        <thead><tr><th>#</th><th>Case</th><th>Request</th><th>Status</th><th class="r">Code</th><th class="r">Time</th></tr></thead>
         <tbody>
         {{range .Cases}}
         <tr class="case" data-status="{{.Status}}" data-search="{{.Search}}" {{if .Details}}data-id="{{.ID}}" tabindex="0"{{end}}>
-          <td class="muted">{{if .Details}}<span class="caret">▸</span>{{end}}{{if .Number}}{{.Number}}{{else}}{{.ID}}{{end}}</td>
-          <td class="name">{{.Name}}{{with kind .Kind}}<span class="tag">{{.}}</span>{{end}}{{if .Precondition}}<span class="tag">precondition</span>{{end}}</td>
-          <td class="mono">{{.Method}} {{.Target}}</td>
-          <td><span class="pill {{status .Status}}">{{.Status}}</span></td>
+          <td class="muted num">{{if .Details}}<span class="caret">▸</span>{{else}}<span class="caret"></span>{{end}}{{if .Number}}{{.Number}}{{else}}{{.ID}}{{end}}</td>
+          <td class="ell" title="{{.Name}}">{{.Name}}{{with kind .Kind}}<span class="tag">{{.}}</span>{{end}}{{if .Precondition}}<span class="tag">precondition</span>{{end}}</td>
+          <td class="mono ell" title="{{.Method}} {{.Target}}">{{if .Method}}<span class="method">{{.Method}}</span>{{.Target}}{{else}}<span class="muted">–</span>{{end}}</td>
+          <td><span class="pill s-{{status .Status}}">{{.Status}}</span></td>
           <td class="r mono">{{.Received}}</td>
-          <td class="r"><div class="timebar">{{ms .Duration}}{{if .Duration}}<div class="hbar"><span style="width: {{.BarPct}}%"></span></div>{{end}}</div></td>
+          <td class="r"><div class="timecell num">{{ms .Duration}}{{if .Duration}}<div class="track"><span style="width: {{.BarPct}}%"></span></div>{{end}}</div></td>
         </tr>
         {{if .Details}}<tr class="detail" id="d{{.ID}}" hidden><td colspan="6">
           {{if .Message}}<p class="msg">{{.Message}}</p>{{end}}
           <dl class="kv">
+            <dt>Case</dt><dd>{{.Name}}</dd>
+            {{if .Method}}<dt>Request</dt><dd class="mono">{{.Method}} {{.Target}}</dd>{{end}}
             {{if .Expected}}<dt>Expected</dt><dd>{{.Expected}}</dd>{{end}}
             {{if .Actual}}<dt>Actual</dt><dd>{{.Actual}}</dd>{{end}}
             {{if .Tolerated}}<dt>Without tolerance</dt><dd>{{.Tolerated}}</dd>{{end}}
             {{if .Operation}}<dt>Operation</dt><dd class="mono">{{.Operation}}</dd>{{end}}
           </dl>
-          {{if .Diffs}}<table><thead><tr><th>Pointer</th><th>Expected</th><th>Actual</th></tr></thead><tbody>
+          {{if .Diffs}}<div class="innertable"><table><thead><tr><th>Pointer</th><th>Expected</th><th>Actual</th></tr></thead><tbody>
             {{range .Diffs}}<tr><td class="mono">{{.Pointer}}</td><td class="mono">{{.Expected}}</td><td class="mono">{{.Actual}}{{if .Note}} <span class="muted">({{.Note}})</span>{{end}}</td></tr>{{end}}
-          </tbody></table>{{end}}
-          {{if .Problems}}<div class="box" style="padding:10px 14px"><b>Schema errors</b><ul class="plain">{{range .Problems}}<li class="mono">{{.}}</li>{{end}}</ul></div>{{end}}
+          </tbody></table></div>{{end}}
+          {{if .Problems}}<div class="box"><div style="padding:8px 12px;font-weight:600;font-size:13px">Schema errors</div><ul class="plain" style="padding-top:0">{{range .Problems}}<li class="mono">{{.}}</li>{{end}}</ul></div>{{end}}
           {{if .Precondition}}<p class="muted">This case ran only as a precondition of a selected case.</p>{{end}}
           {{range bodies .Case}}<details class="box"><summary>{{.Title}}{{if .Original}} <span class="muted">(truncated, {{.Original}} bytes)</span>{{end}}</summary><pre>{{.Text}}</pre></details>{{end}}
           {{if .Curl}}<details class="box"><summary>Reproduce <button class="copy" type="button">copy</button></summary><pre class="curl">{{.Curl}}</pre></details>{{end}}
@@ -320,32 +381,32 @@ footer{margin-top:36px;color:var(--muted);font-size:12.5px;text-align:center}
         {{end}}
         </tbody>
       </table>
+      </div>
       <div class="empty-state" id="none" hidden>No case matches the filter.</div>
     </div>
   </section>
 
   <section id="coverage">
     <h2>Coverage</h2>
-    <div class="grid charts">
-      <div class="card">
-        <div class="rows">
-          <div class="row"><div class="name">Operations</div><div class="hbar"><span class="c2xx" style="width: {{.CovPct}}%"></span></div><div class="num">{{.R.Coverage.OperationsCovered}} / {{.R.Coverage.Operations}}</div></div>
-          <div class="row"><div class="name">Named examples</div><div class="hbar"><span style="width: {{.ExPct}}%"></span></div><div class="num">{{.R.Coverage.ExamplesCovered}} / {{.R.Coverage.Examples}}</div></div>
-        </div>
+    <div class="card pad">
+      <div class="codes" style="padding:0;grid-template-columns:1fr">
+        <div class="r" style="grid-template-columns:150px 1fr 80px"><span>Operations</span><div class="track thick"><span class="c2xx" style="width: {{.CovPct}}%"></span></div><span class="num">{{.R.Coverage.OperationsCovered}} / {{.R.Coverage.Operations}}</span></div>
+        <div class="r" style="grid-template-columns:150px 1fr 80px"><span>Named examples</span><div class="track thick"><span style="width: {{.ExPct}}%"></span></div><span class="num">{{.R.Coverage.ExamplesCovered}} / {{.R.Coverage.Examples}}</span></div>
       </div>
-      {{if .R.Coverage.Uncovered}}<div class="card tablecard"><table>
-        <thead><tr><th>Uncovered operation</th><th>Reason</th></tr></thead>
-        <tbody>{{range .R.Coverage.Uncovered}}<tr><td class="mono">{{.Operation}}</td><td class="muted">{{.Reason}}</td></tr>{{end}}</tbody>
-      </table></div>{{end}}
     </div>
+    {{if .R.Coverage.Uncovered}}<div class="card scroll" style="margin-top:12px"><table class="fixed" style="min-width:640px">
+      <colgroup><col style="width:34%"><col></colgroup>
+      <thead><tr><th>Uncovered operation</th><th>Reason</th></tr></thead>
+      <tbody>{{range .R.Coverage.Uncovered}}<tr><td class="mono ell" title="{{.Operation}}">{{.Operation}}</td><td class="muted" style="overflow-wrap:anywhere">{{.Reason}}</td></tr>{{end}}</tbody>
+    </table></div>{{end}}
   </section>
 
   {{if .R.Deviations}}
   <section id="deviations">
-    <h2>Deviations <small class="muted mono" style="font-size:13px">{{.R.DeviationsFile}}</small></h2>
-    <div class="card tablecard"><table>
+    <h2>Deviations <small class="mono">{{.R.DeviationsFile}}</small></h2>
+    <div class="card scroll"><table style="min-width:900px">
       <thead><tr><th class="r">#</th><th>Case</th><th>Deviation</th><th>Reason</th><th>Ticket</th><th>Valid until</th><th class="r">Used</th><th>State</th></tr></thead>
-      <tbody>{{range .R.Deviations}}<tr><td class="r">{{.Index}}</td><td class="mono">{{.Case}}</td><td>{{.Rule}}</td><td>{{.Reason}}</td><td>{{.Ticket}}</td><td>{{.Expires}}</td><td class="r">{{.Uses}}</td><td>{{devstate .}}</td></tr>{{end}}</tbody>
+      <tbody>{{range .R.Deviations}}<tr><td class="r num">{{.Index}}</td><td class="mono">{{.Case}}</td><td>{{.Rule}}</td><td>{{.Reason}}</td><td>{{.Ticket}}</td><td class="num">{{.Expires}}</td><td class="r num">{{.Uses}}</td><td>{{devstate .}}</td></tr>{{end}}</tbody>
     </table></div>
   </section>
   {{end}}
@@ -353,11 +414,12 @@ footer{margin-top:36px;color:var(--muted);font-size:12.5px;text-align:center}
   {{if or .R.Findings .R.Warnings}}
   <section id="hints">
     <h2>Hints</h2>
-    <div class="grid charts">
-      {{if .R.Warnings}}<div class="card"><h3>Warnings <small>{{len .R.Warnings}}</small></h3><ul class="plain">{{range .R.Warnings}}<li>{{.}}</li>{{end}}</ul></div>{{end}}
-      {{if .R.Findings}}<div class="card tablecard"><table>
+    <div class="stack-v" style="margin-top:0">
+      {{if .R.Warnings}}<div class="card"><div class="cardhead"><h3>Warnings <small>{{len .R.Warnings}}</small></h3></div><ul class="plain">{{range .R.Warnings}}<li>{{.}}</li>{{end}}</ul></div>{{end}}
+      {{if .R.Findings}}<div class="card scroll"><table class="fixed" style="min-width:640px">
+        <colgroup><col style="width:38%"><col></colgroup>
         <thead><tr><th>Spec location</th><th>Finding</th></tr></thead>
-        <tbody>{{range .R.Findings}}<tr><td class="mono">{{.Where}}</td><td>{{.Message}}</td></tr>{{end}}</tbody>
+        <tbody>{{range .R.Findings}}<tr><td class="mono ell" title="{{.Where}}">{{.Where}}</td><td style="overflow-wrap:anywhere">{{.Message}}</td></tr>{{end}}</tbody>
       </table></div>{{end}}
     </div>
   </section>
@@ -371,7 +433,8 @@ footer{margin-top:36px;color:var(--muted);font-size:12.5px;text-align:center}
   var root=document.documentElement;
   try{var t=localStorage.getItem("apitest-theme");if(t)root.setAttribute("data-theme",t)}catch(e){}
   document.getElementById("theme").addEventListener("click",function(){
-    var dark=root.getAttribute("data-theme")==="dark"||(!root.getAttribute("data-theme")&&matchMedia("(prefers-color-scheme: dark)").matches);
+    var cur=root.getAttribute("data-theme");
+    var dark=cur==="dark"||(!cur&&matchMedia("(prefers-color-scheme: dark)").matches);
     var next=dark?"light":"dark";root.setAttribute("data-theme",next);
     try{localStorage.setItem("apitest-theme",next)}catch(e){}
   });
@@ -391,7 +454,7 @@ footer{margin-top:36px;color:var(--muted);font-size:12.5px;text-align:center}
     document.querySelectorAll("tr.case").forEach(function(row){
       var ok=on[row.getAttribute("data-status")]!==false&&(!text||row.getAttribute("data-search").indexOf(text)>=0);
       row.hidden=!ok;if(ok)shown++;
-      var d=row.getAttribute("data-id")&&document.getElementById("d"+row.getAttribute("data-id"));
+      var id=row.getAttribute("data-id"),d=id&&document.getElementById("d"+id);
       if(d&&!ok){d.hidden=true;row.classList.remove("open")}
     });
     none.hidden=shown>0;
@@ -405,7 +468,6 @@ footer{margin-top:36px;color:var(--muted);font-size:12.5px;text-align:center}
       if(navigator.clipboard)navigator.clipboard.writeText(pre.textContent).then(function(){b.textContent="copied";setTimeout(function(){b.textContent="copy"},1500)});
     });
   });
-  if(location.hash==="#errors"){var first=document.querySelector("tr.case[data-id]");if(first)toggle(first)}
 })();
 </script>
 </body>

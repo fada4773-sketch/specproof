@@ -239,7 +239,7 @@ With `ErrorCases: true` apitest provokes two errors itself, for every operation 
 
 | Case | When | Request | Expected |
 |---|---|---|---|
-| `<Tag>/<op>/not-found` | the operation has a path parameter and documents `404` | the last path parameter gets a key no record has: `999999999` for integers, a UUID, `apitest-not-found` for strings (within `minimum`/`maximum`/`maxLength`), or `x-apitest-not-found` of the parameter; all other values as in the regular case | 404, body checked against the schema |
+| `<Tag>/<op>/not-found` | the operation has a path parameter and documents `404` | the last path parameter gets a key no record has: `999999999` for integers, a UUID, `apitest-not-found` for strings (within `minimum`/`maximum`/`maxLength`), or `x-apitest-not-found` of the parameter; all other values as in the regular case, and a required parameter without value (no example, or its producer failed) gets one generated from its schema, so the case is sent anyway | 404, body checked against the schema |
 | `<Tag>/<op>/conflict` | a POST with a body that documents `409` | the body of the regular case a second time, right after it | 409, body checked against the schema |
 
 5xx and other errors come from named examples (see above). With `TolerateErrorCases: true` an error case that gets another answer (`204` instead of `404`, `500` instead of `409`) is `TOLERATED` instead of failing the test; this covers the generated cases and named examples that expect 404, 409 or 5xx, while other 4xx examples (400, 422) still fail. The report analyses every error case: a matrix *expected → received* and per case the request, both statuses and the answer.
@@ -529,7 +529,7 @@ apitest.Run(t, apitest.Config{
 	Strict: os.Getenv("CI") == "true", // NOT_BUILDABLE and expired deviations fail in CI
 
 	// Reports (choose one):
-	ReportPath: "apitest-report/orchestration.md", // default: apitest-report/<test name>.md
+	ReportPath: "apitest-report/orchestration.md", // without ReportPath no report files are written
 	ReportJSON: true,                              // additionally orchestration.json
 	// orchestration.html (dashboard) is written by default; DisableHTMLReport: true leaves it out
 	OmitBodies: true,                              // no request/response bodies in the report
@@ -610,10 +610,10 @@ Tips:
 | `NOT_BUILDABLE` | No value for a required parameter or body. | only in strict mode |
 | `SKIPPED` | Skipped on purpose or because a dependency failed. | no |
 
-apitest writes two reports with the same content, after every group, so an aborted run still leaves them:
+Reports are only written when `ReportPath` is set; without it the results go to `go test` and the returned `Result` only. With `ReportPath: "apitest-report/api.md"` apitest writes two reports with the same content, after every group, so an aborted run still leaves them:
 
-- **`apitest-report/<test name>.html`**, a self-contained dashboard (no external files, light and dark theme): key figures, cases by status, tags, response time histogram with avg/p50/p90/p95/p99/max, status codes, the slowest requests, the error case analysis, and every case in a table with search, status filters and expandable details.
-- **`apitest-report/<test name>.md`** for pull requests and CI artifacts, with the same figures as tables and a Mermaid chart.
+- **`apitest-report/api.html`**, a self-contained dashboard (no external files, light and dark theme): key figures, cases by status, tags, response time histogram with avg/p50/p90/p95/p99/max, status codes, the slowest requests, the error case analysis, and every case in a table with search, status filters and expandable details.
+- **`apitest-report/api.md`** for pull requests and CI artifacts, with the same figures as tables and a Mermaid chart.
 
 The Markdown report contains a summary, coverage of operations and named examples, spec findings, every failed case with differences, schema errors, request/response bodies, the response headers and a `curl` command with the headers as sent, the deviations, and the passed cases. It is written after every group, so an aborted run still leaves a report. Tokens, `Authorization`/`Cookie` headers, API keys in query strings, `writeOnly` fields and fields named like `password`, `secret`, `token` or `apiKey` are replaced by `***`; `curl` commands use `$TOKEN` instead. `Run` also returns a `Result` with every case, for your own assertions:
 

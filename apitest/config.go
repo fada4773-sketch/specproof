@@ -150,11 +150,13 @@ type Config struct {
 	// HTTPClient is used for all requests; nil means a default client.
 	HTTPClient *http.Client
 
-	// DisableReports writes no report files at all; results are only
-	// reported through go test and the returned Result.
+	// DisableReports writes no report files even if ReportPath is set;
+	// results are only reported through go test and the returned Result.
 	DisableReports bool
-	// ReportPath is where the Markdown report is written. The default is
-	// "apitest-report/<test name>.md" in the test package directory.
+	// ReportPath is where the Markdown report is written; the HTML report
+	// (and with ReportJSON the JSON one) goes next to it. Empty means no
+	// report files at all. Relative paths are resolved against the test
+	// package directory.
 	ReportPath string
 	// ReportJSON additionally writes the results as JSON next to the report,
 	// with the extension ".json" (FR-REP-07).
@@ -201,6 +203,9 @@ func (c *Config) validate() error {
 	}
 	if c.DisableReports && (c.ReportJSON || c.ReportPath != "") {
 		errs = append(errs, errors.New("Config.DisableReports is set together with ReportPath or ReportJSON: disable reports or configure them, not both"))
+	}
+	if c.ReportJSON && c.ReportPath == "" && !c.DisableReports {
+		errs = append(errs, errors.New("Config.ReportJSON needs Config.ReportPath: the JSON report is written next to it, e.g. ReportPath: \"apitest-report/api.md\""))
 	}
 	for _, name := range c.SkipAuthCases {
 		if name != AuthUnauthorized && name != AuthInvalidToken && name != AuthForbidden {

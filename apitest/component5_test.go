@@ -237,3 +237,15 @@ func TestDeviationNamesAndNearMisses(t *testing.T) {
 		t.Errorf("near miss: %s %q", st, msg)
 	}
 }
+
+// ReportJSON is written next to ReportPath, so it needs one.
+func TestReportJSONNeedsPath(t *testing.T) {
+	c := Config{SpecPath: "x", BaseURL: "http://localhost", ReportJSON: true}
+	if err := c.validate(); err == nil || !strings.Contains(err.Error(), "Config.ReportJSON needs Config.ReportPath") {
+		t.Errorf("got %v", err)
+	}
+	c.ReportPath = "out/api.md"
+	if err := c.validate(); err != nil {
+		t.Errorf("with ReportPath: %v", err)
+	}
+}

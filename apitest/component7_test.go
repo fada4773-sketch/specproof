@@ -233,3 +233,83 @@ func TestNotFoundValue(t *testing.T) {
 		t.Errorf("requests:\n%s", strings.Join(got, "\n"))
 	}
 }
+
+// A not-found case is sent even when values are missing: a parameter
+// without source, or one whose producer failed, gets a generated value.
+// The regular cases still need their real values.
+func TestNotFoundGeneratesMissingValues(t *testing.T) {
+	specPath := filepath.Join(t.TempDir(), "planets.yaml")
+	err := os.WriteFile(specPath, []byte(`
+openapi: 3.0.3
+info: { title: Planets, version: "1" }
+paths:
+  /planets/{planetId}/moons/{moonId}:
+    get:
+      operationId: getMoon
+      tags: [Moon]
+      parameters:
+        - { name: planetId, in: path, required: true, schema: { type: integer } }
+        - { name: moonId, in: path, required: true, schema: { type: integer } }
+        - { name: view, in: query, required: true, schema: { type: string } }
+      responses:
+        "200": { description: the moon }
+        "404": { description: no such moon }
+  /gardens:
+    post:
+      operationId: createGarden
+      tags: [Garden]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, properties: { name: { type: string } } }
+            example: { name: Rose }
+      responses:
+        "201":
+          description: the garden
+          content:
+            application/json:
+              schema: { type: object, properties: { id: { type: integer } } }
+  /gardens/{gardenId}:
+    get:
+      operationId: getGarden
+      tags: [Garden]
+      parameters:
+        - { name: gardenId, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: the garden }
+        "404": { description: no such garden }
+`), 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var sent []string
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		sent = append(sent, r.Method+" "+r.URL.RequestURI())
+		mu.Unlock()
+		if r.Method == http.MethodPost {
+			w.WriteHeader(500) // the producer fails
+			return
+		}
+		w.WriteHeader(404)
+	})
+	out := runFake(t, Config{SpecPath: specPath, Handler: handler, ErrorCases: true, DisableReports: true})
+	got := statuses(out.res)
+	want := map[string]Status{
+		"Moon/getMoon/default": StatusNotBuildable, "Moon/getMoon/not-found": StatusPassed,
+		"Garden/createGarden/default": StatusFailed, "Garden/getGarden/default": StatusSkipped, "Garden/getGarden/not-found": StatusPassed,
+	}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("got  %v\nwant %v\n%s", got, want, out.ft.output())
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	all := strings.Join(sent, "\n")
+	for _, w := range []string{"GET /planets/1/moons/999999999?view=apitest", "GET /gardens/999999999"} {
+		if !strings.Contains(all, w) {
+			t.Errorf("not sent: %s\n%s", w, all)
+		}
+	}
+}

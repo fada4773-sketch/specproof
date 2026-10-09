@@ -6,6 +6,12 @@ contain breaking changes, which are listed here.
 
 ## Unreleased
 
+
+### Breaking changes
+
+- Reports are only written when `Config.ReportPath` is set; the default
+  `apitest-report/<test name>.md` is gone. `ReportJSON` needs `ReportPath`.
+  `DisableReports` still turns reports off where a path is set.
 ### Moved
 
 - The project lives at `github.com/fada4773-sketch/specproof`. The library
@@ -16,6 +22,14 @@ contain breaking changes, which are listed here.
 
 ### Features
 
+- `not-found` cases no longer get skipped for missing values: a required
+  parameter without value (no example, or its producer failed or did not
+  run) gets one generated from its schema, and the request is sent.
+- HTML report: new layout with fixed rows (key figures, status, response
+  times and status codes side by side), tags and slowest requests as full
+  width tables, error cases with the matrix above the list, fixed table
+  columns with shortened long paths and names (full text on hover and in
+  the details), dark scrollbars.
 - Error cases: `Config.ErrorCases` generates `not-found` (an unknown key in
   the last path parameter of every operation that documents 404; the key
   from `x-apitest-not-found` or the schema) and `conflict` (the body of a

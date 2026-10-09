@@ -5,8 +5,10 @@ package params
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/getkin/kin-openapi/openapi3"
@@ -27,6 +29,7 @@ const (
 	RankSchemaExample      // 5: example/examples[0] of the schema
 	RankDefault            // 6: default of the schema
 	RankEnum               // 7: first enum value
+	RankGenerated          // 8: generated from the schema (Inputs.Generate)
 )
 
 func (r Rank) String() string {
@@ -45,6 +48,8 @@ func (r Rank) String() string {
 		return "schema default"
 	case RankEnum:
 		return "enum"
+	case RankGenerated:
+		return "generated"
 	default:
 		return "no source"
 	}
@@ -60,6 +65,10 @@ type Inputs struct {
 	// Override sets path parameters by name before any other source: the
 	// unknown key of a not-found case.
 	Override map[string]any
+	// Generate gives a required parameter no source has a value for one
+	// derived from its schema (Generated), e.g. the parent key of a
+	// not-found case whose producer did not run.
+	Generate bool
 }
 
 // Value is a resolved parameter value.
@@ -118,7 +127,70 @@ func resolve(p *openapi3.Parameter, in Inputs) (Value, bool) {
 	case len(s.Enum) > 0:
 		return Value{spec.Normalize(s.Enum[0]), RankEnum}, true
 	}
+	if in.Generate && p.Required {
+		if v, ok := Generated(s); ok {
+			return Value{v, RankGenerated}, true
+		}
+	}
 	return Value{}, false
+}
+
+// Generated is a plain value that fits schema s, for a parameter nothing
+// else gives a value: its default or first enum value, else by type and
+// format within the limits of the schema. ok is false if none fits (e.g.
+// a pattern the value does not match).
+func Generated(s *openapi3.Schema) (any, bool) {
+	var v any
+	switch {
+	case s.Default != nil:
+		v = spec.Normalize(s.Default)
+	case len(s.Enum) > 0:
+		v = spec.Normalize(s.Enum[0])
+	case s.Type.Is("integer") || s.Type.Is("number"):
+		n := 1.0
+		if s.Min != nil && n < *s.Min {
+			n = *s.Min
+		}
+		if s.Max != nil && n > *s.Max {
+			n = *s.Max
+		}
+		v = json.Number(strconv.FormatFloat(math.Ceil(n), 'f', -1, 64))
+	case s.Type.Is("boolean"):
+		v = true
+	case s.Type.Is("array"):
+		if s.Items == nil || s.Items.Value == nil {
+			return nil, false
+		}
+		item, ok := Generated(s.Items.Value)
+		if !ok {
+			return nil, false
+		}
+		v = []any{item}
+	default:
+		switch s.Format {
+		case "uuid":
+			v = "00000000-0000-4000-8000-000000000001"
+		case "date":
+			v = "2026-01-01"
+		case "date-time":
+			v = "2026-01-01T00:00:00Z"
+		case "email":
+			v = "apitest@example.com"
+		default:
+			str := "apitest"
+			if s.MaxLength != nil && uint64(len(str)) > *s.MaxLength {
+				str = str[:*s.MaxLength]
+			}
+			for uint64(len(str)) < s.MinLength {
+				str += "x"
+			}
+			v = str
+		}
+	}
+	if errs := spec.NewValidator().Validate(s, v, spec.ModePlain); len(errs) > 0 {
+		return nil, false
+	}
+	return v, true
 }
 
 // Pair is one serialized query parameter or cookie.

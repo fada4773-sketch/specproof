@@ -408,16 +408,14 @@ func TestTPL2_30_ParallelRunsSeparateReports(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	if results[0].Report == results[1].Report {
-		t.Fatalf("both runs wrote %s", results[0].Report)
-	}
+	// without ReportPath no report is written
 	for _, r := range results {
-		if filepath.Base(filepath.Dir(r.Report)) != "apitest-report" {
-			t.Errorf("default report path: %s", r.Report)
+		if r.Report != "" || r.Failed {
+			t.Errorf("run without ReportPath: report %q, failed %v", r.Report, r.Failed)
 		}
-		if _, err := os.Stat(r.Report); err != nil {
-			t.Error(err)
-		}
+	}
+	if entries, _ := os.ReadDir("."); len(entries) != 0 {
+		t.Errorf("files written without ReportPath: %v", entries)
 	}
 
 	// Same explicit path while the first run is still active: the second

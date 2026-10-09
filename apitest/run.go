@@ -159,8 +159,8 @@ func run(t tester, cfg Config) *Result {
 		res.Failed = true
 		return res
 	}
-	if !r.cfg.DisableReports {
-		path, err := reportPath(t.Name(), r.cfg.ReportPath)
+	if !r.cfg.DisableReports && r.cfg.ReportPath != "" {
+		path, err := reportPath(r.cfg.ReportPath)
 		if err != nil {
 			t.Errorf("apitest: %v", err)
 			res.Failed = true
@@ -698,26 +698,12 @@ func hostOf(base string) string {
 }
 
 // reportPath returns the absolute report path (FR-REP-08).
-func reportPath(testName, configured string) (string, error) {
-	p := configured
-	if p == "" {
-		p = filepath.Join("apitest-report", fileSafe(testName)+".md")
-	}
+func reportPath(p string) (string, error) {
 	abs, err := filepath.Abs(p)
 	if err != nil {
 		return "", fmt.Errorf("report path %q: %w", p, err)
 	}
 	return abs, nil
-}
-
-func fileSafe(name string) string {
-	return strings.Map(func(r rune) rune {
-		switch r {
-		case '/', '\\', ':', '*', '?', '"', '<', '>', '|', ' ':
-			return '_'
-		}
-		return r
-	}, name)
 }
 
 func (r *runner) result(res *Result) *Result {

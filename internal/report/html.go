@@ -77,7 +77,7 @@ type view struct {
 	Groups   []groupView
 	Hist     []barView
 	Codes    []barView
-	Slowest  []barView
+	Slowest  []slowView
 	Matrix   []matrixRow
 	Cases    []caseView
 	Filters  []slice // statuses present, for the filter chips
@@ -94,8 +94,17 @@ type groupView struct {
 	Name     string
 	Total    int
 	Passed   int
+	Bad      int // failing
+	Other    int // deviation, tolerated
+	NotRun   int // skipped, not buildable
 	Duration time.Duration
-	Parts    []slice // share of the tag's cases per status
+	Avg      time.Duration // per answered request
+	Parts    []slice       // share of the tag's cases per status
+}
+
+type slowView struct {
+	Case
+	Pct float64
 }
 
 type barView struct {
@@ -148,11 +157,24 @@ func newView(r *Report) *view {
 	}
 	v.Donut = donut(v.Statuses, st.Total)
 	for _, g := range st.Groups {
-		gv := groupView{Name: g.Name, Total: g.Total, Passed: g.Counts[Passed], Duration: g.Duration}
+		gv := groupView{Name: g.Name, Total: g.Total, Passed: g.Counts[Passed], Duration: g.Duration,
+			Other: g.Counts[Deviation] + g.Counts[Tolerated], NotRun: g.Counts[Skipped] + g.Counts[NotBuildable]}
+		answered := 0
 		for _, s := range StatusOrder {
 			if n := g.Counts[s]; n > 0 {
 				gv.Parts = append(gv.Parts, slice{s, n, pct(n, g.Total)})
+				if IsError(s) {
+					gv.Bad += n
+				}
 			}
+		}
+		for _, c := range r.Cases {
+			if c.Group == g.Name && c.Code != 0 {
+				answered++
+			}
+		}
+		if answered > 0 {
+			gv.Avg = g.Duration / time.Duration(answered)
 		}
 		v.Groups = append(v.Groups, gv)
 	}
@@ -170,8 +192,7 @@ func newView(r *Report) *view {
 		v.Codes = append(v.Codes, barView{Label: fmt.Sprint(c.Code), Value: fmt.Sprint(c.Count), Pct: pct(c.Count, maxCode), Class: fmt.Sprintf("c%dxx", c.Code/100)})
 	}
 	for _, c := range st.Slowest {
-		v.Slowest = append(v.Slowest, barView{Label: c.Method + " " + c.Target, Sub: caseLabel(c), Value: ms(c.Duration),
-			Pct: pct(int(c.Duration), int(st.Max)), Class: statusClass(c.Status)})
+		v.Slowest = append(v.Slowest, slowView{c, pct(int(c.Duration), int(st.Max))})
 	}
 	maxCell := 0
 	for _, row := range st.Errors.Matrix {

@@ -7,6 +7,7 @@
 package petstore
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -102,7 +103,7 @@ func TestPetstore(t *testing.T) {
 		// of addPet, placeOrder and createUser through the heuristic; the
 		// report lists them as spec findings.
 		DeviationsPath: "apitest_deviations.yaml",
-		ReportPath:     os.Getenv("APITEST_PETSTORE_REPORT"), // "" = apitest-report/TestPetstore.md
+		ReportPath:     cmp.Or(os.Getenv("APITEST_PETSTORE_REPORT"), "apitest-report/TestPetstore.md"),
 		Strict:         os.Getenv("APITEST_STRICT") == "true",
 		ReportJSON:     true,
 		RequestTimeout: 10 * time.Second,

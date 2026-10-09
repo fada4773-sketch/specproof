@@ -26,7 +26,7 @@ const maxReportBody = 64 << 10
 // writeReport renders the current state. It is called after every group and
 // at the end, so an aborted run leaves a partial report (FR-REP-01).
 func (r *runner) writeReport() {
-	if r.reportPath == "" { // Config.DisableReports
+	if r.reportPath == "" { // no Config.ReportPath, or Config.DisableReports
 		return
 	}
 	rep := &report.Report{

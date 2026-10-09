@@ -66,6 +66,8 @@ func (r *runner) prepareRequest(ctx context.Context, c *cases.Case, overrides ma
 			Fixed:    r.cfg.Params,
 			OpID:     c.Op.ID,
 			Override: override,
+			// a not-found case needs no real values: it is sent anyway
+			Generate: c.Kind == cases.NotFound,
 			Binding: func(p *openapi3.Parameter) (any, bool) {
 				b := r.binds.For(c.Op, p)
 				if b == nil {
@@ -89,8 +91,8 @@ func (r *runner) prepareRequest(ctx context.Context, c *cases.Case, overrides ma
 // returns "" if all values are there (FR-ORDER-04).
 func (r *runner) missingDependency(c *cases.Case) string {
 	for _, b := range r.binds.Of(c.Op) {
-		if _, ok := r.values[b.Key()]; ok || b.Param.Name == c.NotFoundParam {
-			continue
+		if _, ok := r.values[b.Key()]; ok || c.Kind == cases.NotFound {
+			continue // a not-found case takes another value (Generate)
 		}
 		po := r.producers[b.Producer.ID]
 		if r.paramFallback(c, b, po) {

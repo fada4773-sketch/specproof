@@ -145,7 +145,7 @@ func TestRenderHTML(t *testing.T) {
 	for _, want := range []string{
 		"<title>apitest · Bookstore 1.0</title>", `<div class="badge bad">✕ Failed</div>`,
 		`id="dashboard"`, `aria-label="cases by status"`, "Slowest requests", "1.30 s", "Response times", "Status codes",
-		`id="errorcases"`, "3 error cases", "Book/deleteBook/not-found", "would be FAILED",
+		`id="errorcases"`, `<b class="num">3</b>error cases`, "Book/deleteBook/not-found", "would be FAILED",
 		`data-status="TOLERATED"`, "duplicate key &lt;script&gt;", "Reproduce", "API-1", "media type not supported",
 	} {
 		if !strings.Contains(page, want) {

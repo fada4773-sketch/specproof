@@ -2,6 +2,7 @@ package params
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"testing"
 
@@ -177,5 +178,48 @@ func TestFixedPerOperation(t *testing.T) {
 		if !ok || v.V != tc.want || v.Rank != RankFixed {
 			t.Errorf("%q: got %v %v %v, want %q", tc.op, v.V, v.Rank, ok, tc.want)
 		}
+	}
+}
+
+func TestGenerated(t *testing.T) {
+	f := func(v float64) *float64 { return &v }
+	u := func(v uint64) *uint64 { return &v }
+	typ := func(s string) *openapi3.Types { return &openapi3.Types{s} }
+	for _, c := range []struct {
+		name string
+		s    *openapi3.Schema
+		want string
+	}{
+		{"integer", &openapi3.Schema{Type: typ("integer")}, "1"},
+		{"minimum", &openapi3.Schema{Type: typ("integer"), Min: f(10)}, "10"},
+		{"default", &openapi3.Schema{Type: typ("string"), Default: "luna"}, "luna"},
+		{"enum", &openapi3.Schema{Type: typ("string"), Enum: []any{"moon", "planet"}}, "moon"},
+		{"uuid", &openapi3.Schema{Type: typ("string"), Format: "uuid"}, "00000000-0000-4000-8000-000000000001"},
+		{"date", &openapi3.Schema{Type: typ("string"), Format: "date"}, "2026-01-01"},
+		{"maxLength", &openapi3.Schema{Type: typ("string"), MaxLength: u(3)}, "api"},
+		{"boolean", &openapi3.Schema{Type: typ("boolean")}, "true"},
+		{"array", &openapi3.Schema{Type: typ("array"), Items: &openapi3.SchemaRef{Value: &openapi3.Schema{Type: typ("integer")}}}, "[1]"},
+		{"pattern", &openapi3.Schema{Type: typ("string"), Pattern: "^[0-9]+$"}, "-"},
+	} {
+		v, ok := Generated(c.s)
+		got := "-"
+		if ok {
+			got = fmt.Sprint(v)
+		}
+		if got != c.want {
+			t.Errorf("%s: got %s, want %s", c.name, got, c.want)
+		}
+	}
+	// only with Generate and only for required parameters
+	p := &openapi3.Parameter{Name: "moonId", In: "query", Required: true, Schema: &openapi3.SchemaRef{Value: &openapi3.Schema{Type: typ("integer")}}}
+	if _, ok := Resolve(p, Inputs{}); ok {
+		t.Error("generated without Generate")
+	}
+	if v, ok := Resolve(p, Inputs{Generate: true}); !ok || v.Rank != RankGenerated || v.Rank.String() != "generated" {
+		t.Errorf("Generate: %+v %v", v, ok)
+	}
+	p.Required = false
+	if _, ok := Resolve(p, Inputs{Generate: true}); ok {
+		t.Error("generated for an optional parameter")
 	}
 }
