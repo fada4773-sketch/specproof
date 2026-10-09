@@ -25,6 +25,9 @@ contain breaking changes, which are listed here.
 - `not-found` cases no longer get skipped for missing values: a required
   parameter without value (no example, or its producer failed or did not
   run) gets one generated from its schema, and the request is sent.
+  Keys and parameters with a `pattern` get a matching value too: the key
+  of a not-found case the highest one (`^\d{3}$` → `999`), other
+  parameters a generated one.
 - HTML report: new layout with fixed rows (key figures, status, response
   times and status codes side by side), tags and slowest requests as full
   width tables, error cases with the matrix above the list, fixed table

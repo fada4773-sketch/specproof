@@ -50,6 +50,28 @@ func Generate(pattern string, lim Limits, rnd *rand.Rand, attempts int) (string,
 	return "", false
 }
 
+// Highest returns the string a pattern matches that is built from the
+// highest characters and the longest repetitions it allows, within the
+// limits: "999" for ^\d{3}$, "ZZ9999" for ^[A-Z]{2}\d{4}$. Such a value is
+// the least likely to belong to a real record, so it serves as an unknown
+// key. ok is false if no such string matches (then use Generate).
+func Highest(pattern string, lim Limits) (string, bool) {
+	m, err := spec.CompilePattern(pattern)
+	if err != nil {
+		return "", false
+	}
+	re, err := syntax.Parse(StripLookarounds(pattern), syntax.Perl)
+	if err != nil {
+		return "", false
+	}
+	g := &gen{highest: true, limit: lim.Max}
+	s := fit(g.build(re.Simplify()), lim, m.MatchString)
+	if s == "" || !within(s, lim) || !m.MatchString(s) {
+		return "", false
+	}
+	return s, true
+}
+
 func within(s string, lim Limits) bool {
 	n := utf8.RuneCountInString(s)
 	return n >= lim.Min && (lim.Max < 0 || n <= lim.Max)
@@ -72,6 +94,10 @@ func fit(s string, lim Limits, match func(string) bool) string {
 type gen struct {
 	rnd      *rand.Rand
 	readable bool
+	// highest takes the last alternative, the longest repetition (up to
+	// limit runes in total, if limit >= 0) and the highest character.
+	highest bool
+	limit   int
 }
 
 func (g *gen) build(re *syntax.Regexp) string {
@@ -101,6 +127,10 @@ func (g *gen) write(b *strings.Builder, re *syntax.Regexp, depth int) {
 			g.write(b, sub, depth+1)
 		}
 	case syntax.OpAlternate:
+		if g.highest {
+			g.write(b, re.Sub[len(re.Sub)-1], depth+1)
+			break
+		}
 		g.write(b, re.Sub[g.rnd.IntN(len(re.Sub))], depth+1)
 	case syntax.OpStar:
 		g.repeat(b, re.Sub[0], 0, 8, depth)
@@ -121,6 +151,11 @@ func (g *gen) write(b *strings.Builder, re *syntax.Regexp, depth int) {
 func (g *gen) repeat(b *strings.Builder, re *syntax.Regexp, lo, hi, depth int) {
 	n := lo
 	switch {
+	case g.highest:
+		n = hi
+		if g.limit >= 0 {
+			n = max(lo, min(hi, g.limit-utf8.RuneCountInString(b.String())))
+		}
 	case g.readable && hi > 1:
 		// a short word reads best: 4 to 6 characters for + and *
 		n = max(lo, min(hi, 4+g.rnd.IntN(3)))
@@ -140,6 +175,18 @@ var readableRanges = [][2]rune{{'a', 'z'}, {'0', '9'}, {'A', 'Z'}}
 // pick returns a rune of a character class given as range pairs. Wide
 // classes such as [^x] are limited to printable ASCII.
 func (g *gen) pick(ranges []rune) rune {
+	if g.highest {
+		// the highest printable ASCII character the class allows
+		for i := len(ranges) - 2; i >= 0; i -= 2 {
+			if lo, hi := max(ranges[i], 0x21), min(ranges[i+1], 0x7e); lo <= hi {
+				return hi
+			}
+		}
+		if len(ranges) >= 2 {
+			return ranges[len(ranges)-1]
+		}
+		return 'z'
+	}
 	if g.readable {
 		for _, pref := range readableRanges {
 			for i := 0; i+1 < len(ranges); i += 2 {

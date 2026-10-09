@@ -27,9 +27,19 @@ func TestNotFoundValue(t *testing.T) {
 		{"maxLength", param(&openapi3.Schema{Type: &openapi3.Types{"string"}, MaxLength: u(5)}), "apite", ""},
 		{"minLength", param(&openapi3.Schema{Type: &openapi3.Types{"string"}, MinLength: 20}), "apitest-not-foundxxx", ""},
 		{"enum", param(&openapi3.Schema{Type: &openapi3.Types{"string"}, Enum: []any{"luna"}}), nil, "is an enum"},
-		{"pattern", param(&openapi3.Schema{Type: &openapi3.Types{"string"}, Pattern: "^[0-9]+$"}), nil, "no value for {moonId} that fits its schema"},
+		{"pattern", param(&openapi3.Schema{Type: &openapi3.Types{"string"}, Pattern: "^\\d{3}$"}), "999", ""},
+		{"pattern+", param(&openapi3.Schema{Type: &openapi3.Types{"string"}, Pattern: "^[A-Z]{2}-[0-9]+$", MaxLength: u(6)}), "ZZ-999", ""},
+		{"lookahead", param(&openapi3.Schema{Type: &openapi3.Types{"string"}, Pattern: "^(?=.*[0-9])[a-z0-9]{4}$"}), "", ""},
+		{"impossible", param(&openapi3.Schema{Type: &openapi3.Types{"string"}, Pattern: "^[0-9]{3}$", MaxLength: u(2)}), nil, "no value for {moonId} matches its pattern"},
 	} {
 		v, why := notFoundValue(c.p)
+		if c.name == "lookahead" {
+			// the highest value lacks a digit; a generated one has it
+			if s, ok := v.(string); !ok || len(s) != 4 || why != "" || !strings.ContainsAny(s, "0123456789") {
+				t.Errorf("%s: %v %q", c.name, v, why)
+			}
+			continue
+		}
 		if v != c.want || (c.reason == "") != (why == "") || !strings.Contains(why, c.reason) {
 			t.Errorf("%s: %v %q", c.name, v, why)
 		}

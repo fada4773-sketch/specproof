@@ -19,7 +19,7 @@ import (
 	"github.com/brianvoe/gofakeit/v7"
 	"github.com/getkin/kin-openapi/openapi3"
 
-	"github.com/fada4773-sketch/specproof/internal/gen/regexgen"
+	"github.com/fada4773-sketch/specproof/internal/regexgen"
 	"github.com/fada4773-sketch/specproof/internal/spec"
 )
 

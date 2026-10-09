@@ -75,3 +75,24 @@ func TestStripLookarounds(t *testing.T) {
 		}
 	}
 }
+
+func TestHighest(t *testing.T) {
+	for _, c := range []struct {
+		pattern string
+		lim     Limits
+		want    string
+	}{
+		{`^\d{3}$`, Limits{0, -1}, "999"},
+		{`^[A-Z]{2}\d{4}$`, Limits{0, -1}, "ZZ9999"},
+		{`^(red|green|blue)-[a-f0-9]{2}$`, Limits{0, -1}, "blue-ff"},
+		{`^[a-z]+$`, Limits{0, 5}, "zzzzz"},
+		{`^[A-Z]{3}\d{2,6}$`, Limits{0, 7}, "ZZZ9999"},
+		{`^\d{3}$`, Limits{0, 2}, ""},
+		{`^(?=.*\d)[a-z]{3}\d?$`, Limits{0, -1}, "zzz9"},
+	} {
+		got, ok := Highest(c.pattern, c.lim)
+		if got != c.want || ok != (c.want != "") {
+			t.Errorf("%s %v: got %q %v, want %q", c.pattern, c.lim, got, ok, c.want)
+		}
+	}
+}

@@ -3,11 +3,13 @@ package cases
 import (
 	"encoding/json"
 	"fmt"
+	"math/rand/v2"
 	"net/http"
 	"strings"
 
 	"github.com/getkin/kin-openapi/openapi3"
 
+	"github.com/fada4773-sketch/specproof/internal/regexgen"
 	"github.com/fada4773-sketch/specproof/internal/spec"
 )
 
@@ -132,6 +134,19 @@ func notFoundValue(p *openapi3.Parameter) (v any, why string) {
 		v = json.Number(fmt.Sprint(int64(n)))
 	case s.Format == "uuid":
 		v = "00000000-0000-4000-8000-000000000404"
+	case s.Pattern != "":
+		lim := regexgen.Limits{Min: int(s.MinLength), Max: -1}
+		if s.MaxLength != nil {
+			lim.Max = int(*s.MaxLength)
+		}
+		str, ok := regexgen.Highest(s.Pattern, lim)
+		if !ok {
+			str, ok = regexgen.Generate(s.Pattern, lim, rand.New(rand.NewPCG(404, 404)), 50)
+		}
+		if !ok {
+			return nil, fmt.Sprintf("not-found: no value for {%s} matches its pattern %q; set %s at the parameter", p.Name, s.Pattern, notFoundExt)
+		}
+		v = str
 	default:
 		str := "apitest-not-found"
 		if s.MaxLength != nil && uint64(len(str)) > *s.MaxLength {

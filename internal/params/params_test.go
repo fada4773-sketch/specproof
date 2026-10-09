@@ -199,7 +199,8 @@ func TestGenerated(t *testing.T) {
 		{"maxLength", &openapi3.Schema{Type: typ("string"), MaxLength: u(3)}, "api"},
 		{"boolean", &openapi3.Schema{Type: typ("boolean")}, "true"},
 		{"array", &openapi3.Schema{Type: typ("array"), Items: &openapi3.SchemaRef{Value: &openapi3.Schema{Type: typ("integer")}}}, "[1]"},
-		{"pattern", &openapi3.Schema{Type: typ("string"), Pattern: "^[0-9]+$"}, "-"},
+		{"pattern", &openapi3.Schema{Type: typ("string"), Pattern: "^x{3}$"}, "xxx"},
+		{"impossible pattern", &openapi3.Schema{Type: typ("string"), Pattern: "^[0-9]{3}$", MaxLength: u(2)}, "-"},
 	} {
 		v, ok := Generated(c.s)
 		got := "-"

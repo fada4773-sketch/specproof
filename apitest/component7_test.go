@@ -249,7 +249,7 @@ paths:
       tags: [Moon]
       parameters:
         - { name: planetId, in: path, required: true, schema: { type: integer } }
-        - { name: moonId, in: path, required: true, schema: { type: integer } }
+        - { name: moonId, in: path, required: true, schema: { type: string, pattern: "^\\d{3}$" } }
         - { name: view, in: query, required: true, schema: { type: string } }
       responses:
         "200": { description: the moon }
@@ -307,7 +307,7 @@ paths:
 	mu.Lock()
 	defer mu.Unlock()
 	all := strings.Join(sent, "\n")
-	for _, w := range []string{"GET /planets/1/moons/999999999?view=apitest", "GET /gardens/999999999"} {
+	for _, w := range []string{"GET /planets/1/moons/999?view=apitest", "GET /gardens/999999999"} {
 		if !strings.Contains(all, w) {
 			t.Errorf("not sent: %s\n%s", w, all)
 		}

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"math/rand/v2"
 	"net/url"
 	"sort"
 	"strconv"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/getkin/kin-openapi/openapi3"
 
+	"github.com/fada4773-sketch/specproof/internal/regexgen"
 	"github.com/fada4773-sketch/specproof/internal/spec"
 )
 
@@ -177,6 +179,18 @@ func Generated(s *openapi3.Schema) (any, bool) {
 		case "email":
 			v = "apitest@example.com"
 		default:
+			if s.Pattern != "" {
+				lim := regexgen.Limits{Min: int(s.MinLength), Max: -1}
+				if s.MaxLength != nil {
+					lim.Max = int(*s.MaxLength)
+				}
+				str, ok := regexgen.Generate(s.Pattern, lim, rand.New(rand.NewPCG(1, 1)), 50)
+				if !ok {
+					return nil, false
+				}
+				v = str
+				break
+			}
 			str := "apitest"
 			if s.MaxLength != nil && uint64(len(str)) > *s.MaxLength {
 				str = str[:*s.MaxLength]
