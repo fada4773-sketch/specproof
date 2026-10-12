@@ -34,6 +34,15 @@ contain breaking changes, which are listed here.
 
 ### Features
 
+- `apitest-gen record`: every schema under `components/schemas` gets an
+  `example` from the values bodies and answers of the record file hold at
+  it (nested ones too; an object cut to the properties the schema
+  declares), else one generated from the schema, marked
+  `# apitest-gen record: generated example` and replaced once an entry
+  holds a value. An existing example that fits stays. Schemas apitest reads
+  the example of (a parameter or request body without example) are left
+  out and listed (`GENERATED`), so no case changes. The FILES line counts
+  the schema examples.
 - `not-found` cases no longer get skipped for missing values: a required
   parameter without value (no example, or its producer failed or did not
   run) gets one generated from its schema, and the request is sent.

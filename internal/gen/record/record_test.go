@@ -23,6 +23,7 @@ import (
 	"github.com/fada4773-sketch/specproof/internal/gen/defaults"
 	"github.com/fada4773-sketch/specproof/internal/gen/discover"
 	"github.com/fada4773-sketch/specproof/internal/gen/yamldoc"
+	"github.com/fada4773-sketch/specproof/internal/params"
 	"github.com/fada4773-sketch/specproof/internal/spec"
 )
 
@@ -1377,6 +1378,156 @@ func TestBindSource(t *testing.T) {
 	for _, from := range []string{"/", "request /", "request path dockId"} {
 		if _, ok := saveSource(from); ok {
 			t.Errorf("saveSource(%q) converts", from)
+		}
+	}
+}
+
+// fingerprint is what apitest builds from a spec: every case with its body
+// and the values of its parameters.
+func fingerprint(t *testing.T, s *spec.Spec) string {
+	t.Helper()
+	all, err := cases.Build(s, cases.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var b strings.Builder
+	for _, c := range all {
+		fmt.Fprintf(&b, "%s %v body=%v %v not-buildable=%q\n", c.Name, c.Kind, c.HasBody, c.Body, c.NotBuildable)
+		for _, p := range c.Op.Params {
+			v, ok := params.Resolve(p, params.Inputs{CaseName: c.Example, OpID: c.Op.ID})
+			fmt.Fprintf(&b, "  %s %s=%v %v\n", p.In, p.Name, v.V, ok)
+		}
+	}
+	return b.String()
+}
+
+func TestRecordSchemaExamples(t *testing.T) {
+	specPath, filePath := workspace(t)
+	analyse(t, specPath, filePath)
+	// after the analysis: an operation the record file has no entry for,
+	// whose body apitest composes from the schemas, and a schema no entry
+	// holds a value of
+	b, err := os.ReadFile(specPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := strings.Replace(string(b), "paths:\n", `paths:
+  /gardens:
+    post:
+      operationId: createGarden
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Garden"
+      responses:
+        "201":
+          description: created
+`, 1) + `    Garden:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        keeper:
+          $ref: "#/components/schemas/Person"
+    Person:
+      type: object
+      properties:
+        name:
+          type: string
+    Moon:
+      type: object
+      required: [name, radius]
+      properties:
+        name:
+          type: string
+        radius:
+          type: integer
+          minimum: 1
+`
+	if err := os.WriteFile(specPath, []byte(text), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(newStarport())
+	defer srv.Close()
+	res := record(t, specPath, filePath, srv)
+	if len(res.Problems) > 0 {
+		t.Fatalf("problems:\n%s", notes(res.Problems))
+	}
+	s := loadSpec(t, specPath)
+	examples := map[string]any{}
+	for name, ref := range s.Doc.Components.Schemas {
+		examples[name] = spec.Normalize(ref.Value.Example)
+	}
+	want := map[string]string{
+		"Dock":      `{"capacity":19,"id":1,"name":"Where Team"}`,
+		"DockWrite": `{"capacity":19,"name":"Where Team"}`, // its own fields, not the id of the answer
+		"Garden":    "null",                                // apitest composes the body of createGarden from it
+		"Person":    "null",
+	}
+	for name, ex := range examples {
+		got, _ := json.Marshal(ex)
+		if w, ok := want[name]; ok && string(got) != w {
+			t.Errorf("%s: example %s, want %s", name, got, w)
+		}
+		if _, ok := want[name]; !ok && ex == nil {
+			t.Errorf("%s has no example", name)
+		}
+	}
+	if res.SchemaExamples != len(examples)-2 {
+		t.Errorf("%d schema examples written, want %d", res.SchemaExamples, len(examples)-2)
+	}
+	text = read(t, specPath)
+	if !strings.Contains(text, "# "+generatedSchemaMark) {
+		t.Errorf("Moon's example is not marked as generated:\n%s", text)
+	}
+	all := notes(res.Notes)
+	for _, msg := range []string{"their example is generated from the schema: Moon", "give those an entry in the record file: Garden, Person"} {
+		if !strings.Contains(all, msg) {
+			t.Errorf("notes miss %q:\n%s", msg, all)
+		}
+	}
+	// the schema examples change nothing apitest builds
+	stripped, err := yamldoc.Load(specPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	schemas := yamldoc.Path(stripped.Root, "components", "schemas")
+	for _, name := range yamldoc.Keys(schemas) {
+		yamldoc.Delete(yamldoc.Get(schemas, name), "example")
+	}
+	strippedPath := filepath.Join(t.TempDir(), "stripped.yaml")
+	if err := stripped.Save(strippedPath); err != nil {
+		t.Fatal(err)
+	}
+	if with, without := fingerprint(t, s), fingerprint(t, loadSpec(t, strippedPath)); with != without {
+		t.Errorf("the schema examples change the cases:\nwithout:\n%s\nwith:\n%s", without, with)
+	}
+	// a second run changes nothing
+	again := record(t, specPath, filePath, nil)
+	if again.SchemaExamples != 0 || read(t, specPath) != text {
+		t.Errorf("second run wrote %d schema examples", again.SchemaExamples)
+	}
+}
+
+func TestSchemaExampleMark(t *testing.T) {
+	for _, src := range []string{
+		"example: {name: Io} # " + generatedSchemaMark + "\n",
+		"example: # " + generatedSchemaMark + "\n  name: Io\n  radius: 3\n",
+	} {
+		doc, err := yamldoc.Parse([]byte(src))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !marked(doc.Root, "example") {
+			t.Errorf("mark not found in %q", src)
+		}
+		unmark(doc.Root, "example")
+		yamldoc.Get(doc.Root, "example").LineComment = ""
+		if marked(doc.Root, "example") {
+			t.Errorf("mark not removed from %q", src)
 		}
 	}
 }

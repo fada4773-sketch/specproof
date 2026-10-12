@@ -111,9 +111,9 @@ func recordCommand(o *options, out io.Writer) error {
 		fmt.Fprintf(out, "  %s: unchanged, the problems above come first\n", target)
 		return fmt.Errorf("%d problems", len(res.Problems))
 	case o.dryRun:
-		fmt.Fprintf(out, "  %s: %d examples and %d x-apitest-bind would change (dry run)\n", target, res.Examples, res.Binds)
+		fmt.Fprintf(out, "  %s: %d examples, %d schema examples and %d x-apitest-bind would change (dry run)\n", target, res.Examples, res.SchemaExamples, res.Binds)
 	case written:
-		fmt.Fprintf(out, "  %s: %d examples written, %d parameters got x-apitest-bind\n", target, res.Examples, res.Binds)
+		fmt.Fprintf(out, "  %s: %d examples and %d schema examples written, %d parameters got x-apitest-bind\n", target, res.Examples, res.SchemaExamples, res.Binds)
 	default:
 		fmt.Fprintf(out, "  %s: unchanged, every example is up to date\n", target)
 	}

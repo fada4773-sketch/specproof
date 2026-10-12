@@ -76,6 +76,9 @@ type Result struct {
 	// Examples is the number of examples written into the spec that differ
 	// from what it held.
 	Examples int
+	// SchemaExamples is the number of schemas of the components whose
+	// example was written.
+	SchemaExamples int
 	// Binds is the number of parameters that got x-apitest-bind.
 	Binds       int
 	FileChanged bool

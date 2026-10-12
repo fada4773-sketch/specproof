@@ -22,6 +22,8 @@ type writer struct {
 	// done are the examples written per place and example name, to find a
 	// place several operations share and need different examples at
 	done map[*yaml.Node]map[string]written
+	// found are the values the entries hold per schema of the components
+	found map[string][]candidate
 }
 
 type written struct {
@@ -30,7 +32,7 @@ type written struct {
 }
 
 func newWriter(doc *yamldoc.Doc, res *Result, seed uint64) *writer {
-	return &writer{doc: doc, res: res, seed: seed, done: map[*yaml.Node]map[string]written{}}
+	return &writer{doc: doc, res: res, seed: seed, done: map[*yaml.Node]map[string]written{}, found: map[string][]candidate{}}
 }
 
 // write writes every step, with the saved values of the stored answers
@@ -84,8 +86,13 @@ func (w *writer) step(st *Step, r *request, resp *Response, named bool, v *spec.
 			w.param(st, param(op, k, in), r, named)
 		}
 	}
+	ignored := 0
+	if st.status() == StatusIgnore {
+		ignored = fromIgnoredResponse
+	}
 	if r.hasBody {
 		if pl := w.request(op); pl != nil {
+			w.collect(yamldoc.Get(pl.node, "schema"), decode(r.bodyNode), fromRequest+ignored, 0)
 			w.place(st, pl, name, r.bodyNode, named, func() *place { return w.ownRequest(op) })
 		}
 	}
@@ -112,6 +119,7 @@ func (w *writer) step(st *Step, r *request, resp *Response, named bool, v *spec.
 	if msg := firstViolation(v, pl.schema.Value, decode(resp.Body), spec.ModeResponse); msg != "" {
 		w.res.note(CodeSchema, st.where(), "the stored answer violates the schema of the response %s (%s); apitest will report it", code, msg)
 	}
+	w.collect(yamldoc.Get(pl.node, "schema"), decode(resp.Body), fromResponse+ignored, 0)
 	w.place(st, pl, name, resp.Body, named, func() *place { return w.ownResponse(op, code) })
 	if resp == st.Response {
 		w.uncompareSchema(op, code)

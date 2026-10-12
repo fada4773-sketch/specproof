@@ -371,6 +371,7 @@ those entries.
 | `ignore` | `x-apitest-ignore` of the operation, merged with the fields already listed there |
 | `filter` | `x-apitest-compare-unordered: true` on the response |
 | a path parameter apitest would only guess | `x-apitest-bind` of the parameter (see [Bindings](#bindings)) |
+| the values of bodies and answers at a named schema | `example` of the schema under `components/schemas` (see [Schema examples](#schema-examples)) |
 
 The placeholders are filled in with the saved values of the stored answers.
 The spec therefore holds plain values (`dockId: 1`); apitest takes the real
@@ -398,6 +399,26 @@ recorded later (`status: new`), its answer replaces the generated one and
 alone. The generated values depend on `-seed` only, so every run writes the
 same ones. Each ignored entry with generated values is listed as
 `GENERATED`, with what was generated and what could not be.
+
+### Schema examples
+
+Linters often want an example at every schema under `components/schemas`.
+`record` gives each one an example from the record file: the value a body
+or an answer holds at that schema, also nested (`route` of a booking, the
+items of a list, the parts of an `allOf`). Answers win over requests (a
+request has no readOnly fields), sent entries over ignored ones. An object
+keeps only the properties the schema declares, its own and those of its
+`allOf` parts, so `DockWrite` gets no `id` from the answer of `createDock`.
+A schema no entry holds a value of gets one generated from the schema
+(`-seed`), marked `# apitest-gen record: generated example`; a later run
+replaces it once an entry holds a value. An example the schema already has
+stays as long as it fits the schema.
+
+These examples never change a case. apitest reads the example of a schema
+in two places only: as the value of a parameter without example, and to
+compose a request body without example. `record` leaves the schemas used
+there without example and lists them (`GENERATED`); an entry for that
+operation gives it its own examples, and the next run fills the schema.
 
 ### Bindings
 
@@ -546,7 +567,7 @@ LINT (the written spec as apitest.Run sees it: 12 of 12 cases can be sent)
 
 FILES
   examples.record.yaml: 2 answers recorded and saved
-  openapi.yaml: 4 examples written, 3 parameters got x-apitest-bind
+  openapi.yaml: 4 examples and 9 schema examples written, 3 parameters got x-apitest-bind
 ```
 
 ## Findings
@@ -575,7 +596,7 @@ request the spec stays unchanged. Notes (`NOTE`) are information.
 | `NOT_RUN` | note | apitest does not run the case of an entry (`ExcludeOps`, `IncludeOps`, `Tags`, `x-apitest-skip`); its request still shapes the data of later entries. | Usually nothing. |
 | `NOT_IN_FILE` | note | apitest runs cases the file has no entry for; they keep the examples of the spec. | `record -analyse` adds them. |
 | `SKIPPED` | note | `-analyse` left out a case apitest cannot send. | See the reason. |
-| `GENERATED` | note | An ignored entry got generated values (or some could not be generated). | Nothing; set the values in the entry to choose them. |
+| `GENERATED` | note | An ignored entry got generated values (or some could not be generated); or schemas of the components got a generated example, none, or none because apitest reads it. | Nothing; set the values in the entry to choose them, or add an entry for the operation that reads the schema. |
 | `BIND` | note | A guessed binding was written as `x-apitest-bind`; or the record file takes the value from another operation than apitest; or the stored answer has no value where apitest guesses. | Check the source; declare `x-apitest-bind` yourself where it is wrong. |
 
 ## Lint

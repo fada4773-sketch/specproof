@@ -104,6 +104,7 @@ func Run(ctx context.Context, in Input) (*Result, error) {
 	}
 	w := newWriter(in.Doc, res, in.Seed)
 	w.write(f, v)
+	w.schemaExamples(in.Spec, v)
 	w.explicit(in.Spec, f)
 	res.SpecChanged = w.changed
 	return res, nil
