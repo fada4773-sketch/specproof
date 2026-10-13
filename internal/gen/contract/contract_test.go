@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -306,6 +307,149 @@ func TestReviewAndExamples(t *testing.T) {
 	}
 	if variant("a.b.c") != "c" || variant("a") != "a" {
 		t.Error("variant")
+	}
+}
+
+// TestProposals: every operation without a step gets an entry under
+// "operations" of the overrides, by its reason, with values learned from
+// the stage where possible; filled in, the next run gives it a step.
+func TestProposals(t *testing.T) {
+	s, err := spec.Load(context.Background(), "../../../testdata/gen/contract-uncovered.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	learned := map[string][]map[string]any{"Dock": {{"code": "D-7", "name": "North"}}}
+	out, err := Generate(Input{Spec: s, Learned: learned, LearnedFrom: "dev"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	byCall := map[string]*Proposal{}
+	for _, p := range out.Proposals {
+		byCall[p.Call] = p
+	}
+	if len(out.Proposals) != 4 || len(out.Uncovered) != 4 {
+		t.Fatalf("proposals: %+v", out.Proposals)
+	}
+	if p := byCall["GET /docks/{dockCode}"]; p == nil || p.Path["dockCode"] != "D-7" || p.Status || !strings.Contains(p.Learned["path/dockCode"], "learned from dev") {
+		t.Errorf("learned path value: %+v", p)
+	}
+	if p := byCall["DELETE /planets/{planetId}"]; p == nil || !p.Status || p.Path["planetId"] != nil || len(p.Why) != 2 {
+		t.Errorf("delete: %+v", p)
+	}
+	if p := byCall["POST /ships/import"]; p == nil || !p.Status || p.Documented != 201 {
+		t.Errorf("second create: %+v", p)
+	}
+	if p := byCall["POST /ships/{shipId}/launch"]; p == nil || !p.Status || p.Documented != 0 || !strings.Contains(p.Why[0], "no 2xx") {
+		t.Errorf("no 2xx: %+v", p)
+	}
+
+	// written into the user's file: what is there stays
+	path := writeFile(t, "contract-overrides.yaml", "# mine\nvalues:\n  Ship.name: Moon   # kept\n")
+	n, err := WriteProposals(path, out.Proposals)
+	if err != nil || n != 4 {
+		t.Fatalf("write: %d %v", n, err)
+	}
+	b, _ := os.ReadFile(path)
+	text := string(b)
+	for _, want := range []string{"# mine", "# kept", "operations:", "Fill in the null values", "GET /docks/{dockCode}:", "dockCode: D-7 # learned from dev (Dock.code)",
+		"planetId: null", "status: null # documented: 201", "status: null # the status it answers with", "# no 2xx response documented"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("overrides miss %q:\n%s", want, text)
+		}
+	}
+	if n, err := WriteProposals(path, out.Proposals); err != nil || n != 0 {
+		t.Errorf("a second write must add nothing: %d %v", n, err)
+	}
+
+	// null is open: loaded as it is, nothing changes
+	o, err := LoadOverrides(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out2, err := Generate(Input{Spec: s, Overrides: o})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out2.Proposals) != 3 || out2.Scenario.Step("getDock") == nil {
+		t.Errorf("only the learned dock is complete: %+v", out2.Proposals)
+	}
+
+	// filled in: every operation gets a step, a skipped one none
+	for old, repl := range map[string]string{
+		"planetId: null":                            "planetId: h1",
+		"status: null # documented: 204":            "status: 204",
+		"status: null # documented: 201":            "status: 201",
+		"status: null # the status it answers with": "status: 202",
+	} {
+		text = strings.Replace(text, old, repl, 1)
+	}
+	if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if o, err = LoadOverrides(path); err != nil {
+		t.Fatal(err)
+	}
+	out3, err := Generate(Input{Spec: s, Overrides: o})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out3.Proposals) != 0 {
+		t.Errorf("left: %+v", out3.Proposals)
+	}
+	sc := out3.Scenario
+	for call, expect := range map[string]int{"DELETE /planets/{planetId}": 204, "POST /ships/import": 201, "POST /ships/{shipId}/launch": 202, "GET /docks/{dockCode}": 200} {
+		found := false
+		for _, st := range sc.Steps {
+			if st.Call == call && st.Expect == expect {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("no step %s %d", call, expect)
+		}
+	}
+	del := slices.IndexFunc(sc.Steps, func(st *scenario.Step) bool { return st.Call == "DELETE /planets/{planetId}" })
+	if first := slices.IndexFunc(sc.Steps, func(st *scenario.Step) bool { return st.Call == "DELETE /ships/{shipId}" }); del > first {
+		t.Error("an extra DELETE runs before the records are deleted")
+	}
+	o.Operations["DELETE /planets/{planetId}"] = &OpOverride{Skip: true}
+	o.Operations["POST /ships/import"] = &OpOverride{}
+	out4, _ := Generate(Input{Spec: s, Overrides: o})
+	if len(out4.Proposals) != 1 || out4.Proposals[0].Call != "POST /ships/import" {
+		t.Errorf("skip proposes nothing: %+v", out4.Proposals)
+	}
+
+	// a missing file is created, a file of comments keeps them
+	fresh := filepath.Join(t.TempDir(), "new.yaml")
+	if n, err := WriteProposals(fresh, out.Proposals); err != nil || n != 4 {
+		t.Errorf("new file: %d %v", n, err)
+	}
+	comments := writeFile(t, "c.yaml", "# only a comment\n")
+	if _, err := WriteProposals(comments, out.Proposals); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(comments); !strings.HasPrefix(string(b), "# only a comment\n") || !strings.Contains(string(b), "operations:") {
+		t.Errorf("comment file:\n%s", b)
+	}
+	if _, err := WriteProposals(writeFile(t, "l.yaml", "- 1\n"), out.Proposals); err == nil {
+		t.Error("a list is no overrides file")
+	}
+
+	for text, want := range map[string]string{
+		"operations: 1":                       "operations must map",
+		"operations: {nope: {}}":              "is no operation",
+		"operations: {GET /x: 1}":             "must be a mapping",
+		"operations: {GET /x: {foo: 1}}":      "unknown key",
+		"operations: {GET /x: {status: 42}}":  "HTTP status",
+		"operations: {GET /x: {path: 1}}":     "must map parameter names",
+		"operations: {GET /x: {skip: maybe}}": "true or false",
+	} {
+		if _, err := LoadOverrides(writeFile(t, "o.yaml", text)); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%q: got %v, want %q", text, err, want)
+		}
+	}
+	if o, err := LoadOverrides(writeFile(t, "o.yaml", "operations: {get  /x: ~, GET /y: {query: {q: 1}, header: {X-A: 2}, skip: false}}")); err != nil || o.Operations["GET /x"] == nil || o.Operations["GET /y"].Query["q"] == nil {
+		t.Errorf("normalized keys: %v %+v", err, o)
 	}
 }
 

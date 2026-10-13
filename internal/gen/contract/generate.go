@@ -58,6 +58,9 @@ type Output struct {
 	NotGenerated []Note
 	// Uncovered are operations without a step.
 	Uncovered []Note
+	// Proposals are the entries for the uncovered operations that init
+	// writes under "operations" of the overrides.
+	Proposals []*Proposal
 }
 
 // rec is a record the scenario creates.
@@ -122,10 +125,13 @@ func Generate(in Input) (*Output, error) {
 	g.cleanup()
 	g.others()
 	for _, op := range g.s.Ops {
-		if !g.used[op] {
-			g.out.Uncovered = append(g.out.Uncovered, Note{What: op.Method + " " + op.Path, Why: g.whyUncovered(op),
-				Fix: "add a step with \"add:\" in contract-overrides.yaml"})
+		if g.used[op] || g.skipped(op) {
+			continue
 		}
+		p := g.propose(op)
+		g.out.Proposals = append(g.out.Proposals, p)
+		g.out.Uncovered = append(g.out.Uncovered, Note{What: p.Call, Why: strings.Join(p.Why, "; "),
+			Fix: fmt.Sprintf("operations: {%q: …} in contract-overrides.yaml (proposed there)", p.Call)})
 	}
 	for _, r := range g.order {
 		for _, rc := range g.recs[r] {
@@ -327,6 +333,15 @@ func lowestSuccess(op *spec.Operation) int {
 	return best
 }
 
+// success is the status a regular step of an operation expects: the
+// status of its entry under "operations", else the lowest documented 2xx.
+func (g *gen) success(op *spec.Operation) int {
+	if oo := g.in.Overrides.operation(op); oo != nil && oo.Status != 0 {
+		return oo.Status
+	}
+	return lowestSuccess(op)
+}
+
 // documents reports whether an operation documents a status exactly.
 func documents(op *spec.Operation, status int) bool {
 	return op.Op.Responses != nil && op.Op.Responses.Value(strconv.Itoa(status)) != nil
@@ -340,9 +355,8 @@ func (g *gen) needsAuth(op *spec.Operation) bool {
 // createStep adds the create of a record; false if it cannot be built.
 func (g *gen) createStep(rc *rec) bool {
 	op := rc.create
-	expect := lowestSuccess(op)
+	expect := g.success(op)
 	if expect == 0 {
-		g.out.Uncovered = append(g.out.Uncovered, Note{What: op.Method + " " + op.Path, Why: "no 2xx response documented"})
 		return false
 	}
 	st := &scenario.Step{ID: g.id(rc.name + ".create"), Call: op.Method + " " + op.Path, Expect: expect, Notes: map[string]string{},
@@ -450,7 +464,7 @@ func saveSource(src bind.Source) string {
 // readHas reports whether the answers of a resource's reads have a field.
 func (g *gen) readHas(r *model.Resource, field string) bool {
 	for _, mo := range r.OpsWith(model.RoleRead) {
-		if s := responseSchema(mo.Op, lowestSuccess(mo.Op)); s != nil && hasProperty(s, field) {
+		if s := responseSchema(mo.Op, g.success(mo.Op)); s != nil && hasProperty(s, field) {
 			return true
 		}
 	}
@@ -489,12 +503,19 @@ func documentsHeader(op *spec.Operation, status int, name string) bool {
 	return false
 }
 
-// params fills the parameters of a step: bound path parameters from the
-// records, required other ones from overrides, examples or the schema.
-// False if a required one has no value.
+// params fills the parameters of a step: the entry of the operation under
+// "operations", bound path parameters from the records, required other
+// ones from overrides, examples or the schema. False if a required one has
+// no value; the proposal of the operation says which.
 func (g *gen) params(st *scenario.Step, op *spec.Operation, rc *rec) bool {
+	oo := g.in.Overrides.operation(op)
 	for _, p := range op.Params {
 		if p.In == openapi3.ParameterInCookie {
+			continue
+		}
+		if v, ok := oo.param(p); ok {
+			setParam(st, p, v)
+			st.Notes["/"+p.In+"/"+p.Name] = "override"
 			continue
 		}
 		if p.In == openapi3.ParameterInHeader && strings.EqualFold(p.Name, "If-Match") {
@@ -517,9 +538,6 @@ func (g *gen) params(st *scenario.Step, op *spec.Operation, rc *rec) bool {
 		}
 		v, ok := paramExample(p)
 		if !ok {
-			g.out.Uncovered = append(g.out.Uncovered, Note{What: op.Method + " " + op.Path,
-				Why: fmt.Sprintf("no value for the required %s parameter %q", p.In, p.Name),
-				Fix: fmt.Sprintf("values: {%s.%s: …} in contract-overrides.yaml", op.ID, p.Name)})
 			return false
 		}
 		setParam(st, p, v)
@@ -610,7 +628,7 @@ func paramExample(p *openapi3.Parameter) (any, bool) {
 
 // readStep reads a record and checks that it holds what step equals sent.
 func (g *gen) readStep(rc *rec, op *spec.Operation, id, equals string) string {
-	st := &scenario.Step{ID: g.id(id), Call: op.Method + " " + op.Path, Expect: lowestSuccess(op), Notes: map[string]string{}}
+	st := &scenario.Step{ID: g.id(id), Call: op.Method + " " + op.Path, Expect: g.success(op), Notes: map[string]string{}}
 	if st.Expect == 0 || !g.params(st, op, rc) {
 		return ""
 	}
@@ -636,7 +654,7 @@ func (g *gen) sendsBody(id string) bool {
 // listStep lists the records of a resource and checks they are there.
 func (g *gen) listStep(r *model.Resource, op *spec.Operation) {
 	list := g.recs[r]
-	st := &scenario.Step{ID: g.id(lowerFirst(r.Name) + ".list"), Call: op.Method + " " + op.Path, Expect: lowestSuccess(op), Notes: map[string]string{}}
+	st := &scenario.Step{ID: g.id(lowerFirst(r.Name) + ".list"), Call: op.Method + " " + op.Path, Expect: g.success(op), Notes: map[string]string{}}
 	if st.Expect == 0 || !g.params(st, op, list[0]) {
 		return
 	}
@@ -657,7 +675,7 @@ func (g *gen) listStep(r *model.Resource, op *spec.Operation) {
 
 // updateStep changes the first record and reads it again.
 func (g *gen) updateStep(rc *rec, op *spec.Operation) {
-	expect := lowestSuccess(op)
+	expect := g.success(op)
 	if expect == 0 {
 		return
 	}
@@ -800,7 +818,7 @@ func (g *gen) baseFor(rc *rec, mo *model.Op) *scenario.Step {
 		}
 	}
 	if mo.Role == model.RoleDelete {
-		st := &scenario.Step{ID: rc.name + ".delete", Call: call, Expect: lowestSuccess(mo.Op), Notes: map[string]string{}}
+		st := &scenario.Step{ID: rc.name + ".delete", Call: call, Expect: g.success(mo.Op), Notes: map[string]string{}}
 		if st.Expect != 0 && g.params(st, mo.Op, rc) {
 			return st
 		}
@@ -876,50 +894,92 @@ func lastPathParam(op *spec.Operation) *openapi3.Parameter {
 }
 
 // others adds the operations not used yet whose required parameters the
-// records give values now: reads of sub-resources, lookups, actions.
+// records give values now: reads of sub-resources, lookups, actions, and a
+// create the records do not use if its entry under "operations" sets the
+// status.
 func (g *gen) others() {
 	for _, op := range g.s.Ops {
-		if g.used[op] || op.Method == http.MethodDelete {
+		if g.used[op] || g.skipped(op) || op.Method == http.MethodDelete {
 			continue
 		}
-		if mo := g.m.Op(op); mo != nil && mo.Role == model.RoleCreate {
+		if mo := g.m.Op(op); mo != nil && mo.Role == model.RoleCreate && (!g.optIn(op) || g.recordCreate(op)) {
 			continue
 		}
-		expect := lowestSuccess(op)
-		if expect == 0 {
-			continue
-		}
-		rc := g.recordFor(op)
-		name := lowerFirst(op.ID)
-		if !op.HasOperationID {
-			name = strings.ToLower(op.Method) + strings.ReplaceAll(strings.ReplaceAll(op.Path, "/", "."), "{", "")
-			name = strings.ReplaceAll(name, "}", "")
-		}
-		id := name
-		if rc != nil {
-			id = rc.name + "." + name
-		}
-		st := &scenario.Step{ID: id, Call: op.Method + " " + op.Path, Expect: expect, Notes: map[string]string{}}
-		if !g.fillable(op, rc) {
-			continue
-		}
-		st.ID = g.id(id)
-		if !g.params(st, op, rc) {
-			continue
-		}
-		if op.Method == http.MethodGet {
-			st.Why = "sure: a read of " + op.Path
-		} else {
-			st.Why = fmt.Sprintf("guess: an action (%s %s); its body and the order are chosen by the generator", op.Method, op.Path)
-			g.out.Guesses = append(g.out.Guesses, Note{Step: st.ID, What: st.Call, Why: "an operation that is no create, read, update or delete; it runs once with a generated body", Fix: "steps: {" + st.ID + ": {…}} or skip"})
-			if _, media := cases.RequestMedia(op); media != nil {
-				body, unique := g.body(st, op, media.Schema, rc, nil)
-				st.Body, st.HasBody, st.Unique = body, true, unique
-			}
-		}
-		g.used[op] = true
-		g.steps = append(g.steps, st)
+		g.extraStep(op)
 	}
+}
+
+// extraStep adds one step of an operation outside the life cycle of a
+// record; false if its parameters have no values yet.
+func (g *gen) extraStep(op *spec.Operation) bool {
+	expect := g.success(op)
+	if expect == 0 {
+		return false
+	}
+	rc := g.recordFor(op)
+	name := lowerFirst(op.ID)
+	if !op.HasOperationID {
+		name = strings.ToLower(op.Method) + strings.ReplaceAll(strings.ReplaceAll(op.Path, "/", "."), "{", "")
+		name = strings.ReplaceAll(name, "}", "")
+	}
+	id := name
+	if rc != nil {
+		id = rc.name + "." + name
+	}
+	if !g.fillable(op, rc) {
+		return false
+	}
+	st := &scenario.Step{ID: id, Call: op.Method + " " + op.Path, Expect: expect, Notes: map[string]string{}}
+	st.ID = g.id(id)
+	if !g.params(st, op, rc) {
+		return false
+	}
+	switch {
+	case g.optIn(op):
+		st.Why = "override: operations entry of " + st.Call
+	case op.Method == http.MethodGet:
+		st.Why = "sure: a read of " + op.Path
+	default:
+		st.Why = fmt.Sprintf("guess: an action (%s %s); its body and the order are chosen by the generator", op.Method, op.Path)
+		g.out.Guesses = append(g.out.Guesses, Note{Step: st.ID, What: st.Call, Why: "an operation that is no create, read, update or delete; it runs once with a generated body", Fix: "steps: {" + st.ID + ": {…}} or skip"})
+	}
+	if _, media := cases.RequestMedia(op); media != nil && op.Method != http.MethodGet {
+		body, unique := g.body(st, op, media.Schema, rc, nil)
+		st.Body, st.HasBody, st.Unique = body, true, unique
+	}
+	g.used[op] = true
+	g.steps = append(g.steps, st)
+	return true
+}
+
+// skipped reports whether the entry of an operation leaves it out.
+func (g *gen) skipped(op *spec.Operation) bool {
+	oo := g.in.Overrides.operation(op)
+	return oo != nil && oo.Skip
+}
+
+// optIn reports whether the entry of an operation sets its status: a
+// DELETE, or a create the records do not use, runs only then.
+func (g *gen) optIn(op *spec.Operation) bool {
+	oo := g.in.Overrides.operation(op)
+	return oo != nil && oo.Status != 0
+}
+
+// recordCreate reports whether an operation creates the records of a
+// resource of the scenario.
+func (g *gen) recordCreate(op *spec.Operation) bool {
+	mo := g.m.Op(op)
+	return mo != nil && mo.Role == model.RoleCreate && slices.Contains(g.order, mo.Resource) && mo.Resource.OpsWith(model.RoleCreate)[0].Op == op
+}
+
+// recordDelete reports whether an operation deletes the records of a
+// resource of the scenario.
+func (g *gen) recordDelete(op *spec.Operation) bool {
+	mo := g.m.Op(op)
+	if mo == nil || mo.Role != model.RoleDelete || len(g.recs[mo.Resource]) == 0 || !slices.Contains(g.order, mo.Resource) {
+		return false
+	}
+	return mo.Resource.OpsWith(model.RoleDelete)[0].Op == op
 }
 
 // recordFor is the record whose values an operation takes: the record of
@@ -945,8 +1005,12 @@ func (g *gen) recordFor(op *spec.Operation) *rec {
 // value now: bound to a record that exists, or given by an override or
 // the spec.
 func (g *gen) fillable(op *spec.Operation, rc *rec) bool {
+	oo := g.in.Overrides.operation(op)
 	for _, p := range op.Params {
 		if p.In != openapi3.ParameterInPath {
+			continue
+		}
+		if _, ok := oo.param(p); ok {
 			continue
 		}
 		if b := g.binds.For(op, p); b != nil {
@@ -966,8 +1030,14 @@ func (g *gen) fillable(op *spec.Operation, rc *rec) bool {
 }
 
 // cleanup deletes the records, the resources in reverse order, and reads
-// a deleted record once more (404).
+// a deleted record once more (404). The DELETEs whose entry under
+// "operations" sets the status come first, while the records exist.
 func (g *gen) cleanup() {
+	for _, op := range g.s.Ops {
+		if op.Method == http.MethodDelete && !g.used[op] && !g.skipped(op) && g.optIn(op) && !g.recordDelete(op) {
+			g.extraStep(op)
+		}
+	}
 	for i := len(g.order) - 1; i >= 0; i-- {
 		r := g.order[i]
 		dels := r.OpsWith(model.RoleDelete)
@@ -978,7 +1048,7 @@ func (g *gen) cleanup() {
 		list := g.recs[r]
 		for j := len(list) - 1; j >= 0; j-- {
 			rc := list[j]
-			st := &scenario.Step{ID: g.id(rc.name + ".delete"), Call: op.Method + " " + op.Path, Expect: lowestSuccess(op), Notes: map[string]string{}}
+			st := &scenario.Step{ID: g.id(rc.name + ".delete"), Call: op.Method + " " + op.Path, Expect: g.success(op), Notes: map[string]string{}}
 			if st.Expect == 0 || !g.params(st, op, rc) {
 				continue
 			}
@@ -999,21 +1069,6 @@ func (g *gen) cleanup() {
 			}
 		}
 	}
-}
-
-func (g *gen) whyUncovered(op *spec.Operation) string {
-	if lowestSuccess(op) == 0 {
-		return "no 2xx response documented"
-	}
-	for _, p := range op.Params {
-		if p.In == openapi3.ParameterInPath && g.binds.For(op, p) == nil {
-			return fmt.Sprintf("no value for the path parameter {%s}: no create gives it and the spec has no example", p.Name)
-		}
-	}
-	if mo := g.m.Op(op); mo == nil {
-		return "the operation belongs to no resource the scenario creates"
-	}
-	return "the records it needs could not be created"
 }
 
 func sortedKeys[V any](m map[string]V) []string {

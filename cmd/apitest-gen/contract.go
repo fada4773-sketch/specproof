@@ -34,10 +34,12 @@ Usage:
   apitest-gen contract run  -settings contract-settings.yaml [-base-url <url>] [-token <t> | -token-env NAME] [flags]
 
   init  generates the scenario from the spec (contract-scenario_gen.yaml), with
-        the corrections of contract-overrides.yaml; runs it against the instance,
-        which must be empty; writes the golden snapshot (contract-golden_gen.yaml)
-        and the examples into the spec, and the review list
-        (contract-review_gen.md). Run it again after a change of the API.
+        the corrections of contract-overrides.yaml, where it proposes an entry
+        under "operations" for every operation without a step; runs it against
+        the instance, which must be empty; writes the golden snapshot
+        (contract-golden_gen.yaml) and the examples into the spec, and the
+        review list (contract-review_gen.md). Run it again after a change of
+        the API or of the overrides.
   run   runs the scenario and compares with the golden snapshot; exit code 1
         if a step fails (for CI).
 
@@ -258,6 +260,13 @@ func contractInit(o *contractOptions, st *scenario.Settings, out io.Writer) (int
 		return 1, err
 	}
 	fmt.Fprintf(out, "  written %s\n", o.scenario)
+	n, err := contract.WriteProposals(o.overrides, gen.Proposals)
+	if err != nil {
+		return 1, err
+	}
+	if n > 0 {
+		fmt.Fprintf(out, "  %s: %d operations without a step proposed under \"operations\"; fill in the null values and run init again\n", o.overrides, n)
+	}
 
 	cfg, err := o.config(st)
 	if err != nil {

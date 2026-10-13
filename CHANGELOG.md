@@ -29,7 +29,13 @@ contain breaking changes, which are listed here.
     (`learnFrom`, GET only), the examples of the spec or generated. It runs
     the scenario against an empty instance, writes the golden snapshot,
     the examples of the spec and `contract-review_gen.md`, which lists the
-    decisions the generator had to guess. `apitest-gen contract run` runs
+    decisions the generator had to guess. For every operation that got no
+    step it proposes an entry under `operations` of
+    `contract-overrides.yaml`, by the reason: the open parameter values,
+    the status (no 2xx documented, a DELETE outside the life cycle,
+    another create), `null` while open and learned from `learnFrom` where
+    a value fits; filled in, the next `init` gives the operation a step,
+    `skip: true` leaves it out. `apitest-gen contract run` runs
     it again and compares (`-errors`, `-run`, `-skip`, `-unique`,
     `-junit`).
   - `apitest-gen regression init|pre|post|diff`: a check before and after a

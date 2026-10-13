@@ -242,10 +242,41 @@ add:                             # steps the generator cannot derive
     header: {X-Fault: db-down}   # a test switch of the instance
     expect: 500
 skip: [ship1.create.forbidden]   # generated steps that must not run
+operations:                      # operations without a generated step, by "METHOD /path"
+  GET /docks/{dockCode}:
+    path: {dockCode: D-7}        # a value for the parameter of this operation
+  DELETE /planets/{planetId}:
+    path: {planetId: null}       # null: still open
+    status: null                 # the status of its step; a DELETE runs only with it
+  POST /ships/import:
+    skip: true                   # stays without a step; init proposes nothing for it
 ```
 
 After the overrides, the scenario must still hold together: a skipped
 step that saves a value a later step needs is an error that names both.
+
+#### Operations without a step
+
+`init` writes an entry under `operations` for every operation that got no
+step, with the reason as a comment above it and the keys it needs, `null`
+while open. You fill them in and run `init` again; what you wrote stays,
+and a later `init` only adds entries and keys that are missing.
+
+| Reason | Proposed |
+|---|---|
+| a path parameter no create gives and the spec has no example for | `path: {name: null}` |
+| a path parameter from a create that made no record | `path: {name: null}`; often fixing the entry of that create is enough |
+| a required query or header parameter without any value | `query`/`header: {name: null}` |
+| no 2xx response documented | `status: null` |
+| a DELETE outside the life cycle of a record | `status: null` (runs before the records are deleted) |
+| another create of a resource whose records use the first one | `status: null` |
+
+With `learnFrom` in the settings, an open parameter gets a value of the
+stage when one fits its schema: the field the parameter names (`dockCode` →
+`code` of a Dock) of a record read with the list operation. The comment
+says where it comes from; a key of the stage may not exist on the empty
+instance. A `null` value counts as not given, `skip: true` leaves the
+operation out for good.
 
 ### The golden snapshot
 
