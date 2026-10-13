@@ -6,6 +6,46 @@ contain breaking changes, which are listed here.
 
 ## Unreleased
 
+### Features
+
+- Scenario mode, next to the examples mode of `apitest.Run`
+  ([docs/scenario.md](docs/scenario.md)):
+  - `apitest.RunScenario(t, apitest.ScenarioConfig{…})` runs a scenario:
+    the requests of a test in the order they run, with any number of
+    records and calls per endpoint, values saved from earlier answers
+    (`{{ship1.shipId}}`, also from headers such as `Location` and `ETag`),
+    checks (`equals`, `contains`) and authentication steps. It compares
+    every answer with a golden snapshot. `ScenarioConfig` embeds the whole
+    `Config` of `Run` (either `Handler` or `BaseURL`, tokens, `Params`,
+    `IgnoreFields`, `CompareMode`, deviations, `TolerateErrorCases`,
+    `SkipAuthCases`, `Tags`, reports, hooks, …) and adds `Settings`,
+    `Scenario`, `Golden`, `Errors` (which error steps run, and their
+    order: `"401"`, `"404"`, `"4xx"`), `Unique`, `Update` and `OnStep`.
+    `RunScenarioStandalone` runs it outside of `go test`.
+  - `apitest-gen contract init` generates the scenario from the spec: per
+    resource a life cycle with several records, the documented 409,
+    400/422, 412 and 404 answers, the 401 and 403 steps and the deletes in
+    reverse order; values from `contract-overrides.yaml`, a running stage
+    (`learnFrom`, GET only), the examples of the spec or generated. It runs
+    the scenario against an empty instance, writes the golden snapshot,
+    the examples of the spec and `contract-review_gen.md`, which lists the
+    decisions the generator had to guess. `apitest-gen contract run` runs
+    it again and compares (`-errors`, `-run`, `-skip`, `-unique`,
+    `-junit`).
+  - `apitest-gen regression init|pre|post|diff`: a check before and after a
+    deployment that only sends GET requests. `pre` draws real records of a
+    stage by the rules of `regression-sample.yaml` (a new sample every
+    time; `where`, `check`, `pick`), reads every GET with them and keeps
+    the answers; `post` reads the same with the same records against the
+    new spec and reports what changed (`STATUS_CHANGED`, `FIELD_CHANGED`,
+    `ELEMENT_MISSING`, `SCHEMA_VIOLATION`, `SLOWER`, …) as Markdown, HTML
+    and JUnit; fields that change by themselves are found by reading
+    twice (`probe`).
+  - Token flags for both: `-token`, `-token-env`, `-forbidden-token`,
+    `-forbidden-token-env`, `-header`.
+
+## v0.2.0
+
 
 ### Breaking changes
 

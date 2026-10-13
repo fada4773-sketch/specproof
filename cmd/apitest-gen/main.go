@@ -43,6 +43,8 @@ Usage:
   apitest-gen review   -spec <openapi.yaml> [-dict global-dict.json] [-defaults defaults.json]
   apitest-gen record   -spec <openapi.yaml> -analyse [-file examples.record.yaml]
   apitest-gen record   -spec <openapi.yaml> [-file examples.record.yaml] [-base-url <url>] [-refresh <entries>]
+  apitest-gen contract init|run -settings contract-settings.yaml [-base-url <url>] [-token … | -token-env NAME]
+  apitest-gen regression init|pre|post|diff …
 
 Commands:
   apply     (default) update the dictionary, then write missing or invalid
@@ -77,6 +79,14 @@ Commands:
             never sent again; without -base-url it only writes the stored
             answers; a lint of the written spec lists what apitest.Run
             would report
+  contract  the contract test against an empty instance: init generates the
+            scenario from the spec, runs it, writes the golden snapshot, the
+            examples of the spec and the review list; run runs it again and
+            compares (for CI). "apitest-gen contract help" for its flags
+  regression  before and after a deployment: pre draws real records of a
+            stage (GET only), reads every GET with them and keeps the
+            answers; post reads the same again and reports what changed.
+            "apitest-gen regression help" for its flags
   help      show this help
 
 Flags:
@@ -98,6 +108,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 	cmd := "apply"
 	if !strings.HasPrefix(args[0], "-") {
 		cmd, args = args[0], args[1:]
+	}
+	switch cmd {
+	case "contract":
+		return contractCommand(args, stdout, stderr)
+	case "regression":
+		return regressionCommand(args, stdout, stderr)
 	}
 	if !slices.Contains([]string{"apply", "dict", "discover", "check", "review", "record"}, cmd) {
 		fmt.Fprintf(stderr, "apitest-gen: unknown command %q; run \"apitest-gen help\"\n", cmd)
