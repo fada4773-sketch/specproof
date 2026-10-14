@@ -13,6 +13,8 @@ type ReviewInput struct {
 	Built             *Built
 	Changes           []Change
 	Stale             []string
+	// Unset are the entries of params without a value.
+	Unset []string
 }
 
 // Review renders the review list (tree-review_gen.md): what was fetched,
@@ -35,6 +37,9 @@ func Review(in ReviewInput) string {
 		for _, c := range in.Changes {
 			fmt.Fprintf(&b, "| %s | %s |\n", cell(c.Where), cell(c.What))
 		}
+	}
+	if len(in.Unset) > 0 {
+		fmt.Fprintf(&b, "\n## Params without value (%d)\n\nNo record of the tree gives them; set them under params at the top of tree.yaml.\nThe nodes that use them were left out: %s\n", len(in.Unset), strings.Join(in.Unset, ", "))
 	}
 	if in.Built != nil && len(in.Built.Seeds) > 0 {
 		fmt.Fprintf(&b, "\n## Seed: the instance must hold these records (%d)\n\n", len(in.Built.Seeds))

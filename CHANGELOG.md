@@ -39,11 +39,17 @@ contain breaking changes, which are listed here.
     reads below them, resources that belong to them, records their fields
     refer to; every other read below the node that gives its path
     parameters, across tags: `{bookId}` below the books, by the model, by
-    resource name + key or by field name, so little stays unplaced; write
-    blocks with the body taken from the read that covers the request best,
-    `body: from details`; operationIds as comments) and, run again, keeps
-    the file and only adds what it does not name yet at its place,
-    follows renamed paths and marks operations the spec lost. With
+    resource name + key or by field name; a value no node gives becomes
+    `$name`, listed once under `params` at the top of the file to be set,
+    and the read still gets its place in the tree; write blocks with
+    `body: from <read>` for every create, update and patch, from the read
+    that covers the request best; every other write at the node whose
+    records it writes, a search as a node with `read: true`, the rest in
+    `ignore` with the reason; operationIds as comments) and, run again,
+    keeps the file and only adds what it does not name yet at its place
+    (below the nodes of the file that give its values; values the file
+    lacks into `params`), follows renamed paths and marks operations the
+    spec lost. With
     `-base-url` it fetches the records (GET only) into
     `tree-data_gen.yaml` and writes `tree-scenario_gen.yaml`: the creates
     in the order the references need (the ids of the stage replaced by

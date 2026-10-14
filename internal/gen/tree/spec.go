@@ -146,8 +146,9 @@ func isList(op *spec.Operation) bool {
 
 // Check verifies a tree against the spec: every call names an operation,
 // a node reads (GET, or POST with read: true), every path parameter has a
-// value, and every "<node>.field" names an ancestor. Nodes that are off
-// and unplaced nodes are not checked.
+// value, every "<node>.field" names an ancestor or a node fetched before,
+// and every "$name" an entry of params. Nodes that are off are not
+// checked.
 func Check(s *spec.Spec, t *Tree) []string {
 	var problems []string
 	names := map[string]bool{}
@@ -171,6 +172,12 @@ func Check(s *spec.Spec, t *Tree) []string {
 	checkRefs := func(line int, where string, at *Node, write bool, values ...any) {
 		for _, v := range values {
 			walkStrings(v, func(str string) {
+				if prm, isParam := ParamRef(str); isParam {
+					if _, known := t.Params[prm]; !known {
+						add(line, "%s: %q: params has no entry %s (add it at the top of tree.yaml)", where, str, prm)
+					}
+					return
+				}
 				name, _, ok := strings.Cut(str, ".")
 				if !ok || !names[name] || at.Ancestor(name) != nil || write {
 					return

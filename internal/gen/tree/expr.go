@@ -37,6 +37,36 @@ func ParseRef(v any, scope func(string) bool) (Ref, bool) {
 	return Ref{Node: name, Field: field}, true
 }
 
+// ParamRef reads a value as a reference to params: "$name".
+func ParamRef(v any) (string, bool) {
+	s, ok := v.(string)
+	if !ok || !strings.HasPrefix(s, "$") || !nameForm(s[1:]) {
+		return "", false
+	}
+	return s[1:], true
+}
+
+// param is the value of params a "$name" names; ok is false while it is
+// not set.
+func (t *Tree) param(name string) (any, bool) {
+	v, ok := t.Params[name]
+	if !ok || v == nil || v == "" {
+		return nil, false
+	}
+	return v, true
+}
+
+// UnsetParams lists the entries of params without a value, in file order.
+func (t *Tree) UnsetParams() []string {
+	var out []string
+	for _, name := range t.ParamNames {
+		if _, set := t.param(name); !set {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
 // String writes the reference back.
 func (r Ref) String() string {
 	if r.Node == "" {

@@ -19,7 +19,8 @@ A node is a request ("GET /path p=.field") or a mapping: call, path, query,
 header, body (with read: true for a POST that only reads), items, page,
 pick (a number, all, {first: n} or a list of keys), candidates, where,
 require, key, save, write, each, off. ".field" reads the record the node
-runs under (in write: the record itself), "<node>.field" a node above it.
+runs under (in write: the record itself), "<node>.field" a node above it
+or fetched before it, "$name" a value of params.
 "write" says how the integration test rebuilds a record in an empty
 instance: create (none: the instance holds it), update, patch, delete.`
 
@@ -28,18 +29,52 @@ func (t *Tree) Encode() ([]byte, error) {
 	doc := yamldoc.New(fileHead)
 	root := doc.Root
 	add := func(k string, v *yaml.Node) { root.Content = append(root.Content, scalar(k), v) }
+	if len(t.ParamNames) > 0 {
+		root.Content = append(root.Content, paramsKey(), paramsYAML(t))
+	}
 	add("seed", scalar(strconv.FormatUint(t.Seed, 10)))
 	add("budget", scalar(strconv.Itoa(t.Budget)))
 	add("tree", nodesYAML(t.Roots))
-	if len(t.Unplaced) > 0 {
-		u := nodesYAML(t.Unplaced)
-		root.Content = append(root.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: "unplaced",
-			HeadComment: "Reads the generator could not hang under a node; switched off. Move them into the tree."}, u)
-	}
 	if len(t.Ignore) > 0 {
-		add("ignore", stringsYAML(t.Ignore))
+		l := stringsYAML(t.Ignore)
+		for _, c := range l.Content {
+			c.LineComment = comment(t.IgnoreNotes[c.Value])
+		}
+		add("ignore", l)
 	}
 	return doc.Bytes()
+}
+
+// paramsHead explains the params section.
+const paramsHead = `Values no record of the tree gives: set each to a value of the stage
+(an id, a code). The nodes and writes use them as $name; a node whose
+value is not set is left out of the fetch.`
+
+func paramsKey() *yaml.Node {
+	k := scalar("params")
+	k.HeadComment = paramsHead
+	return k
+}
+
+func paramsYAML(t *Tree) *yaml.Node {
+	m := &yaml.Node{Kind: yaml.MappingNode}
+	for _, name := range t.ParamNames {
+		m.Content = append(m.Content, scalar(name), paramValueYAML(t.Params[name], t.ParamNotes[name]))
+	}
+	return m
+}
+
+func paramValueYAML(v any, note string) *yaml.Node {
+	var n *yaml.Node
+	if v == nil {
+		n = &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!null"}
+	} else {
+		n = valueYAML(v, true)
+	}
+	if note != "" {
+		n.LineComment = "# " + note
+	}
+	return n
 }
 
 func scalar(s string) *yaml.Node {

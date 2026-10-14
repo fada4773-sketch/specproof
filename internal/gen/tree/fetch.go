@@ -89,6 +89,8 @@ type fetcher struct {
 	// lastTarget is the request sent last, for notes.
 	lastTarget string
 	scope      func(string) bool
+	// unset are the nodes left out for a "$name" without value, noted once.
+	unset map[*Node]bool
 }
 
 // first is the first record of a node fetched so far, nil without.
@@ -130,7 +132,7 @@ func Fetch(ctx context.Context, s *spec.Spec, t *Tree, opt Options) (*Data, erro
 	if problems := Check(s, t); len(problems) > 0 {
 		return nil, &FindingError{Problems: problems}
 	}
-	f := &fetcher{s: s, t: t, opt: opt, data: &Data{Source: opt.BaseURL}, cache: map[string]*answer{}, count: map[*Node]int{}, budget: t.Budget, scope: t.names()}
+	f := &fetcher{s: s, t: t, opt: opt, data: &Data{Source: opt.BaseURL}, cache: map[string]*answer{}, count: map[*Node]int{}, budget: t.Budget, scope: t.names(), unset: map[*Node]bool{}}
 	if f.budget <= 0 {
 		f.budget = DefaultBudget
 	}
@@ -165,6 +167,13 @@ func (f *fetcher) node(ctx context.Context, n *Node, parent *Record) error {
 	op := lookupOp(f.s, n.Call)
 	if op == nil {
 		f.note("%s: %s is not in the spec; left out", n.Name, n.Call)
+		return nil
+	}
+	if missing := unsetParams(f.t, n); len(missing) > 0 {
+		if !f.unset[n] {
+			f.unset[n] = true
+			f.note("%s: left out, $%s has no value; set it under params at the top of tree.yaml", n.Name, strings.Join(missing, ", $"))
+		}
 		return nil
 	}
 	candidates, single, err := f.candidates(ctx, n, op, parent)
@@ -254,6 +263,28 @@ func (f *fetcher) node(ctx context.Context, n *Node, parent *Record) error {
 		}
 	}
 	return nil
+}
+
+// unsetParams lists the "$name" values of a node (and of its requires) that
+// params does not set.
+func unsetParams(t *Tree, n *Node) []string {
+	var out []string
+	visit := func(x *Node) {
+		for _, v := range []any{anyMap(x.Path), anyMap(x.Query), anyMap(x.Header), x.Body} {
+			walkStrings(v, func(s string) {
+				if name, ok := ParamRef(s); ok {
+					if _, set := t.param(name); !set && !slices.Contains(out, name) {
+						out = append(out, name)
+					}
+				}
+			})
+		}
+	}
+	visit(n)
+	for _, r := range n.Require {
+		visit(r)
+	}
+	return out
 }
 
 func paren(parts []string) string {
@@ -422,7 +453,7 @@ type request struct {
 // requests builds the requests of a node under a parent record: one, or one
 // per value of the parameter that holds a list.
 func (f *fetcher) requests(n *Node, op *spec.Operation, parent *Record) ([]request, error) {
-	res := func(v any) (any, error) { return resolveFetch(v, parent, f.scope, f.first) }
+	res := func(v any) (any, error) { return resolveFetch(v, parent, f.t, f.scope, f.first) }
 	path, err := resolveMap(n.Path, res)
 	if err != nil {
 		return nil, err
@@ -512,13 +543,14 @@ func resolveMap(m map[string]any, res func(any) (any, error)) (map[string]any, e
 
 // resolveFetch fills the references of a value with the values of the
 // record the node runs under (".field"), of an ancestor, or of the first
-// record of another node fetched before ("<node>.field").
-func resolveFetch(v any, at *Record, scope func(string) bool, first func(string) *Record) (any, error) {
+// record of another node fetched before ("<node>.field"), and of params
+// ("$name").
+func resolveFetch(v any, at *Record, t *Tree, scope func(string) bool, first func(string) *Record) (any, error) {
 	switch x := v.(type) {
 	case map[string]any:
 		out := map[string]any{}
 		for k, c := range x {
-			r, err := resolveFetch(c, at, scope, first)
+			r, err := resolveFetch(c, at, t, scope, first)
 			if err != nil {
 				return nil, err
 			}
@@ -528,13 +560,20 @@ func resolveFetch(v any, at *Record, scope func(string) bool, first func(string)
 	case []any:
 		out := make([]any, len(x))
 		for i, c := range x {
-			r, err := resolveFetch(c, at, scope, first)
+			r, err := resolveFetch(c, at, t, scope, first)
 			if err != nil {
 				return nil, err
 			}
 			out[i] = r
 		}
 		return out, nil
+	}
+	if name, ok := ParamRef(v); ok {
+		val, set := t.param(name)
+		if !set {
+			return nil, fmt.Errorf("$%s has no value; set it under params at the top of tree.yaml", name)
+		}
+		return val, nil
 	}
 	ref, ok := ParseRef(v, scope)
 	if !ok {

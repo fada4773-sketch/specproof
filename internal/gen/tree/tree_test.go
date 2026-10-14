@@ -2,6 +2,7 @@ package tree
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -71,11 +72,13 @@ tree:
     items: ""
     pick: all
     off: true
-unplaced:
-  x: GET /x
+params:
+  shipNo: 7
+  crew:
 ignore: [GET /health]
 `)
-	if tr.Seed != 7 || tr.Budget != 50 || len(tr.Roots) != 2 || len(tr.Unplaced) != 1 || tr.Ignore[0] != "GET /health" {
+	if tr.Seed != 7 || tr.Budget != 50 || len(tr.Roots) != 2 || text(tr.Params["shipNo"]) != "7" || tr.Params["crew"] != nil ||
+		len(tr.ParamNames) != 2 || tr.Ignore[0] != "GET /health" {
 		t.Fatalf("tree: %+v", tr)
 	}
 	p := tr.Roots[0]
@@ -622,7 +625,12 @@ ignore: [GET /pilots, getHealth]
 		"# mine", "seed: 3", "# my comment", "pick: [mars]", "pick: 1",
 		"crew: GET /docks/{dockId}/crew dockId=.id # gone: not in the spec 1.0",
 		"  renamed:\n            call: GET /docks/{dockId}/ships # listShips",
-		"update: PUT /docks/{dockId} dockId=.id # updateDock · new in 1.0",
+		"call: PUT /docks/{dockId} # updateDock · new in 1.0",
+		"body: from docks",
+		// the list of pilots is ignored: a pilot hangs below the ships, whose
+		// field names it, and takes the writes of pilots
+		"pilot:\n                call: GET /pilots/{pilotId} # getPilot · new in 1.0\n                path: {pilotId: .pilotId}",
+		"call: POST /pilots # createPilot · new in 1.0",
 		"getShipLog · new in 1.0",
 		"ignore: [GET /pilots, getHealth]",
 	} {
@@ -695,8 +703,8 @@ func TestProposalRoundTrip(t *testing.T) {
 	if pm := tr.Node("permit"); pm.Path["dockId"] != "docks.id" || pm.Path["pilotId"] != ".id" || pm.Parent.Name != "shipPilot" {
 		t.Errorf("permit: %+v under %s", pm.Path, pm.Parent.Name)
 	}
-	if len(tr.Unplaced) != 0 {
-		t.Errorf("nothing is unplaced: %v", tr.Unplaced)
+	if len(tr.Params) != 0 {
+		t.Errorf("every value comes from a node: %v", tr.Params)
 	}
 	// the create of a pilot takes its body from the profile, which has
 	// homePlanet; the ship takes its dock from the node above
@@ -825,5 +833,251 @@ func TestProposalNames(t *testing.T) {
 	}
 	if n := p.name("a b/c", nil); n != "a-b-c" {
 		t.Errorf("clean: %s", n)
+	}
+}
+
+// gardenSpec has values no record gives: a garden is read by its number
+// only, the harvest needs a season, and a maintenance run writes nothing a
+// node reads.
+const gardenSpec = `openapi: 3.0.3
+info: {title: Garden, version: "1.0"}
+paths:
+  /gardens/{gardenNo}:
+    parameters:
+      - {name: gardenNo, in: path, required: true, schema: {type: string}}
+    get:
+      operationId: getGarden
+      tags: [Garden]
+      responses:
+        '200':
+          description: one garden
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Garden'}
+    put:
+      operationId: updateGarden
+      tags: [Garden]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/GardenWrite'}
+      responses:
+        '200':
+          description: updated
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Garden'}
+  /gardens/{gardenNo}/beds:
+    get:
+      operationId: listBeds
+      tags: [Bed]
+      parameters:
+        - {name: gardenNo, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: the beds of a garden
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/Bed'}}
+  /harvest:
+    get:
+      operationId: getHarvest
+      tags: [Harvest]
+      parameters:
+        - {name: season, in: query, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: the harvest of a season
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Harvest'}
+  /maintenance/run:
+    post:
+      operationId: runMaintenance
+      tags: [System]
+      requestBody:
+        content:
+          application/json:
+            schema: {type: object, properties: {mode: {type: string}}}
+      responses:
+        '202': {description: started}
+components:
+  schemas:
+    Garden:
+      type: object
+      required: [gardenNo, name]
+      properties:
+        gardenNo: {type: string}
+        name: {type: string}
+        size: {type: integer}
+    GardenWrite:
+      type: object
+      properties:
+        name: {type: string}
+        size: {type: integer}
+    Bed:
+      type: object
+      properties:
+        id: {type: integer}
+        gardenNo: {type: string}
+        plant: {type: string}
+    Harvest:
+      type: object
+      properties:
+        season: {type: string}
+        total: {type: integer}
+`
+
+func loadGarden(t *testing.T) *spec.Spec {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "garden.yaml")
+	if err := os.WriteFile(path, []byte(gardenSpec), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := spec.Load(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+func TestProposalParamsInsteadOfUnplaced(t *testing.T) {
+	s := loadGarden(t)
+	b, err := Propose(s).Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(b)
+	tr := parse(t, out)
+	if problems := Check(s, tr); len(problems) > 0 {
+		t.Errorf("the proposal must pass its own check: %v\n%s", problems, out)
+	}
+	// the values no node gives are listed at the top, with their users
+	if !strings.Contains(out, "params:\n  gardenNo: # getGarden") || !strings.Contains(out, "season: # getHarvest") ||
+		strings.Index(out, "params:") > strings.Index(out, "tree:") {
+		t.Errorf("params at the top:\n%s", out)
+	}
+	// every read is in the tree: the garden by $gardenNo, its beds below it
+	g := tr.Node("gardens")
+	if g == nil || g.Parent != nil || g.Path["gardenNo"] != "$gardenNo" {
+		t.Fatalf("garden:\n%s", out)
+	}
+	if beds := tr.Node("beds"); beds == nil || beds.Parent != g || beds.Path["gardenNo"] != ".gardenNo" {
+		t.Errorf("beds below the garden:\n%s", out)
+	}
+	if h := tr.Node("harvest"); h == nil || h.Query["season"] != "$season" {
+		t.Errorf("harvest:\n%s", out)
+	}
+	// the update of a garden goes to the node that reads it, with a body
+	if w := g.Write[WriteUpdate]; w == nil || w.Path["gardenNo"] != ".gardenNo" || w.From != "gardens" {
+		t.Errorf("update:\n%s", out)
+	}
+	// a write no node reads goes to ignore, with the reason
+	if !slices.Contains(tr.Ignore, "POST /maintenance/run") || !strings.Contains(out, "runMaintenance · no node reads") {
+		t.Errorf("ignore:\n%s", out)
+	}
+	if strings.Contains(out, "unplaced") || strings.Contains(out, "off: true") {
+		t.Errorf("nothing is unplaced or off:\n%s", out)
+	}
+	// a merge of the proposal into itself changes nothing
+	if ch := Merge(s, tr, Propose(s), "1.0"); len(ch) != 0 {
+		t.Errorf("changes: %+v", ch)
+	}
+}
+
+func TestMergeDissolvesUnplaced(t *testing.T) {
+	s := loadGarden(t)
+	tr := parse(t, `# mine
+seed: 2
+tree:
+  harvest:
+    call: GET /harvest
+    query: {season: summer}
+unplaced:
+  garden:
+    call: GET /gardens/{gardenNo}
+    path: {gardenNo: G-7}
+    off: true
+`)
+	changes := Merge(s, tr, Propose(s), "1.0")
+	b, _ := tr.Bytes()
+	out := string(b)
+	if strings.Contains(out, "unplaced") {
+		t.Errorf("unplaced must go:\n%s", out)
+	}
+	// the value written in unplaced is kept in params, at the top below the
+	// head of the file
+	if !strings.HasPrefix(out, "# mine\n") || !strings.Contains(out, "params:\n  gardenNo: G-7 # getGarden") {
+		t.Errorf("params:\n%s", out)
+	}
+	again := parse(t, out)
+	if g := again.Node("gardens"); g == nil || g.Path["gardenNo"] != "$gardenNo" {
+		t.Errorf("the garden is in the tree:\n%s", out)
+	}
+	if again.Node("harvest").Query["season"] != "summer" {
+		t.Error("the value of the user stays")
+	}
+	if _, ok := again.Params["season"]; ok {
+		t.Errorf("season is given in the file, no params entry: %v", again.Params)
+	}
+	if problems := Check(s, again); len(problems) > 0 {
+		t.Errorf("check: %v", problems)
+	}
+	var what []string
+	for _, c := range changes {
+		what = append(what, c.Where+": "+c.What)
+	}
+	if !slices.ContainsFunc(what, func(s string) bool { return strings.HasPrefix(s, "unplaced: removed") }) {
+		t.Errorf("changes: %v", what)
+	}
+}
+
+func TestParamsInFetchAndBuild(t *testing.T) {
+	s := loadStarport(t)
+	_, base := stage(t)
+	_, d := fetch(t, s, `
+tree:
+  pilots:
+    call: GET /pilots
+    pick: {first: 1}
+`, base)
+	id := text(d.Records[0].Value.(map[string]any)["id"])
+	file := `
+params:
+  pid: %s
+tree:
+  pilot: GET /pilots/{pilotId} pilotId=$pid
+`
+	// without a value the node is left out, noted once
+	tr, d := fetch(t, s, fmt.Sprintf(file, ""), base)
+	if len(d.Records) != 0 || len(d.Notes) != 1 || !strings.Contains(d.Notes[0], "$pid has no value") {
+		t.Errorf("unset: %v %v", d.Records, d.Notes)
+	}
+	if u := tr.UnsetParams(); len(u) != 1 || u[0] != "pid" {
+		t.Errorf("unset: %v", u)
+	}
+	if r := Review(ReviewInput{Data: d, Unset: tr.UnsetParams()}); !strings.Contains(r, "## Params without value (1)") {
+		t.Errorf("review:\n%s", r)
+	}
+	if _, err := Build(s, tr, d); err != nil {
+		t.Errorf("build: %v", err)
+	}
+	// with a value the node reads it, and so does the scenario
+	tr, d = fetch(t, s, fmt.Sprintf(file, id), base)
+	if len(d.Records) != 1 || text(d.Records[0].Value.(map[string]any)["id"]) != id {
+		t.Fatalf("set: %v %v", d.Records, d.Notes)
+	}
+	built, err := Build(s, tr, d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st := built.Scenario.Steps[0]; text(st.Path["pilotId"]) != id {
+		t.Errorf("step: %+v", st)
+	}
+	// a $name params does not have is a problem of the file
+	bad := parse(t, "tree:\n  pilot: GET /pilots/{pilotId} pilotId=$nope\n")
+	if problems := Check(s, bad); len(problems) != 1 || !strings.Contains(problems[0], "params has no entry nope") {
+		t.Errorf("check: %v", problems)
 	}
 }

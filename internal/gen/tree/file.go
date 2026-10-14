@@ -26,7 +26,8 @@
 //
 // A value of the form ".field" reads the record the node runs under (in a
 // write block: the record itself), "<node>.field" the record of that
-// ancestor node; every other value is used as it is.
+// ancestor node (or of a node fetched before), "$name" the value of params
+// at the top of the file; every other value is used as it is.
 package tree
 
 import (
@@ -56,19 +57,27 @@ const DefaultBudget = 2000
 
 // Tree is the tree file.
 type Tree struct {
+	// Params are values no record of the tree gives (a parameter no node
+	// answers with), read as "$name"; nil until someone sets them.
+	Params map[string]any
+	// ParamNames is the order of Params in the file; ParamNotes says where
+	// each is used.
+	ParamNames []string
+	ParamNotes map[string]string
 	// Seed makes random picks repeatable.
 	Seed uint64
 	// Budget limits the requests of a fetch.
 	Budget int
 	// Roots are the nodes under "tree".
 	Roots []*Node
-	// Unplaced are nodes the generator could not hang under another one.
-	Unplaced []*Node
 	// Ignore are operations ("METHOD /path" or operationId) the generator
-	// never proposes.
-	Ignore []string
+	// never proposes; IgnoreNotes says why the generator put one there.
+	Ignore      []string
+	IgnoreNotes map[string]string
 
-	doc *yamldoc.Doc
+	// legacy are the nodes of an "unplaced" section of an earlier version.
+	legacy []*Node
+	doc    *yamldoc.Doc
 }
 
 // Node is one request of the tree and the records it answers with.
@@ -204,6 +213,27 @@ func fromDoc(doc *yamldoc.Doc) (*Tree, error) {
 	for i := 0; i+1 < len(root.Content); i += 2 {
 		k, v := root.Content[i], root.Content[i+1]
 		switch k.Value {
+		case "params":
+			t.Params = map[string]any{}
+			if v.Kind == yaml.ScalarNode && v.Tag == "!!null" {
+				continue
+			}
+			if v.Kind != yaml.MappingNode {
+				p.errf(v, "params must be a mapping of names to values")
+				continue
+			}
+			for j := 0; j+1 < len(v.Content); j += 2 {
+				name := v.Content[j].Value
+				if !nameForm(name) {
+					p.errf(v.Content[j], "params: %q: letters, digits, _ and - only", name)
+				}
+				x, err := yamldoc.Decode(v.Content[j+1])
+				if err != nil {
+					p.errf(v.Content[j+1], "params.%s: %v", name, err)
+				}
+				t.Params[name] = x
+				t.ParamNames = append(t.ParamNames, name)
+			}
 		case "seed":
 			n, err := strconv.ParseUint(v.Value, 10, 64)
 			if err != nil {
@@ -219,7 +249,9 @@ func fromDoc(doc *yamldoc.Doc) (*Tree, error) {
 		case "tree":
 			t.Roots = p.nodes(v, nil)
 		case "unplaced":
-			t.Unplaced = p.nodes(v, nil)
+			// files of an earlier version: a merge moves these reads into
+			// the tree and their missing values into params
+			t.legacy = p.nodes(v, nil)
 		case "ignore":
 			if v.Kind != yaml.SequenceNode {
 				p.errf(v, "ignore must be a list of operations")
@@ -229,7 +261,7 @@ func fromDoc(doc *yamldoc.Doc) (*Tree, error) {
 				t.Ignore = append(t.Ignore, strings.TrimSpace(c.Value))
 			}
 		default:
-			p.errf(k, "unknown key %q (known: seed, budget, tree, unplaced, ignore)", k.Value)
+			p.errf(k, "unknown key %q (known: params, seed, budget, tree, ignore)", k.Value)
 		}
 	}
 	p.uniqueNames(t)
@@ -676,8 +708,8 @@ func shortForm(s string) (string, map[string]any, error) {
 	return call, params, nil
 }
 
-// Walk visits every node of the tree and of unplaced, parents first;
-// requires are visited after their node.
+// Walk visits every node of the tree, parents first; requires are visited
+// after their node.
 func (t *Tree) Walk(fn func(*Node)) {
 	var walk func([]*Node)
 	walk = func(list []*Node) {
@@ -690,10 +722,9 @@ func (t *Tree) Walk(fn func(*Node)) {
 		}
 	}
 	walk(t.Roots)
-	walk(t.Unplaced)
 }
 
-// Node returns the node of the tree (not unplaced) with the name.
+// Node returns the node of the tree with the name.
 func (t *Tree) Node(name string) *Node {
 	var out *Node
 	var walk func([]*Node)
@@ -713,8 +744,8 @@ func (t *Tree) Node(name string) *Node {
 	return out
 }
 
-// names reports whether a name is a node of the tree (not unplaced, no
-// require): the scope of "<node>.field".
+// names reports whether a name is a node of the tree (no require): the
+// scope of "<node>.field".
 func (t *Tree) names() func(string) bool {
 	set := map[string]bool{}
 	var walk func([]*Node)

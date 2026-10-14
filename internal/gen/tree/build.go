@@ -175,16 +175,29 @@ func (b *builder) writeOf(n *Node, kind string) (*Write, *spec.Operation) {
 	return w, op
 }
 
+// creatable reports whether the tree creates records of the node's
+// resource somewhere: then a record it does not rebuild is no seed.
+func (b *builder) creatable(n *Node) bool {
+	res := b.resourceOf(n)
+	found := false
+	b.t.Walk(func(o *Node) {
+		if found || o.IsRequire {
+			return
+		}
+		if w, _ := b.writeOf(o, WriteCreate); w != nil && (o == n || res != nil && b.resourceOf(o) == res) {
+			found = true
+		}
+	})
+	return found
+}
+
 // resourceOf is the model resource of a node's request, nil if unknown.
 func (b *builder) resourceOf(n *Node) *model.Resource {
 	op := lookupOp(b.s, n.Call)
 	if op == nil {
 		return nil
 	}
-	if mo := b.m.Op(op); mo != nil {
-		return mo.Resource
-	}
-	return nil
+	return resourceOf(b.m, op)
 }
 
 // isView reports whether a record is another answer about the record of
@@ -344,6 +357,15 @@ func (b *builder) resolve(v any, at *Record, scope *Node, param, step string, ex
 			out[i] = b.resolve(c, at, scope, param, step, exclude)
 		}
 		return out
+	}
+	if name, ok := ParamRef(v); ok {
+		val, set := b.t.param(name)
+		if !set {
+			b.note(step, fmt.Sprintf("%s = $%s", param, name), "params has no value for it; set it at the top of tree.yaml")
+			return nil
+		}
+		// a value of the stage: the placeholder of the record created for it
+		return b.placeholderFor(val, []string{param, name}, exclude, step)
 	}
 	ref, ok := ParseRef(v, b.scope)
 	if !ok {
@@ -877,7 +899,7 @@ func (b *builder) listStep(r *Record, op *spec.Operation) {
 		case b.created[e] && name != "":
 			values = append(values, "{{"+name+"}}")
 			rebuilt++
-		case b.created[e]:
+		case b.created[e] || b.creatable(e.Node):
 			other++
 		case seedList:
 			if v, ok := Pointer(c.Value, key); ok {
@@ -967,6 +989,11 @@ func (b *builder) readStep(r *Record, op *spec.Operation) {
 		st.Why = "reads " + e.ID
 	case len(st.Uses()) > 0:
 		st.Why = "reads " + e.ID + ", which comes with the records it names"
+	case b.creatable(e.Node):
+		// the API creates such records, but this one is not rebuilt: an
+		// empty instance does not hold it
+		b.note(st.ID, "no read of "+e.ID, "the scenario does not rebuild it (its create needs a node above it); hang the node below the one whose create it takes")
+		return
 	default:
 		st.Why = "reads " + e.ID + " of the seed"
 		b.seed(e)
@@ -1249,6 +1276,22 @@ func (b *builder) deletes(order []*Record) {
 // paramExample is a value for a parameter from the spec: example, schema
 // example, default, first enum value, else generated.
 func paramExample(p *openapi3.Parameter) (any, bool) {
+	if v, ok := documentedValue(p); ok {
+		return v, true
+	}
+	if p.Schema == nil || p.Schema.Value == nil {
+		return nil, false
+	}
+	g := value.Generate(p.Schema.Value, value.Context{Seed: 42, Path: "tree.param." + p.Name, Name: p.Name})
+	if !g.OK {
+		return nil, false
+	}
+	return spec.Normalize(g.Value), true
+}
+
+// documentedValue is the value the spec gives a parameter: its example,
+// default or first enum value.
+func documentedValue(p *openapi3.Parameter) (any, bool) {
 	if p.Example != nil {
 		return spec.Normalize(p.Example), true
 	}
@@ -1269,11 +1312,7 @@ func paramExample(p *openapi3.Parameter) (any, bool) {
 	case len(s.Enum) > 0:
 		return spec.Normalize(s.Enum[0]), true
 	}
-	g := value.Generate(s, value.Context{Seed: 42, Path: "tree.param." + p.Name, Name: p.Name})
-	if !g.OK {
-		return nil, false
-	}
-	return spec.Normalize(g.Value), true
+	return nil, false
 }
 
 func singular(w string) string {

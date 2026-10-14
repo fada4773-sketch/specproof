@@ -96,7 +96,8 @@ func TestTreeProposeFetchRun(t *testing.T) {
 	if code != 0 || !strings.Contains(out, "up to date") || !strings.Contains(out, "records created") {
 		t.Fatalf("fetch: %d\n%s%s", code, out, errOut)
 	}
-	if n := srv.Requests["POST"] + srv.Requests["PUT"] + srv.Requests["PATCH"] + srv.Requests["DELETE"]; n != 0 {
+	// the one POST is the search (read: true)
+	if n := srv.Requests["PUT"] + srv.Requests["PATCH"] + srv.Requests["DELETE"]; n != 0 || srv.Requests["POST"] > 1 {
 		t.Errorf("the fetch wrote to the stage: %v", srv.Requests)
 	}
 	for _, f := range []string{"tree-data_gen.yaml", "tree-scenario_gen.yaml", "tree-review_gen.md"} {

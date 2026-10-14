@@ -74,7 +74,8 @@ func TestTreeRebuildsTheStageInAnEmptyInstance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n := srv.Requests["POST"] + srv.Requests["PUT"] + srv.Requests["PATCH"] + srv.Requests["DELETE"]; n != 0 {
+	// the one POST is the search (read: true)
+	if n := srv.Requests["PUT"] + srv.Requests["PATCH"] + srv.Requests["DELETE"]; n != 0 || srv.Requests["POST"] > 1 {
 		t.Fatalf("a fetch must only read: %v", srv.Requests)
 	}
 	b, err := Build(s, tr, d)

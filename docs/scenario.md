@@ -109,6 +109,9 @@ picked record. The write block says how the integration test creates,
 changes and deletes a record of the node in an empty instance.
 
 ```yaml
+params:          # values no record of the tree gives: set them (a value of the stage)
+  reportNo: R-17 # getReport
+  season:        # getHarvest; not set yet: its node is left out
 seed: 1          # random picks repeat with the same seed
 budget: 2000     # a fetch sends at most this many requests
 tree:
@@ -166,12 +169,13 @@ tree:
         call: POST /ships/search            # a POST that only reads
         read: true
         body: {pilotId: .id}
-unplaced:                                   # reads the generator could not place; off
-  report:
-    call: GET /reports/{reportId}
-    path: {reportId: .reportId}
-    off: true
-ignore: [GET /health]                       # never proposed again
+  report: GET /reports/{reportNo} reportNo=$reportNo                # getReport
+  harvest:
+    call: GET /harvest                      # getHarvest
+    query: {season: $season}                # a required query parameter without example
+ignore:                                     # never proposed again
+  - GET /health
+  - POST /maintenance/run                   # runMaintenance · no node reads the records it writes
 ```
 
 **Short form.** A node or write that is only a call with path values is
@@ -185,7 +189,10 @@ node above (`planets.code`), or, for a node that is not above, its first
 record: that node must be fetched before (a root further up, or earlier in
 the tree), so a read can take values across tags
 (`permit: GET /docks/{dockId}/pilots/{pilotId}/permit dockId=.id pilotId=pilots.id`). A field is a dot path (`route.originId`,
-`items.0.id`). Every other value is sent as it is. A list as a query value
+`items.0.id`). `$name` is the value of `params` at the top of the file:
+for a value no record gives. A node whose `$name` is not set yet is left
+out of the fetch (noted once, and listed in the review). Every other value
+is sent as it is. A list as a query value
 (`status: [OPEN, CLOSED]`) sends one request per value.
 
 | Key of a node | Meaning |
@@ -208,7 +215,7 @@ the tree), so a read can take values across tags
 | Key of a write | Meaning |
 |---|---|
 | `call`, `path`, `query`, `header` | the request; in the short form `POST /path p=value` |
-| `body` | a body sent as it is (values may be references), or `from <node>`: build it from the record of that node (above or below) first; the fields it lacks come from the record and the reads about it |
+| `body` | a body sent as it is (values may be references), or `from <node>`: build it from the record of that node (above or below, or the node itself) first; the fields it lacks come from the record and the reads about it. Without `body` the same holds for the record itself |
 | `change` | update and patch: `{field: value}`, or `auto` (default) for one changed field |
 | `expect` | the status; default the lowest documented 2xx |
 | `off` | not used |
@@ -239,15 +246,23 @@ spec (the model apitest-gen uses for its examples):
   several nodes it hangs below the one fetched last and reads the others by
   name (`dockId=docks.id`). Repeated while new nodes give new values;
 - `key` from the model, `pick: 3`, `page` for a `page`/`offset` parameter;
+- a read with a value no node gives (`{reportNo}`, a required query
+  parameter without example) is in the tree as well: below the nodes that
+  give its other values, else at the top, with `$reportNo`; `params` lists
+  each such value once, with the operations that use it. Set it and fetch;
 - one write block per resource, at its list node (else at the first node
   that reads its records): its create (`none` without), update (PUT), patch
   (PATCH) and delete. Path parameters come from a node above that gives
   them, else a field of the record itself (`authorId` of a book), else any
-  node of the tree. Create and update get `body: from <read>` when a read
-  of the record covers more fields of the request than the record itself
-  (`from profile`);
-- only reads whose parameters no node gives go to `unplaced`, switched off,
-  with the parameter that is missing.
+  node of the tree, else `$name`. Create, update and patch always get
+  `body: from <read>`: the read of the record that covers most fields of
+  the request (`from profile`), else the node itself;
+- every other write goes to the node whose records it writes: a node of
+  its resource, the node that reads its path (`PUT /docks/{dockId}` to
+  `GET /docks/{dockId}`), a node whose key its path takes, or whose records
+  cover its body. A POST that answers with a list and creates nothing is a
+  search: a node with `read: true`. A write without such a node goes to
+  `ignore` with the reason.
 
 Each call gets its operationId as a comment. Names are unique in the file:
 a name that is taken becomes the operationId (`getPilot`), only then a
@@ -258,13 +273,16 @@ check the picks, add `where`, `require` and fixed keys.
 
 `apitest-gen tree` with an existing file changes nothing you wrote. It adds
 what the file does not name yet, nowhere: not in a node, a require, a write
-block, `unplaced` or `ignore`.
+block or `ignore`.
 
 | Case | What happens |
 |---|---|
 | a new read the proposal hangs below a node | added below the node of your file with the same call, `# … · new in <version>` |
 | a new write of a resource | added to the write block of that node |
-| a new read without a place in your file | added under `unplaced`, switched off |
+| a new read whose parent your file does not have | below the nodes of your file that give its values (`pilotId=.pilotId` below the ships when the list of pilots is ignored), else at the top; a value none gives becomes `$name` with a new entry in `params` |
+| a write of a node your file does not have | to the first node of your file of the same resource |
+| a create, update or patch without `body` | gets `body: from <read>` as in the proposal |
+| an `unplaced` section of an earlier version | removed; its reads are placed as above, values written there go into `params` |
 | a node you do not want | set `off: true`, or put the operation into `ignore`; a deleted node comes back |
 | a path changed, the operationId stayed | the call follows the path, the rest stays; listed |
 | an operation the spec no longer has | stays, `# gone: not in the spec <version>`; listed; the node (and what hangs below it) is not fetched until you remove the mark |

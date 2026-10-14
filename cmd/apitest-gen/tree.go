@@ -234,6 +234,9 @@ func treeMain(o *treeOptions, out io.Writer) (int, error) {
 	if problems := tree.Check(s, t); len(problems) > 0 {
 		return 1, fmt.Errorf("%s:\n  %s", o.file, strings.Join(problems, "\n  "))
 	}
+	if unset := t.UnsetParams(); len(unset) > 0 {
+		fmt.Fprintf(out, "%s: params without value: %s; set them at the top of the file (the nodes that use them are left out)\n", o.file, strings.Join(unset, ", "))
+	}
 	var data *tree.Data
 	var stale []string
 	dataPath := o.next(treeDataFile)
@@ -285,7 +288,7 @@ func treeMain(o *treeOptions, out io.Writer) (int, error) {
 		return 1, err
 	}
 	fmt.Fprintf(out, "  %s: %d steps, %d records created, %d of the seed\n", o.next(treeScenarioFile), len(built.Scenario.Steps), len(built.Created), len(built.Seeds))
-	review := tree.Review(tree.ReviewInput{Spec: filepath.Base(o.spec), SpecVersion: version, Data: data, Built: built, Changes: changes, Stale: stale})
+	review := tree.Review(tree.ReviewInput{Spec: filepath.Base(o.spec), SpecVersion: version, Data: data, Built: built, Changes: changes, Stale: stale, Unset: t.UnsetParams()})
 	if err := scenario.WriteFile(o.next(treeReviewFile), []byte(review)); err != nil {
 		return 1, err
 	}
