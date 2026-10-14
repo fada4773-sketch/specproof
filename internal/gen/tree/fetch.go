@@ -88,6 +88,17 @@ type fetcher struct {
 	budget int
 	// lastTarget is the request sent last, for notes.
 	lastTarget string
+	scope      func(string) bool
+}
+
+// first is the first record of a node fetched so far, nil without.
+func (f *fetcher) first(name string) *Record {
+	for _, r := range f.data.Records {
+		if r.Node.Name == name {
+			return r
+		}
+	}
+	return nil
 }
 
 // cand is an element of an answer with the request that gave it.
@@ -119,7 +130,7 @@ func Fetch(ctx context.Context, s *spec.Spec, t *Tree, opt Options) (*Data, erro
 	if problems := Check(s, t); len(problems) > 0 {
 		return nil, &FindingError{Problems: problems}
 	}
-	f := &fetcher{s: s, t: t, opt: opt, data: &Data{Source: opt.BaseURL}, cache: map[string]*answer{}, count: map[*Node]int{}, budget: t.Budget}
+	f := &fetcher{s: s, t: t, opt: opt, data: &Data{Source: opt.BaseURL}, cache: map[string]*answer{}, count: map[*Node]int{}, budget: t.Budget, scope: t.names()}
 	if f.budget <= 0 {
 		f.budget = DefaultBudget
 	}
@@ -411,8 +422,7 @@ type request struct {
 // requests builds the requests of a node under a parent record: one, or one
 // per value of the parameter that holds a list.
 func (f *fetcher) requests(n *Node, op *spec.Operation, parent *Record) ([]request, error) {
-	scope := func(name string) bool { return n.Parent != nil && n.Parent.Ancestor(name) != nil }
-	res := func(v any) (any, error) { return resolveFetch(v, parent, scope) }
+	res := func(v any) (any, error) { return resolveFetch(v, parent, f.scope, f.first) }
 	path, err := resolveMap(n.Path, res)
 	if err != nil {
 		return nil, err
@@ -501,13 +511,14 @@ func resolveMap(m map[string]any, res func(any) (any, error)) (map[string]any, e
 }
 
 // resolveFetch fills the references of a value with the values of the
-// record the node runs under (".field") or of its ancestors.
-func resolveFetch(v any, at *Record, scope func(string) bool) (any, error) {
+// record the node runs under (".field"), of an ancestor, or of the first
+// record of another node fetched before ("<node>.field").
+func resolveFetch(v any, at *Record, scope func(string) bool, first func(string) *Record) (any, error) {
 	switch x := v.(type) {
 	case map[string]any:
 		out := map[string]any{}
 		for k, c := range x {
-			r, err := resolveFetch(c, at, scope)
+			r, err := resolveFetch(c, at, scope, first)
 			if err != nil {
 				return nil, err
 			}
@@ -517,7 +528,7 @@ func resolveFetch(v any, at *Record, scope func(string) bool) (any, error) {
 	case []any:
 		out := make([]any, len(x))
 		for i, c := range x {
-			r, err := resolveFetch(c, at, scope)
+			r, err := resolveFetch(c, at, scope, first)
 			if err != nil {
 				return nil, err
 			}
@@ -532,6 +543,9 @@ func resolveFetch(v any, at *Record, scope func(string) bool) (any, error) {
 	rec := at
 	if ref.Node != "" {
 		rec = at.Ancestor(ref.Node)
+		if rec == nil {
+			rec = first(ref.Node)
+		}
 	}
 	if rec == nil {
 		return nil, fmt.Errorf("%s: no record to read it from", ref)

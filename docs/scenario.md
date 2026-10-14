@@ -181,7 +181,10 @@ YAML; write such a mapping as a block.
 
 **Values.** `.field` reads the record the node runs under; in a write
 block it reads the record itself. `<node>.field` reads the record of a
-node above (`planets.code`). A field is a dot path (`route.originId`,
+node above (`planets.code`), or, for a node that is not above, its first
+record: that node must be fetched before (a root further up, or earlier in
+the tree), so a read can take values across tags
+(`permit: GET /docks/{dockId}/pilots/{pilotId}/permit dockId=.id pilotId=pilots.id`). A field is a dot path (`route.originId`,
 `items.0.id`). Every other value is sent as it is. A list as a query value
 (`status: [OPEN, CLOSED]`) sends one request per value.
 
@@ -205,7 +208,7 @@ node above (`planets.code`). A field is a dot path (`route.originId`,
 | Key of a write | Meaning |
 |---|---|
 | `call`, `path`, `query`, `header` | the request; in the short form `POST /path p=value` |
-| `body` | a body sent as it is (values may be references), or `from <node>`: build it from the record of that node (above or below) |
+| `body` | a body sent as it is (values may be references), or `from <node>`: build it from the record of that node (above or below) first; the fields it lacks come from the record and the reads about it |
 | `change` | update and patch: `{field: value}`, or `auto` (default) for one changed field |
 | `expect` | the status; default the lowest documented 2xx |
 | `off` | not used |
@@ -226,15 +229,29 @@ spec (the model apitest-gen uses for its examples):
 - a root per resource with a list that needs no path parameter, and a
   root per other read without path parameters;
 - below a list node: the read of a record (`dock`), other reads that take
-  its key (`log`), the resources that belong to it (`ships` below `docks`)
-  and the records its fields refer to (`shipPilot` from `pilotId`);
+  its key (`log`, `profile`), the resources that belong to it (`ships`
+  below `docks`) and the records its fields refer to (`shipPilot` from
+  `pilotId`);
+- every other read below the node that gives its path parameters, across
+  tags and roots: `{pilotId}` is given by a node of pilots (the model maps
+  it there, or it is the resource name and a key: `pilotId` = Pilot + `id`,
+  also `originPilotId`, or a field has its name: `{isbn}`). With values of
+  several nodes it hangs below the one fetched last and reads the others by
+  name (`dockId=docks.id`). Repeated while new nodes give new values;
 - `key` from the model, `pick: 3`, `page` for a `page`/`offset` parameter;
-- a write block per resource node: its create (`none` without), update
-  (PUT), patch (PATCH) and delete, with references for their path
-  parameters;
-- reads it cannot hang anywhere under `unplaced`, switched off.
+- one write block per resource, at its list node (else at the first node
+  that reads its records): its create (`none` without), update (PUT), patch
+  (PATCH) and delete. Path parameters come from a node above that gives
+  them, else a field of the record itself (`authorId` of a book), else any
+  node of the tree. Create and update get `body: from <read>` when a read
+  of the record covers more fields of the request than the record itself
+  (`from profile`);
+- only reads whose parameters no node gives go to `unplaced`, switched off,
+  with the parameter that is missing.
 
-Each call gets its operationId as a comment. The proposal is a start:
+Each call gets its operationId as a comment. Names are unique in the file:
+a name that is taken becomes the operationId (`getPilot`), only then a
+number. The proposal is a start:
 check the picks, add `where`, `require` and fixed keys.
 
 ### Later runs: your file stays
@@ -296,8 +313,10 @@ the records in an empty instance:
   `docks.id`) names the record; a body field counts when its name names
   the record (`pilotId`, `originDockId`). A value that fits several records
   stays, and the review says so.
-- **Bodies.** The record, with the fields of its reads below it (or the
-  record `from` names), cut to the schema of the request: no readOnly
+- **Bodies.** The record `from` names first, then the record itself, then
+  its reads below it (the same resource, and every read that takes its key:
+  `details`, `profile`), a field taken from the first that has it; cut to
+  the schema of the request: no readOnly
   fields, nested objects and lists by their schemas. A required field the
   record lacks is generated and listed. `unique` marks fields like `code`
   or `email` and client-chosen keys, for `-unique`.

@@ -152,17 +152,33 @@ func Check(s *spec.Spec, t *Tree) []string {
 	var problems []string
 	names := map[string]bool{}
 	t.Walk(func(n *Node) { names[n.Name] = true })
+	// fetch order: a node may read a node that is not above it only if that
+	// node is fetched before it
+	pos := map[string]int{}
+	var order func([]*Node)
+	order = func(list []*Node) {
+		for _, n := range list {
+			pos[n.Name] = len(pos)
+			order(n.Each)
+		}
+	}
+	order(t.Roots)
 	add := func(line int, format string, args ...any) {
 		problems = append(problems, fmt.Sprintf("line %d: %s", line, fmt.Sprintf(format, args...)))
 	}
-	checkRefs := func(line int, where string, at *Node, values ...any) {
+	// checkRefs: "<node>.field" must name a node of the tree; read by a node
+	// (write false), a node that is not above it must come before it
+	checkRefs := func(line int, where string, at *Node, write bool, values ...any) {
 		for _, v := range values {
 			walkStrings(v, func(str string) {
 				name, _, ok := strings.Cut(str, ".")
-				if !ok || !names[name] || at.Ancestor(name) != nil {
+				if !ok || !names[name] || at.Ancestor(name) != nil || write {
 					return
 				}
-				add(line, "%s: %q names node %s, which is not above it; a reference reads a node on the way to the root", where, str, name)
+				if p, known := pos[name]; known && p < pos[at.Name] {
+					return
+				}
+				add(line, "%s: %q names node %s, which is neither above it nor fetched before it", where, str, name)
 			})
 		}
 	}
@@ -185,10 +201,7 @@ func Check(s *spec.Spec, t *Tree) []string {
 					}
 				}
 			}
-			scopeNode := n.Parent
-			if scopeNode != nil {
-				checkRefs(n.Line, n.Name, scopeNode, anyMap(n.Path), anyMap(n.Query), anyMap(n.Header), n.Body)
-			}
+			checkRefs(n.Line, n.Name, n, false, anyMap(n.Path), anyMap(n.Query), anyMap(n.Header), n.Body)
 			for _, r := range n.Require {
 				if rop := lookupOp(s, r.Call); rop == nil || !reads(rop, r) {
 					add(r.Line, "%s: require %s: %q is no reading operation of the spec", n.Name, r.Name, r.Call)
@@ -209,7 +222,7 @@ func Check(s *spec.Spec, t *Tree) []string {
 						add(w.Line, "%s.write.%s: no value for the path parameter {%s}", n.Name, kind, p)
 					}
 				}
-				checkRefs(w.Line, n.Name+".write."+kind, n, anyMap(w.Path), anyMap(w.Query), anyMap(w.Header), w.Body)
+				checkRefs(w.Line, n.Name+".write."+kind, n, true, anyMap(w.Path), anyMap(w.Query), anyMap(w.Header), w.Body)
 				if w.From != "" && w.From != "." && t.Node(w.From) == nil {
 					add(w.Line, "%s.write.%s: body from %q: no node of that name", n.Name, kind, w.From)
 				}

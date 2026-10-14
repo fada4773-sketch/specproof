@@ -181,6 +181,46 @@ paths:
         '204': {description: deleted}
         '401': {$ref: '#/components/responses/Error'}
         '409': {$ref: '#/components/responses/Error'}
+  /pilots/{pilotId}/profile:
+    get:
+      operationId: getPilotProfile
+      tags: [Pilot]
+      parameters:
+        - {name: pilotId, in: path, required: true, schema: {type: integer}}
+      responses:
+        '200':
+          description: the whole pilot
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PilotProfile'}
+        '401': {$ref: '#/components/responses/Error'}
+  /licenses/{pilotId}:
+    get:
+      operationId: getLicense
+      tags: [License]
+      parameters:
+        - {name: pilotId, in: path, required: true, schema: {type: integer}}
+      responses:
+        '200':
+          description: the license of a pilot
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/License'}
+        '401': {$ref: '#/components/responses/Error'}
+  /docks/{dockId}/pilots/{pilotId}/permit:
+    get:
+      operationId: getPermit
+      tags: [Permit]
+      parameters:
+        - {name: dockId, in: path, required: true, schema: {type: integer}}
+        - {name: pilotId, in: path, required: true, schema: {type: integer}}
+      responses:
+        '200':
+          description: whether a pilot may use a dock
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Permit'}
+        '401': {$ref: '#/components/responses/Error'}
   /docks/{dockId}/ships:
     parameters:
       - {name: dockId, in: path, required: true, schema: {type: integer}}
@@ -308,6 +348,29 @@ components:
       properties:
         name: {type: string, minLength: 1}
         license: {type: string}
+        homePlanet: {type: string}
+    PilotProfile:
+      type: object
+      required: [id, name]
+      properties:
+        id: {type: integer, readOnly: true}
+        name: {type: string}
+        license: {type: string}
+        homePlanet: {type: string}
+        flights: {type: integer, readOnly: true}
+    License:
+      type: object
+      required: [pilotId, level]
+      properties:
+        pilotId: {type: integer}
+        level: {type: string}
+    Permit:
+      type: object
+      required: [dockId, pilotId, granted]
+      properties:
+        dockId: {type: integer}
+        pilotId: {type: integer}
+        granted: {type: boolean}
     Pilot:
       type: object
       required: [id, name]

@@ -211,7 +211,7 @@ tree:
 		"docks: no value for the path parameter {code}",
 		"write-it: POST /planets/{code}/docks would write",
 		`wrong: "GET /nowhere" is no operation`,
-		`names node ships, which is not above it`,
+		`names node ships, which is neither above it nor fetched before it`,
 		`dock.write.create: "POST /nope" is no operation`,
 		"dock.write.update: no value for the path parameter {dockId}",
 		`body from "nothing": no node of that name`,
@@ -673,7 +673,7 @@ func TestProposalRoundTrip(t *testing.T) {
 	if problems := Check(s, tr); len(problems) > 0 {
 		t.Errorf("the proposal must pass its own check: %v", problems)
 	}
-	for _, name := range []string{"planets", "docks", "dock", "ships", "ship", "log", "shipPilot", "pilots", "pilot", "health"} {
+	for _, name := range []string{"planets", "docks", "dock", "ships", "ship", "log", "shipPilot", "pilots", "pilot", "health", "licenses", "profile", "permit"} {
 		if tr.Node(name) == nil {
 			t.Errorf("node %s missing:\n%s", name, b)
 		}
@@ -686,6 +686,25 @@ func TestProposalRoundTrip(t *testing.T) {
 	}
 	if tr.Node("shipPilot").Path["pilotId"] != ".pilotId" {
 		t.Error("the pilot of a ship comes from its field")
+	}
+	// {pilotId} of another tag hangs below the pilots; a read with values of
+	// two nodes below the one fetched last, the other read by name
+	if lic := tr.Node("licenses"); lic.Parent.Name != "pilots" || lic.Path["pilotId"] != ".id" {
+		t.Errorf("licenses: %+v", lic)
+	}
+	if pm := tr.Node("permit"); pm.Path["dockId"] != "docks.id" || pm.Path["pilotId"] != ".id" || pm.Parent.Name != "shipPilot" {
+		t.Errorf("permit: %+v under %s", pm.Path, pm.Parent.Name)
+	}
+	if len(tr.Unplaced) != 0 {
+		t.Errorf("nothing is unplaced: %v", tr.Unplaced)
+	}
+	// the create of a pilot takes its body from the profile, which has
+	// homePlanet; the ship takes its dock from the node above
+	if w := tr.Node("pilots").Write[WriteCreate]; w.From != "profile" {
+		t.Errorf("body source: %+v", w)
+	}
+	if w := tr.Node("ships").Write[WriteCreate]; w.Path["dockId"] != "docks.id" {
+		t.Errorf("ship create: %+v", w.Path)
 	}
 	if pg := tr.Node("docks").Page; pg == nil || pg.Param != "page" || text(pg.Size["pageSize"]) != "50" {
 		t.Errorf("page: %+v", pg)
@@ -730,5 +749,81 @@ func TestShortFormAndRefs(t *testing.T) {
 	}
 	if !strings.Contains(scenario.Text(map[string]any{"a": 1}), "a") {
 		t.Error("text")
+	}
+}
+
+func TestReferencesAcrossTheTree(t *testing.T) {
+	s := loadStarport(t)
+	_, base := stage(t)
+	tr, d := fetch(t, s, `
+tree:
+  pilots:
+    call: GET /pilots
+    pick: {first: 1}
+    key: [/id]
+    write:
+      create: POST /pilots
+    each:
+      profile: GET /pilots/{pilotId}/profile pilotId=.id
+  planets:
+    call: GET /planets
+    pick: [mars]
+    key: [/code]
+    write: {create: none}
+    each:
+      docks:
+        call: GET /planets/{code}/docks
+        path: {code: .code}
+        pick: {first: 1}
+        key: [/id]
+        write:
+          create: POST /planets/{code}/docks code=planets.code
+        each:
+          permit: GET /docks/{dockId}/pilots/{pilotId}/permit dockId=.id pilotId=pilots.id
+`, base)
+	permits := d.Of(tr.Node("permit"))
+	pilots := d.Of(tr.Node("pilots"))
+	if len(permits) != 1 || text(permits[0].Value.(map[string]any)["pilotId"]) != text(pilots[0].Value.(map[string]any)["id"]) {
+		t.Fatalf("the permit reads the first pilot: %v / %v (notes %v)", permits, pilots, d.Notes)
+	}
+	b, err := Build(s, tr, d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := b.Scenario.Step("permit1.read")
+	if st == nil || st.Path["pilotId"] != "{{pilots1.id}}" || st.Path["dockId"] != "{{docks1.id}}" {
+		t.Fatalf("permit: %+v", st)
+	}
+	// no "from": the body still takes homePlanet from the profile below
+	if c := b.Scenario.Step("pilots1.create"); text(c.Body.(map[string]any)["homePlanet"]) != "mars" {
+		t.Errorf("the body takes the fields of the reads about the record: %v", c.Body)
+	}
+	res, log := runEmpty(t, b)
+	if res.Failed {
+		t.Fatalf("%s", log)
+	}
+	// a node read before it is fetched is an error
+	bad := parse(t, `
+tree:
+  planets:
+    call: GET /planets
+    each:
+      permit: GET /docks/{dockId}/pilots/{pilotId}/permit dockId=1 pilotId=pilots.id
+  pilots: GET /pilots
+`)
+	if problems := strings.Join(Check(s, bad), "\n"); !strings.Contains(problems, "neither above it nor fetched before it") {
+		t.Errorf("problems: %s", problems)
+	}
+}
+
+func TestProposalNames(t *testing.T) {
+	s := loadStarport(t)
+	p := &proposer{s: s, names: map[string]int{}}
+	op := lookupOp(s, "GET /pilots/{pilotId}")
+	if a, b, c := p.name("pilot", op), p.name("pilot", op), p.name("pilot", op); a != "pilot" || b != "getPilot" || c != "pilot2" {
+		t.Errorf("names: %s %s %s", a, b, c)
+	}
+	if n := p.name("a b/c", nil); n != "a-b-c" {
+		t.Errorf("clean: %s", n)
 	}
 }

@@ -31,11 +31,17 @@ contain breaking changes, which are listed here.
     fixed keys), paged (`page`: number, offset or cursor, in query or
     body) and every child node (`each`) runs per record; `.field` and
     `<node>.field` read records above; a POST that only reads is allowed
-    with `read: true`; `budget` limits the requests. The `write` block of a
+    with `read: true`; `budget` limits the requests; `<node>.field` may
+    also read a node fetched before that is not above (its first record),
+    so values are used across tags. The `write` block of a
     node says how a record is created (`none`: seed), updated, patched and
     deleted. `apitest-gen tree` proposes the file from the spec (roots,
     reads below them, resources that belong to them, records their fields
-    refer to, write blocks, operationIds as comments) and, run again, keeps
+    refer to; every other read below the node that gives its path
+    parameters, across tags: `{bookId}` below the books, by the model, by
+    resource name + key or by field name, so little stays unplaced; write
+    blocks with the body taken from the read that covers the request best,
+    `body: from details`; operationIds as comments) and, run again, keeps
     the file and only adds what it does not name yet at its place,
     follows renamed paths and marks operations the spec lost. With
     `-base-url` it fetches the records (GET only) into

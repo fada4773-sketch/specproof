@@ -54,6 +54,9 @@ func NewStarport(token string, first int) *Starport {
 	m.HandleFunc("GET /api/pilots", s.auth(s.listPilots))
 	m.HandleFunc("POST /api/pilots", s.auth(s.createPilot))
 	m.HandleFunc("GET /api/pilots/{id}", s.auth(s.getPilot))
+	m.HandleFunc("GET /api/pilots/{id}/profile", s.auth(s.getProfile))
+	m.HandleFunc("GET /api/licenses/{id}", s.auth(s.getLicense))
+	m.HandleFunc("GET /api/docks/{dock}/pilots/{id}/permit", s.auth(s.getPermit))
 	m.HandleFunc("DELETE /api/pilots/{id}", s.auth(s.deletePilot))
 	m.HandleFunc("GET /api/docks/{id}/ships", s.auth(s.listShips))
 	m.HandleFunc("POST /api/docks/{id}/ships", s.auth(s.createShip))
@@ -221,7 +224,7 @@ func (s *Starport) deleteDock(w http.ResponseWriter, r *http.Request) {
 func (s *Starport) listPilots(w http.ResponseWriter, _ *http.Request) {
 	out := []any{}
 	for _, id := range sortedIDs(s.pilots) {
-		out = append(out, s.pilots[id])
+		out = append(out, pilotSummary(s.pilots[id]))
 	}
 	reply(w, http.StatusOK, out)
 }
@@ -229,19 +232,63 @@ func (s *Starport) listPilots(w http.ResponseWriter, _ *http.Request) {
 func (s *Starport) createPilot(w http.ResponseWriter, r *http.Request) {
 	in := readBody(r)
 	p := map[string]any{"id": s.id(), "name": in["name"]}
-	if in["license"] != nil {
-		p["license"] = in["license"]
+	for _, k := range []string{"license", "homePlanet"} {
+		if in[k] != nil {
+			p[k] = in[k]
+		}
 	}
 	s.pilots[p["id"].(int)] = p
-	reply(w, http.StatusCreated, p)
+	reply(w, http.StatusCreated, pilotSummary(p))
+}
+
+// pilotSummary is a pilot as lists and reads show it: without homePlanet,
+// which only the profile has.
+func pilotSummary(p map[string]any) map[string]any {
+	out := map[string]any{}
+	for k, v := range p {
+		if k != "homePlanet" {
+			out[k] = v
+		}
+	}
+	return out
 }
 
 func (s *Starport) getPilot(w http.ResponseWriter, r *http.Request) {
 	if p := s.pilots[pathID(r)]; p != nil {
-		reply(w, http.StatusOK, p)
+		reply(w, http.StatusOK, pilotSummary(p))
 		return
 	}
 	reply(w, http.StatusNotFound, map[string]any{"error": "not found"})
+}
+
+func (s *Starport) getProfile(w http.ResponseWriter, r *http.Request) {
+	p := s.pilots[pathID(r)]
+	if p == nil {
+		reply(w, http.StatusNotFound, map[string]any{"error": "not found"})
+		return
+	}
+	out := map[string]any{"flights": 0}
+	for k, v := range p {
+		out[k] = v
+	}
+	reply(w, http.StatusOK, out)
+}
+
+func (s *Starport) getLicense(w http.ResponseWriter, r *http.Request) {
+	if s.pilots[pathID(r)] == nil {
+		reply(w, http.StatusNotFound, map[string]any{"error": "not found"})
+		return
+	}
+	reply(w, http.StatusOK, map[string]any{"pilotId": pathID(r), "level": "A"})
+}
+
+func (s *Starport) getPermit(w http.ResponseWriter, r *http.Request) {
+	dock, _ := strconv.Atoi(r.PathValue("dock"))
+	if s.docks[dock] == nil || s.pilots[pathID(r)] == nil {
+		reply(w, http.StatusNotFound, map[string]any{"error": "not found"})
+		return
+	}
+	reply(w, http.StatusOK, map[string]any{"dockId": dock, "pilotId": pathID(r), "granted": true})
 }
 
 func (s *Starport) deletePilot(w http.ResponseWriter, r *http.Request) {
@@ -324,7 +371,7 @@ func (s *Starport) Fill() {
 	var pilots []int
 	for _, name := range []string{"Ada", "Grace", "Lin"} {
 		id := s.id()
-		s.pilots[id] = map[string]any{"id": id, "name": name, "license": "L-" + strings.ToUpper(name[:1])}
+		s.pilots[id] = map[string]any{"id": id, "name": name, "license": "L-" + strings.ToUpper(name[:1]), "homePlanet": "mars"}
 		pilots = append(pilots, id)
 	}
 	for i, spec := range []struct{ planet, name string }{{"mars", "North"}, {"mars", "South"}, {"mars", "East"}, {"venus", "Cloud"}} {

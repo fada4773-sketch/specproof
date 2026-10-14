@@ -713,6 +713,21 @@ func (t *Tree) Node(name string) *Node {
 	return out
 }
 
+// names reports whether a name is a node of the tree (not unplaced, no
+// require): the scope of "<node>.field".
+func (t *Tree) names() func(string) bool {
+	set := map[string]bool{}
+	var walk func([]*Node)
+	walk = func(list []*Node) {
+		for _, n := range list {
+			set[n.Name] = true
+			walk(n.Each)
+		}
+	}
+	walk(t.Roots)
+	return func(name string) bool { return set[name] }
+}
+
 // Ancestor returns the nearest ancestor of n (n itself included) with the
 // name, or nil.
 func (n *Node) Ancestor(name string) *Node {

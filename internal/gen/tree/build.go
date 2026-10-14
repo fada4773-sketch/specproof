@@ -64,6 +64,7 @@ type builder struct {
 	ids      map[string]int
 	sent     map[string]bool
 	steps    []*scenario.Step
+	scope    func(string) bool
 }
 
 // Build turns the records into the scenario that rebuilds them in an empty
@@ -79,6 +80,7 @@ func Build(s *spec.Spec, t *Tree, d *Data) (*Built, error) {
 		canon: map[*Record]*Record{}, created: map[*Record]bool{}, keyVar: map[*Record]map[string]string{},
 		byValue: map[string][]keyRef{}, etag: map[*Record]string{}, createID: map[*Record]string{},
 		readID: map[*Record]string{}, deps: map[*Record][]*Record{}, ids: map[string]int{}, sent: map[string]bool{},
+		scope: t.names(),
 	}
 	if s.Doc.Components != nil {
 		b.schemes = s.Doc.Components.SecuritySchemes
@@ -343,13 +345,25 @@ func (b *builder) resolve(v any, at *Record, scope *Node, param, step string, ex
 		}
 		return out
 	}
-	ref, ok := ParseRef(v, func(name string) bool { return scope != nil && scope.Ancestor(name) != nil })
+	ref, ok := ParseRef(v, b.scope)
 	if !ok {
 		return v
 	}
 	rec := at
-	if ref.Node != "" && at != nil {
-		rec = at.Ancestor(ref.Node)
+	if ref.Node != "" {
+		rec = nil
+		if at != nil {
+			rec = at.Ancestor(ref.Node)
+		}
+		if rec == nil {
+			// another node of the tree: its first record
+			for _, r := range b.d.Records {
+				if r.Node.Name == ref.Node {
+					rec = r
+					break
+				}
+			}
+		}
 	}
 	if rec == nil {
 		b.note(step, fmt.Sprintf("%s = %s", param, ref), "no record to read it from")
@@ -637,36 +651,80 @@ func (b *builder) substitute(v any, field string, r *Record, step string) any {
 }
 
 // source is the value a body is built from: the record of the node from
-// names (above or below r), else r with the fields of its views.
+// names (above or below r) first, then r itself, its views and the other
+// reads about it (a node below r that reads it by its key: details, log);
+// a field is taken from the first that has it.
 func (b *builder) source(r *Record, from, step string) any {
+	var parts []any
 	if from != "" && from != "." {
+		found := false
 		if a := r.Ancestor(from); a != nil {
-			return a.Value
+			parts, found = append(parts, a.Value), true
 		}
 		for _, c := range b.d.Records {
-			if c.Node.Name == from && c.Ancestor(r.Node.Name) == r {
-				return c.Value
+			if !found && c.Node.Name == from && c.Ancestor(r.Node.Name) == r {
+				parts, found = append(parts, c.Value), true
 			}
 		}
-		b.note(step, "body from "+from, "no record of "+from+" belongs to "+r.ID+"; the body is built from "+r.ID)
+		if !found {
+			b.note(step, "body from "+from, "no record of "+from+" belongs to "+r.ID+"; the body is built from "+r.ID+" and the reads about it")
+		}
 	}
-	base, ok := scenario.Clone(r.Value).(map[string]any)
-	if !ok {
-		return r.Value
-	}
+	parts = append(parts, r.Value)
+	var others []any
 	for _, c := range b.d.Records {
-		if c.Parent != r || !b.isView(c) {
+		if c.Parent != r {
 			continue
 		}
-		if m, ok := c.Value.(map[string]any); ok {
-			for k, v := range m {
-				if _, has := base[k]; !has {
-					base[k] = v
-				}
+		switch {
+		case b.isView(c):
+			parts = append(parts, c.Value)
+		case b.about(c, r):
+			others = append(others, c.Value)
+		}
+	}
+	parts = append(parts, others...)
+	base := map[string]any{}
+	merged := false
+	for _, p := range parts {
+		m, ok := p.(map[string]any)
+		if !ok {
+			continue
+		}
+		merged = true
+		for k, v := range m {
+			if _, has := lookupFold(base, k); !has {
+				base[k] = scenario.Clone(v)
 			}
 		}
 	}
+	if !merged {
+		return r.Value
+	}
 	return base
+}
+
+// about reports whether a record below r reads r by its key (GET
+// /books/{bookId}/details below a book) and is no record of its own.
+func (b *builder) about(c, r *Record) bool {
+	if w, _ := b.createOf(c.Node); w != nil {
+		return false
+	}
+	if _, isMap := c.Value.(map[string]any); !isMap {
+		return false
+	}
+	for _, v := range c.Node.Path {
+		ref, ok := ParseRef(v, b.scope)
+		if !ok || ref.Node != "" && ref.Node != r.Node.Name {
+			continue
+		}
+		for _, k := range keyOf(r.Node) {
+			if strings.EqualFold(PointerField(k), ref.Field) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // project cuts a value to a schema: object fields the schema declares (no
