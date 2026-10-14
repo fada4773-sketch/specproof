@@ -29,12 +29,33 @@ func startBookstore(t *testing.T) (*testserver.Server, string) {
 	return srv, hs.URL + "/v1"
 }
 
-// contractProject writes a settings file and a copy of the spec, the way
-// a project keeps them: apitest/contract/contract-settings.yaml.
-func contractProject(t *testing.T, extra string) (settings, specPath string) {
+const (
+	starportSpec  = "../../testdata/gen/tree-starport.yaml"
+	starportToken = "cli-tree-token"
+)
+
+// starport serves a Starport over HTTP: a stage with records (first id
+// 100), or an empty instance (first id 1).
+func starport(t *testing.T, stage bool) (*testserver.Starport, string) {
+	t.Helper()
+	first := 1
+	if stage {
+		first = 100
+	}
+	srv := testserver.NewStarport(starportToken, first)
+	if stage {
+		srv.Fill()
+	}
+	hs := httptest.NewServer(srv)
+	t.Cleanup(hs.Close)
+	return srv, hs.URL + "/api"
+}
+
+// treeProject copies the Starport spec into a project folder.
+func treeProject(t *testing.T) (specPath, file string) {
 	t.Helper()
 	dir := t.TempDir()
-	b, err := os.ReadFile(bookstoreSpec)
+	b, err := os.ReadFile(starportSpec)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,131 +66,149 @@ func contractProject(t *testing.T, extra string) (settings, specPath string) {
 	if err := os.WriteFile(specPath, b, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	settings = filepath.Join(dir, "apitest", "contract", "contract-settings.yaml")
-	if err := os.MkdirAll(filepath.Dir(settings), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	text := "spec: ../../api/openapi.yaml\nhealth: /health\ntokens:\n  default: env:CLI_STORE_TOKEN\nreport: out/contract-report_gen.md\n" + extra
-	if err := os.WriteFile(settings, []byte(text), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("CLI_STORE_TOKEN", storeToken)
-	return settings, specPath
+	return specPath, filepath.Join(dir, "apitest", "tree", "tree.yaml")
 }
 
-func TestContractInitAndRun(t *testing.T) {
-	settings, specPath := contractProject(t, "records: 2\n")
-	_, base := startBookstore(t)
-	dir := filepath.Dir(settings)
-	// overrides: a fixed value and a step that is left out
-	if err := os.WriteFile(filepath.Join(dir, "contract-overrides.yaml"), []byte("values:\n  Shelf.name: Garden Tools\nskip: [shelf1.create.forbidden]\n"), 0o644); err != nil {
+func TestTreeProposeFetchRun(t *testing.T) {
+	specPath, file := treeProject(t)
+	dir := filepath.Dir(file)
+	// 1. propose
+	code, out, errOut := cli("tree", "-spec", specPath, "-file", file)
+	if code != 0 || !strings.Contains(out, "proposed from the spec") || !strings.Contains(out, "no records yet") {
+		t.Fatalf("propose: %d\n%s%s", code, out, errOut)
+	}
+	text, _ := os.ReadFile(file)
+	if !strings.Contains(string(text), "docks:") || !strings.Contains(string(text), "# listDocks") {
+		t.Fatalf("tree.yaml:\n%s", text)
+	}
+	// the user picks two planets
+	changed := strings.Replace(string(text), "call: GET /planets # listPlanets\n    pick: 3", "call: GET /planets # listPlanets\n    pick: [mars, venus]", 1)
+	if changed == string(text) {
+		t.Fatalf("pick of planets not found:\n%s", text)
+	}
+	if err := os.WriteFile(file, []byte(changed), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	code, out, errOut := cli("contract", "init", "-settings", settings, "-base-url", base, "-forbidden-token", storeReader, "-junit", filepath.Join(dir, "out", "junit.xml"))
-	if code != 0 {
-		t.Fatalf("init: code %d\n%s\n%s", code, out, errOut)
+	// 2. fetch from the stage
+	srv, stageURL := starport(t, true)
+	t.Setenv("CLI_TREE_TOKEN", starportToken)
+	code, out, errOut = cli("tree", "-spec", specPath, "-file", file, "-base-url", stageURL, "-token-env", "CLI_TREE_TOKEN")
+	if code != 0 || !strings.Contains(out, "up to date") || !strings.Contains(out, "records created") {
+		t.Fatalf("fetch: %d\n%s%s", code, out, errOut)
 	}
-	for _, f := range []string{"contract-scenario_gen.yaml", "contract-golden_gen.yaml", "contract-review_gen.md", "out/contract-report_gen.md", "out/contract-report_gen.html", "out/junit.xml"} {
+	if n := srv.Requests["POST"] + srv.Requests["PUT"] + srv.Requests["PATCH"] + srv.Requests["DELETE"]; n != 0 {
+		t.Errorf("the fetch wrote to the stage: %v", srv.Requests)
+	}
+	for _, f := range []string{"tree-data_gen.yaml", "tree-scenario_gen.yaml", "tree-review_gen.md"} {
 		if _, err := os.Stat(filepath.Join(dir, f)); err != nil {
 			t.Errorf("%s not written: %v", f, err)
 		}
 	}
-	sc, err := scenario.Load(filepath.Join(dir, "contract-scenario_gen.yaml"))
-	if err != nil {
-		t.Fatal(err)
+	if b, _ := os.ReadFile(filepath.Join(dir, "tree.yaml")); !strings.Contains(string(b), "pick: [mars, venus]") {
+		t.Error("the change of the user must stay")
 	}
-	if sc.Step("shelf1.create.forbidden") != nil {
-		t.Error("the skipped step is still in the scenario")
-	}
-	if st := sc.Step("shelf1.create"); st == nil || scenario.Text(st.Body.(map[string]any)["name"]) != "Garden Tools" {
-		t.Errorf("the override value is missing: %+v", st)
-	}
-	review, _ := os.ReadFile(filepath.Join(dir, "contract-review_gen.md"))
-	if !strings.Contains(string(review), "# Review: contract scenario") || !strings.Contains(string(review), "every step answered as expected") {
+	review, _ := os.ReadFile(filepath.Join(dir, "tree-review_gen.md"))
+	if !strings.Contains(string(review), "## Seed") || !strings.Contains(string(review), "mars") {
 		t.Errorf("review:\n%s", review)
 	}
-	spec, _ := os.ReadFile(specPath)
-	if !strings.Contains(string(spec), "Garden Tools") {
+	// 3. build again without fetching
+	code, out, _ = cli("tree", "-spec", specPath, "-file", file)
+	if code != 0 || !strings.Contains(out, "fetched before") {
+		t.Errorf("rebuild: %d\n%s", code, out)
+	}
+	// 4. run against an empty instance: write the golden snapshot and the examples
+	_, empty := starport(t, false)
+	junit := filepath.Join(dir, "out", "junit.xml")
+	code, out, errOut = cli("tree", "run", "-spec", specPath, "-file", file, "-base-url", empty, "-token", starportToken, "-update", "-junit", junit)
+	if code != 0 || !strings.Contains(out, "PASSED") || !strings.Contains(out, "examples") {
+		t.Fatalf("run -update: %d\n%s%s", code, out, errOut)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "tree-golden_gen.yaml")); err != nil {
+		t.Error("golden snapshot not written")
+	}
+	if b, _ := os.ReadFile(specPath); !strings.Contains(string(b), "example") {
 		t.Error("the examples were not written into the spec")
 	}
 	var ju junitSuites
-	b, _ := os.ReadFile(filepath.Join(dir, "out", "junit.xml"))
-	if err := xml.Unmarshal(b, &ju); err != nil || len(ju.Suites) != 1 || ju.Suites[0].Tests < 40 || ju.Suites[0].Failures != 0 {
+	b, _ := os.ReadFile(junit)
+	if err := xml.Unmarshal(b, &ju); err != nil || len(ju.Suites) != 1 || ju.Suites[0].Tests < 20 || ju.Suites[0].Failures != 0 {
 		t.Errorf("junit: %v %+v", err, ju)
 	}
-
-	// run against a fresh instance: green
-	_, base = startBookstore(t)
-	code, out, errOut = cli("contract", "run", "-settings", settings, "-base-url", base, "-forbidden-token-env", "CLI_STORE_READER")
-	if code == 0 || !strings.Contains(errOut, "CLI_STORE_READER") {
-		t.Errorf("an empty token variable must fail: %d\n%s%s", code, out, errOut)
+	// 5. run again on a fresh empty instance: compares with the golden snapshot
+	_, empty = starport(t, false)
+	code, out, _ = cli("tree", "run", "-spec", specPath, "-file", file, "-base-url", empty, "-token", starportToken, "-run", "Dock/")
+	if code != 0 || !strings.Contains(out, "PASSED") || strings.Contains(out, "Ship/ships1.read") {
+		t.Errorf("run: %d\n%s", code, out)
 	}
-	t.Setenv("CLI_STORE_READER", storeReader)
-	code, out, errOut = cli("contract", "run", "-settings", settings, "-base-url", base, "-forbidden-token-env", "CLI_STORE_READER")
-	if code != 0 || !strings.Contains(out, "PASSED") {
-		t.Fatalf("run: code %d\n%s\n%s", code, out, errOut)
-	}
-	// only the 401 steps of Author
-	_, base = startBookstore(t)
-	code, out, _ = cli("contract", "run", "-settings", settings, "-base-url", base, "-errors", "401", "-run", "Author/")
-	if code != 0 || strings.Contains(out, ".forbidden") || !strings.Contains(out, "author1.read.unauthorized") || strings.Contains(out, "Book/") {
-		t.Errorf("filtered run: %d\n%s", code, out)
-	}
-	// a broken instance fails
-	srv, base := startBookstore(t)
-	srv.Faults.ExampleMismatch = true
-	code, out, _ = cli("contract", "run", "-settings", settings, "-base-url", base, "-junit", filepath.Join(dir, "out", "junit-run.xml"))
+	// 6. an instance that is not empty fails
+	_, notEmpty := starport(t, true)
+	code, out, _ = cli("tree", "run", "-spec", specPath, "-file", file, "-base-url", notEmpty, "-token", starportToken)
 	if code != 1 || !strings.Contains(out, "FAIL") {
-		t.Errorf("a broken instance must fail: %d\n%s", code, out)
+		t.Errorf("a stage is no empty instance: %d\n%s", code, out)
 	}
 }
 
-func TestContractInitFailsAndReviews(t *testing.T) {
-	settings, _ := contractProject(t, "")
-	srv, base := startBookstore(t)
-	srv.Faults.WrongStatus = true
-	code, out, _ := cli("contract", "init", "-settings", settings, "-base-url", base)
-	if code != 1 {
-		t.Fatalf("init against a broken instance: code %d\n%s", code, out)
-	}
-	dir := filepath.Dir(settings)
-	if _, err := os.Stat(filepath.Join(dir, "contract-golden_gen.yaml")); err == nil {
-		t.Error("a failed init must not write the golden snapshot")
-	}
-	review, _ := os.ReadFile(filepath.Join(dir, "contract-review_gen.md"))
-	if !strings.Contains(string(review), "author1.create") || !strings.Contains(string(review), "expect: 200") {
-		t.Errorf("the review must name the step and the override:\n%s", review)
-	}
-	code, out, _ = cli("contract", "init", "-settings", settings, "-dry-run")
-	if code != 0 || !strings.Contains(out, "steps:") {
-		t.Errorf("dry run: %d\n%s", code, out)
-	}
-	for _, args := range [][]string{{"contract"}, {"contract", "nope"}, {"contract", "init"}, {"contract", "run", "-settings", "missing.yaml"}} {
-		code, out, errOut := cli(args...)
-		if args[len(args)-1] == "contract" {
-			if code != 0 || !strings.Contains(out, "contract init") {
-				t.Errorf("help: %d %s", code, out)
-			}
-			continue
-		}
-		if code != 2 {
+func TestTreeUsage(t *testing.T) {
+	specPath, file := treeProject(t)
+	for _, args := range [][]string{
+		{"tree"}, {"tree", "nope"}, {"tree", "run"}, {"tree", "-spec", specPath, "-file", file, "-nope"},
+		{"tree", "run", "-spec", specPath, "-file", file},
+	} {
+		if code, out, errOut := cli(args...); code != 2 {
 			t.Errorf("%v: code %d %s %s", args, code, out, errOut)
 		}
 	}
+	if code, out, _ := cli("tree", "help"); code != 0 || !strings.Contains(out, "tree run") || !strings.Contains(out, "-update") {
+		t.Errorf("help: %d %s", code, out)
+	}
+	// a broken tree file
+	if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(file, []byte("tree:\n  a: {call: GET /planets, pick: zero}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, errOut := cli("tree", "-spec", specPath, "-file", file); code != 1 || !strings.Contains(errOut, "pick") {
+		t.Errorf("broken file: %d %s", code, errOut)
+	}
+	if err := os.WriteFile(file, []byte("tree:\n  a: GET /planets/{code}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, errOut := cli("tree", "-spec", specPath, "-file", file); code != 1 || !strings.Contains(errOut, "no value for the path parameter") {
+		t.Errorf("a file that does not fit the spec: %d %s", code, errOut)
+	}
+	if code, _, errOut := cli("tree", "-spec", "missing.yaml", "-file", file); code != 1 || errOut == "" {
+		t.Errorf("missing spec: %d %s", code, errOut)
+	}
+	_, empty := starport(t, false)
+	if code, _, errOut := cli("tree", "run", "-spec", specPath, "-file", file, "-base-url", empty, "-token-env", "CLI_TREE_UNSET"); code != 2 || !strings.Contains(errOut, "CLI_TREE_UNSET") {
+		t.Errorf("an unset token variable: %d %s", code, errOut)
+	}
+}
+
+// seedBookstore creates authors and books on a Bookstore through its API.
+func seedBookstore(t *testing.T, base string) {
+	t.Helper()
+	post := func(path, body string) {
+		req, _ := http.NewRequest(http.MethodPost, base+path, strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+storeToken)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil || resp.StatusCode != http.StatusCreated {
+			t.Fatalf("POST %s: %v %v", path, err, resp)
+		}
+		resp.Body.Close()
+	}
+	post("/authors", `{"name":"Ada Lovelace","born":1815}`)
+	post("/authors", `{"name":"Lin Starling","born":1950}`)
+	post("/authors/2/books", `{"title":"Notes","price":12}`)
 }
 
 func TestRegressionPrePost(t *testing.T) {
 	dir := t.TempDir()
 	srv, base := startBookstore(t)
-	// data on the stage: the contract scenario leaves none, so create some
-	settings, _ := contractProject(t, "")
-	sdir := filepath.Dir(settings)
-	if err := os.WriteFile(filepath.Join(sdir, "contract-overrides.yaml"), []byte("skip: [author2.delete, author1.delete, author1.read.afterDelete]\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if code, out, errOut := cli("contract", "init", "-settings", settings, "-base-url", base, "-no-examples"); code != 0 {
-		t.Fatalf("seeding the stage: %d\n%s%s", code, out, errOut)
-	}
+	// data on the stage
+	seedBookstore(t, base)
 	sample := filepath.Join(dir, "regression-sample.yaml")
 	code, out, errOut := cli("regression", "init", "-spec", bookstoreSpec, "-out", sample)
 	if code != 0 {

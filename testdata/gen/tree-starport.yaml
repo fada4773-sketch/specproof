@@ -1,0 +1,347 @@
+openapi: 3.0.3
+info:
+  title: Starport
+  version: "1.0"
+  description: |
+    Test API of apitest-gen tree. Planets are seed data (no create). Docks
+    belong to a planet and are paged; ships belong to a dock and name their
+    pilot; a ship's log has no create.
+servers:
+  - url: /api
+security:
+  - bearer: []
+paths:
+  /health:
+    get:
+      operationId: getHealth
+      tags: [System]
+      security: []
+      responses:
+        '200': {description: ready}
+  /planets:
+    get:
+      operationId: listPlanets
+      tags: [Planet]
+      responses:
+        '200':
+          description: all planets
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/Planet'}}
+        '401': {$ref: '#/components/responses/Error'}
+  /planets/{code}:
+    get:
+      operationId: getPlanet
+      tags: [Planet]
+      parameters:
+        - {name: code, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: one planet
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Planet'}
+        '401': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+  /planets/{code}/docks:
+    parameters:
+      - {name: code, in: path, required: true, schema: {type: string}}
+    get:
+      operationId: listDocks
+      tags: [Dock]
+      parameters:
+        - {name: page, in: query, schema: {type: integer, minimum: 1, default: 1}}
+        - {name: pageSize, in: query, schema: {type: integer, minimum: 1, maximum: 50}}
+      responses:
+        '200':
+          description: a page of docks
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DockPage'}
+        '401': {$ref: '#/components/responses/Error'}
+    post:
+      operationId: createDock
+      tags: [Dock]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/DockWrite'}
+      responses:
+        '201':
+          description: created
+          headers:
+            ETag: {schema: {type: string}}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Dock'}
+        '401': {$ref: '#/components/responses/Error'}
+  /docks/{dockId}:
+    parameters:
+      - {name: dockId, in: path, required: true, schema: {type: integer}}
+    get:
+      operationId: getDock
+      tags: [Dock]
+      responses:
+        '200':
+          description: one dock
+          headers:
+            ETag: {schema: {type: string}}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Dock'}
+        '401': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+    put:
+      operationId: updateDock
+      tags: [Dock]
+      parameters:
+        - {name: If-Match, in: header, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/DockWrite'}
+      responses:
+        '200':
+          description: updated
+          headers:
+            ETag: {schema: {type: string}}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Dock'}
+        '401': {$ref: '#/components/responses/Error'}
+        '412': {$ref: '#/components/responses/Error'}
+    patch:
+      operationId: patchDock
+      tags: [Dock]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/DockPatch'}
+      responses:
+        '200':
+          description: patched
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Dock'}
+        '401': {$ref: '#/components/responses/Error'}
+    delete:
+      operationId: deleteDock
+      tags: [Dock]
+      responses:
+        '204': {description: deleted}
+        '401': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /pilots:
+    get:
+      operationId: listPilots
+      tags: [Pilot]
+      responses:
+        '200':
+          description: all pilots
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/Pilot'}}
+        '401': {$ref: '#/components/responses/Error'}
+    post:
+      operationId: createPilot
+      tags: [Pilot]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PilotWrite'}
+      responses:
+        '201':
+          description: created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Pilot'}
+        '401': {$ref: '#/components/responses/Error'}
+  /pilots/{pilotId}:
+    parameters:
+      - {name: pilotId, in: path, required: true, schema: {type: integer}}
+    get:
+      operationId: getPilot
+      tags: [Pilot]
+      responses:
+        '200':
+          description: one pilot
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Pilot'}
+        '401': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+    delete:
+      operationId: deletePilot
+      tags: [Pilot]
+      responses:
+        '204': {description: deleted}
+        '401': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /docks/{dockId}/ships:
+    parameters:
+      - {name: dockId, in: path, required: true, schema: {type: integer}}
+    get:
+      operationId: listShips
+      tags: [Ship]
+      responses:
+        '200':
+          description: the ships of a dock
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/Ship'}}
+        '401': {$ref: '#/components/responses/Error'}
+    post:
+      operationId: createShip
+      tags: [Ship]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ShipWrite'}
+      responses:
+        '201':
+          description: created; the new ship is only named in the Location header
+          headers:
+            Location: {required: true, schema: {type: string}}
+        '401': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+  /ships/{shipId}:
+    parameters:
+      - {name: shipId, in: path, required: true, schema: {type: integer}}
+    get:
+      operationId: getShip
+      tags: [Ship]
+      responses:
+        '200':
+          description: one ship
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Ship'}
+        '401': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+    delete:
+      operationId: deleteShip
+      tags: [Ship]
+      responses:
+        '204': {description: deleted}
+        '401': {$ref: '#/components/responses/Error'}
+  /ships/{shipId}/log:
+    get:
+      operationId: getShipLog
+      tags: [Ship]
+      parameters:
+        - {name: shipId, in: path, required: true, schema: {type: integer}}
+      responses:
+        '200':
+          description: the log of a ship
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ShipLog'}
+        '401': {$ref: '#/components/responses/Error'}
+  /ships/search:
+    post:
+      operationId: searchShips
+      tags: [Ship]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ShipFilter'}
+      responses:
+        '200':
+          description: matching ships
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/Ship'}}
+        '401': {$ref: '#/components/responses/Error'}
+components:
+  securitySchemes:
+    bearer: {type: http, scheme: bearer}
+  responses:
+    Error:
+      description: an error
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+  schemas:
+    Planet:
+      type: object
+      required: [code, name]
+      properties:
+        code: {type: string}
+        name: {type: string}
+    DockPage:
+      type: object
+      required: [items, total]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/Dock'}}
+        total: {type: integer}
+    DockWrite:
+      type: object
+      required: [name, capacity]
+      additionalProperties: false
+      properties:
+        name: {type: string, minLength: 1}
+        capacity: {type: integer, minimum: 1}
+    DockPatch:
+      type: object
+      additionalProperties: false
+      properties:
+        name: {type: string, minLength: 1}
+        capacity: {type: integer, minimum: 1}
+    Dock:
+      type: object
+      required: [id, planetCode, name, capacity]
+      properties:
+        id: {type: integer, readOnly: true}
+        planetCode: {type: string, readOnly: true}
+        name: {type: string}
+        capacity: {type: integer}
+    PilotWrite:
+      type: object
+      required: [name]
+      additionalProperties: false
+      properties:
+        name: {type: string, minLength: 1}
+        license: {type: string}
+    Pilot:
+      type: object
+      required: [id, name]
+      properties:
+        id: {type: integer, readOnly: true}
+        name: {type: string}
+        license: {type: string}
+    ShipWrite:
+      type: object
+      required: [name, pilotId]
+      additionalProperties: false
+      properties:
+        name: {type: string, minLength: 1}
+        pilotId: {type: integer}
+    Ship:
+      type: object
+      required: [id, dockId, name, pilotId]
+      properties:
+        id: {type: integer, readOnly: true}
+        dockId: {type: integer, readOnly: true}
+        name: {type: string}
+        pilotId: {type: integer}
+    ShipLog:
+      type: object
+      required: [shipId, entries]
+      properties:
+        shipId: {type: integer}
+        entries: {type: array, items: {type: string}}
+    ShipFilter:
+      type: object
+      properties:
+        pilotId: {type: integer}
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: {type: string}

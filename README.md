@@ -4,7 +4,7 @@ Spec-driven integration tests for HTTP APIs in Go, and a generator that makes an
 
 - **`apitest`** (library, `import "github.com/fada4773-sketch/specproof/apitest"`) runs the tests.
 - **`apitest-gen`** (command line tool) writes the examples apitest needs into your spec. See [apitest-gen](#apitest-gen-examples-for-your-spec).
-- **Scenario mode** (`apitest.RunScenario`, `apitest-gen contract`, `apitest-gen regression`): a generated scenario with several records and calls per endpoint, run against an empty instance and compared with a golden snapshot, and a read-only regression check before and after a deployment. See [Scenario mode](#scenario-mode-contract-test-and-regression-check).
+- **Scenario mode** (`apitest.RunScenario`, `apitest-gen tree`, `apitest-gen regression`): connected records fetched from a running instance (GET only), rebuilt in an empty instance as an integration test with several records and calls per endpoint, and a read-only regression check before and after a deployment. See [Scenario mode](#scenario-mode-integration-test-from-a-tree-and-regression-check).
 
 `apitest` reads your OpenAPI document, turns its **examples** into test cases, sends them to your running API and checks every response against the spec: status code, schema and expected example. Writes are read back with GET to prove the data was stored. Authentication is tested without and with manipulated tokens. Every case is a normal Go subtest, and every run writes a Markdown report (unless you turn it off).
 
@@ -43,7 +43,7 @@ All examples below use one API: an *Enterprise Orchestration System* with organi
 - [Results and report](#results-and-report)
 - [Running in CI](#running-in-ci)
 - [apitest-gen: examples for your spec](#apitest-gen-examples-for-your-spec)
-- [Scenario mode: contract test and regression check](#scenario-mode-contract-test-and-regression-check)
+- [Scenario mode: integration test from a tree, and regression check](#scenario-mode-integration-test-from-a-tree-and-regression-check)
 - [Example project: Swagger Petstore](#example-project-swagger-petstore)
 - [Limits](#limits)
 - [Development](#development)
@@ -694,27 +694,27 @@ The flags you need most often:
 
 With the examples removed from the Bookstore test spec, apitest can send 32 of 55 cases; after `apitest-gen`, all 55 run green.
 
-## Scenario mode: contract test and regression check
+## Scenario mode: integration test from a tree, and regression check
 
 `apitest.Run` derives its cases from the examples of the spec: one example per request, ordered by the operations. The scenario mode instead runs a **scenario**, the requests in the order they run, with as many records and calls per endpoint as the test needs, and keeps the answers as a **snapshot**.
 
-- **Contract test**, against an empty instance: `apitest-gen contract init` generates the scenario from the spec (per resource create, read, list, update, read after update, the documented 409, 400/422, 412 and 404, the 401 and 403 steps, and the deletes in reverse order), runs it, writes the golden snapshot, the examples of the spec and a review list of the decisions it had to guess. `apitest-gen contract run`, or `apitest.RunScenario` in `go test`, runs it again and compares.
+- **Integration test**, rebuilt in an empty instance: `tree.yaml` says which records to fetch and how they hang together (five docks of two planets, the ships of each dock, the pilot of each ship: `pick`, `where`, `require`, `page`), and how a record is created, updated, patched and deleted. `apitest-gen tree` proposes the file from the spec and later only adds new endpoints at their place; with `-base-url` it fetches the records (GET only) and writes the scenario that creates them in an empty instance in the right order (the ids of the stage replaced by saved values), reads and lists them, changes and deletes them. `apitest-gen tree run -update` runs it and writes the golden snapshot and the examples of the spec; `apitest-gen tree run`, or `apitest.RunScenario` in `go test`, runs it again and compares.
 - **Regression check**, on a shared stage, GET requests only: `apitest-gen regression pre` draws real records by the rules of a sample file before a deployment and reads every GET with them; `apitest-gen regression post` reads the same after the deployment and reports what changed, as Markdown, HTML and JUnit.
 
 ```go
-func TestContract(t *testing.T) {
+func TestTree(t *testing.T) {
 	apitest.RunScenario(t, apitest.ScenarioConfig{
-		Config:   apitest.Config{Handler: router, Token: apitest.StaticToken(token)}, // or BaseURL
-		Settings: "contract-settings.yaml",
-		Scenario: "contract-scenario_gen.yaml",
-		Golden:   "contract-golden_gen.yaml",
-		Errors:   []string{"401", "404", "409"}, // only these error steps, in this order
+		Config:   apitest.Config{SpecPath: "../../api/openapi.yaml", Handler: router, Token: apitest.StaticToken(token)}, // or BaseURL
+		Scenario: "tree-scenario_gen.yaml",
+		Golden:   "tree-golden_gen.yaml",
 	})
 }
 ```
 
 ```sh
-apitest-gen contract init -settings apitest/contract/contract-settings.yaml -base-url http://localhost:8080/api -token-env API_TOKEN
+apitest-gen tree -spec api/openapi.yaml -file apitest/tree/tree.yaml                                    # propose tree.yaml
+apitest-gen tree -spec api/openapi.yaml -file apitest/tree/tree.yaml -base-url https://dev.example.com/api -token-env DEV_TOKEN
+apitest-gen tree run -spec api/openapi.yaml -file apitest/tree/tree.yaml -base-url http://localhost:8080/api -token-env API_TOKEN -update
 apitest-gen regression pre  -spec api/openapi.yaml -sample regression-sample.yaml -base-url https://dev.example.com/api -token-env DEV_TOKEN -out out
 apitest-gen regression post -spec api/openapi.yaml -base-url https://dev.example.com/api -token-env DEV_TOKEN -out out
 ```

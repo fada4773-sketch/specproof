@@ -82,11 +82,11 @@ steps:
 func scenarioFiles(t *testing.T, text string) (sc, golden string) {
 	t.Helper()
 	dir := t.TempDir()
-	sc = filepath.Join(dir, "contract-scenario_gen.yaml")
+	sc = filepath.Join(dir, "tree-scenario_gen.yaml")
 	if err := os.WriteFile(sc, []byte(text), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	return sc, filepath.Join(dir, "contract-golden_gen.yaml")
+	return sc, filepath.Join(dir, "tree-golden_gen.yaml")
 }
 
 func bookstoreScenarioConfig(t *testing.T, f testserver.Faults, sc, golden string) ScenarioConfig {
@@ -132,7 +132,7 @@ func TestScenarioUpdateThenCompare(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(b)
-	for _, want := range []string{"kind: contract", "id: author1.create", "'{{author1.authorId}}'", "Location: '/v1/books/{{book1.bookId}}'", "name: Ada Lovelace"} {
+	for _, want := range []string{"kind: golden", "id: author1.create", "'{{author1.authorId}}'", "Location: '/v1/books/{{book1.bookId}}'", "name: Ada Lovelace"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("golden snapshot misses %q:\n%s", want, text)
 		}
@@ -337,12 +337,12 @@ func TestScenarioSettingsAndUnique(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("BOOKS_TEST_TOKEN", testToken)
-	settings := filepath.Join(dir, "contract-settings.yaml")
-	text := "spec: " + spec + "\ntokens:\n  default: env:BOOKS_TEST_TOKEN\nreport: out/contract-report_gen.md\nunique: true\n"
+	settings := filepath.Join(dir, "settings.yaml")
+	text := "spec: " + spec + "\ntokens:\n  default: env:BOOKS_TEST_TOKEN\nreport: out/tree-report_gen.md\nunique: true\n"
 	if err := os.WriteFile(settings, []byte(text), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	sc := filepath.Join(dir, "contract-scenario_gen.yaml")
+	sc := filepath.Join(dir, "tree-scenario_gen.yaml")
 	if err := os.WriteFile(sc, []byte(`
 steps:
   - id: shelf1.create
@@ -359,7 +359,7 @@ steps:
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	golden := filepath.Join(dir, "contract-golden_gen.yaml")
+	golden := filepath.Join(dir, "tree-golden_gen.yaml")
 	srv := bookstore(testserver.Faults{})
 	cfg := ScenarioConfig{Config: Config{Handler: srv}, Settings: settings, Scenario: sc, Golden: golden, Update: true}
 	res, ft := runScenarioFake(t, cfg)
@@ -370,7 +370,7 @@ steps:
 	if strings.Contains(string(b), "l-") || !strings.Contains(string(b), "Logistics") {
 		t.Errorf("the golden snapshot must hold the original values:\n%s", b)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "out", "contract-report_gen.md")); err != nil {
+	if _, err := os.Stat(filepath.Join(dir, "out", "tree-report_gen.md")); err != nil {
 		t.Errorf("report from the settings not written: %v", err)
 	}
 	// the same instance again: unique values keep the steps apart

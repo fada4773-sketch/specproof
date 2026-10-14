@@ -15,29 +15,39 @@ contain breaking changes, which are listed here.
     records and calls per endpoint, values saved from earlier answers
     (`{{ship1.shipId}}`, also from headers such as `Location` and `ETag`),
     checks (`equals`, `contains`) and authentication steps. It compares
-    every answer with a golden snapshot. `ScenarioConfig` embeds the whole
+    every answer with a golden snapshot (`kind: golden`). `ScenarioConfig` embeds the whole
     `Config` of `Run` (either `Handler` or `BaseURL`, tokens, `Params`,
     `IgnoreFields`, `CompareMode`, deviations, `TolerateErrorCases`,
     `SkipAuthCases`, `Tags`, reports, hooks, …) and adds `Settings`,
     `Scenario`, `Golden`, `Errors` (which error steps run, and their
     order: `"401"`, `"404"`, `"4xx"`), `Unique`, `Update` and `OnStep`.
     `RunScenarioStandalone` runs it outside of `go test`.
-  - `apitest-gen contract init` generates the scenario from the spec: per
-    resource a life cycle with several records, the documented 409,
-    400/422, 412 and 404 answers, the 401 and 403 steps and the deletes in
-    reverse order; values from `contract-overrides.yaml`, a running stage
-    (`learnFrom`, GET only), the examples of the spec or generated. It runs
-    the scenario against an empty instance, writes the golden snapshot,
-    the examples of the spec and `contract-review_gen.md`, which lists the
-    decisions the generator had to guess. For every operation that got no
-    step it proposes an entry under `operations` of
-    `contract-overrides.yaml`, by the reason: the open parameter values,
-    the status (no 2xx documented, a DELETE outside the life cycle,
-    another create), `null` while open and learned from `learnFrom` where
-    a value fits; filled in, the next `init` gives the operation a step,
-    `skip: true` leaves it out. `apitest-gen contract run` runs
-    it again and compares (`-errors`, `-run`, `-skip`, `-unique`,
-    `-junit`).
+  - `apitest-gen tree`: an integration test from connected records.
+    `tree.yaml` says which records to fetch and how they hang together: a
+    node is a request (`GET /docks/{dockId} dockId=.id`), its records are
+    filtered (`where`: present, values, one of, comparisons, `any`;
+    `require`: requests that must answer 2xx per candidate, `candidates`),
+    picked (`pick`: a number at random by `seed`, `{first: n}`, `all`, or
+    fixed keys), paged (`page`: number, offset or cursor, in query or
+    body) and every child node (`each`) runs per record; `.field` and
+    `<node>.field` read records above; a POST that only reads is allowed
+    with `read: true`; `budget` limits the requests. The `write` block of a
+    node says how a record is created (`none`: seed), updated, patched and
+    deleted. `apitest-gen tree` proposes the file from the spec (roots,
+    reads below them, resources that belong to them, records their fields
+    refer to, write blocks, operationIds as comments) and, run again, keeps
+    the file and only adds what it does not name yet at its place,
+    follows renamed paths and marks operations the spec lost. With
+    `-base-url` it fetches the records (GET only) into
+    `tree-data_gen.yaml` and writes `tree-scenario_gen.yaml`: the creates
+    in the order the references need (the ids of the stage replaced by
+    saved values, bodies cut to the request schema, required fields
+    generated, `ETag`/`If-Match`), reads and lists with checks, update and
+    patch with a read after them, 401 steps and the deletes in reverse
+    order; `tree-review_gen.md` lists the seed the empty instance needs and
+    every decision. `apitest-gen tree run` runs the scenario against an
+    empty instance; `-update` writes the golden snapshot and the examples
+    of the spec.
   - `apitest-gen regression init|pre|post|diff`: a check before and after a
     deployment that only sends GET requests. `pre` draws real records of a
     stage by the rules of `regression-sample.yaml` (a new sample every
@@ -48,7 +58,8 @@ contain breaking changes, which are listed here.
     and JUnit; fields that change by themselves are found by reading
     twice (`probe`).
   - Token flags for both: `-token`, `-token-env`, `-forbidden-token`,
-    `-forbidden-token-env`, `-header`.
+    `-forbidden-token-env`, `-header`. The settings file of a run is
+    optional (spec, base URL, health, tokens, headers, report, unique).
 
 ## v0.2.0
 

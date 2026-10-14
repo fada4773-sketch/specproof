@@ -21,7 +21,7 @@ const (
 	TokenForbidden = "forbidden" // a valid token with too few rights: the 403 case
 )
 
-// Scenario is the list of steps a contract test sends, in this order.
+// Scenario is the list of steps a scenario run sends, in this order.
 type Scenario struct {
 	// Order is the order of the resources (tags), for the reader.
 	Order []string

@@ -234,19 +234,19 @@ func TestSnapshotRoundTrip(t *testing.T) {
 
 func TestSettings(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "contract-settings.yaml")
+	path := filepath.Join(dir, "settings.yaml")
 	write := func(s string) {
 		t.Helper()
 		if err := os.WriteFile(path, []byte(s), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
-	write("spec: ../api.yaml\nbaseURL: env:SET_URL\ntokens: {default: env:SET_TOKEN, forbidden: literal}\nrecords: 3\nunique: true\nlearnFrom: {baseURL: http://dev}\n")
+	write("spec: ../api.yaml\nbaseURL: env:SET_URL\ntokens: {default: env:SET_TOKEN, forbidden: literal}\nunique: true\n")
 	s, err := LoadSettings(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.Rel(s.Spec) != filepath.Join(dir, "../api.yaml") || s.Rel("/abs") != "/abs" || s.Records != 3 || !s.Unique || s.LearnFrom.BaseURL != "http://dev" {
+	if s.Rel(s.Spec) != filepath.Join(dir, "../api.yaml") || s.Rel("/abs") != "/abs" || !s.Unique {
 		t.Errorf("settings: %+v", s)
 	}
 	if !Literal(s.Tokens.Forbidden) || Literal(s.Tokens.Default) || Literal("") {
@@ -265,7 +265,7 @@ func TestSettings(t *testing.T) {
 	if v, _ := Expand("plain"); v != "plain" {
 		t.Error("a plain value stays")
 	}
-	for text, want := range map[string]string{"nope: 1": "unknown key", "- 1": "must be a mapping", "records: -1": "must not be negative", "records: x": "cannot unmarshal", "a: [": "did not find"} {
+	for text, want := range map[string]string{"nope: 1": "unknown key", "- 1": "must be a mapping", "records: 3": "unknown key", "unique: x": "cannot unmarshal", "a: [": "did not find"} {
 		write(text)
 		if _, err := LoadSettings(path); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%q: got %v, want %q", text, err, want)

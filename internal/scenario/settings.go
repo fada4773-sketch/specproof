@@ -9,8 +9,8 @@ import (
 	"strings"
 )
 
-// Settings is the settings file of a contract test (contract-settings.yaml):
-// how the test runs, not what it sends. Paths in it are relative to the
+// Settings is the optional settings file of a scenario run: how the test
+// runs, not what it sends. Paths in it are relative to the
 // file. A value is either written as is or read from the environment with
 // "env:NAME".
 type Settings struct {
@@ -29,11 +29,6 @@ type Settings struct {
 	} `json:"tokens"`
 	// Headers are added to every request.
 	Headers map[string]string `json:"headers"`
-	// LearnFrom is a running stage whose records give the generator
-	// realistic values (GET requests only).
-	LearnFrom *Remote `json:"learnFrom"`
-	// Records is how many records the generator creates per resource.
-	Records int `json:"records"`
 	// Report is the Markdown report; HTML and JSON go next to it.
 	Report string `json:"report"`
 	// Unique makes the fields the scenario marks as unique new for every
@@ -45,13 +40,7 @@ type Settings struct {
 	Dir  string `json:"-"`
 }
 
-// Remote is a running instance read with GET requests only.
-type Remote struct {
-	BaseURL string `json:"baseURL"`
-	Token   string `json:"token"`
-}
-
-var settingsKeys = []string{"spec", "baseURL", "health", "tokens", "headers", "learnFrom", "records", "report", "unique"}
+var settingsKeys = []string{"spec", "baseURL", "health", "tokens", "headers", "report", "unique"}
 
 // LoadSettings reads a settings file.
 func LoadSettings(path string) (*Settings, error) {
@@ -81,9 +70,6 @@ func LoadSettings(path string) (*Settings, error) {
 		return nil, err
 	}
 	s.Path, s.Dir = abs, filepath.Dir(abs)
-	if s.Records < 0 {
-		return nil, fmt.Errorf("%s: records must not be negative", path)
-	}
 	return s, nil
 }
 

@@ -1,6 +1,6 @@
 // Package scenario holds the files of the scenario mode: the settings of a
-// contract test, the scenario (the ordered steps a run sends), and the
-// snapshot (the answers of a run: the golden snapshot of the contract test,
+// run, the scenario (the ordered steps a run sends), and the snapshot (the
+// answers of a run: the golden snapshot of an integration test,
 // the pre and post snapshots of a regression check), with the diff of two
 // snapshots.
 //

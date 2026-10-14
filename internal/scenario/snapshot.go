@@ -14,7 +14,7 @@ import (
 
 // Kinds of snapshots.
 const (
-	KindContract       = "contract"       // golden snapshot of a contract test
+	KindGolden         = "golden"         // golden snapshot of a scenario
 	KindRegressionPre  = "regression-pre" // a stage before a deployment
 	KindRegressionPost = "regression-post"
 )

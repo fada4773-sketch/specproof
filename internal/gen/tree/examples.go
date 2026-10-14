@@ -1,4 +1,4 @@
-package contract
+package tree
 
 import (
 	"context"
@@ -19,10 +19,9 @@ import (
 // as examples, through the writer of "apitest-gen record": per operation
 // the first regular step (the default example, named "default" when the
 // operation has error examples too), and one named example per documented
-// error the scenario provoked ("duplicate" under 409, "stale" under 412,
-// "unknown" under 404). Authentication steps get no example; apitest
-// builds those cases itself. A step whose request does not fit the schema
-// (the 400/422 step) is left out.
+// error the scenario provoked (the read after a delete: "afterDelete"
+// under 404). Authentication steps get no example; apitest builds those
+// cases itself. A step whose request does not fit the schema is left out.
 func Examples(s *spec.Spec, doc *yamldoc.Doc, sc *scenario.Scenario, run []apitest.StepExchange) (*record.Result, error) {
 	type entry struct {
 		op   *spec.Operation
@@ -145,7 +144,7 @@ func fits(v *spec.Validator, op *spec.Operation, ex apitest.StepExchange) bool {
 		}
 	}
 	if ex.HasBody {
-		if s := requestSchema(op); s != nil && len(v.Validate(s, spec.Normalize(ex.Body), spec.ModeRequest)) > 0 {
+		if s := schemaOf(requestRef(op)); s != nil && len(v.Validate(s, spec.Normalize(ex.Body), spec.ModeRequest)) > 0 {
 			return false
 		}
 	}
