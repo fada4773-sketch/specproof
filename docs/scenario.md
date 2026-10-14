@@ -190,7 +190,10 @@ record: that node must be fetched before (a root further up, or earlier in
 the tree), so a read can take values across tags
 (`permit: GET /docks/{dockId}/pilots/{pilotId}/permit dockId=.id pilotId=pilots.id`). A field is a dot path (`route.originId`,
 `items.0.id`). `$name` is the value of `params` at the top of the file:
-for a value no record gives. A node whose `$name` is not set yet is left
+for a value no record gives. A value of `params` may itself be a
+reference (`bookId: books.id`): it reads as if it stood in place of
+`$name`, so the node it names must be above or fetched before; the name is
+the node's name in the tree, not the resource name. A node whose `$name` is not set yet is left
 out of the fetch (noted once, and listed in the review). Every other value
 is sent as it is. A list as a query value
 (`status: [OPEN, CLOSED]`) sends one request per value.

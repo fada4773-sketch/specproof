@@ -573,7 +573,11 @@ func resolveFetch(v any, at *Record, t *Tree, scope func(string) bool, first fun
 		if !set {
 			return nil, fmt.Errorf("$%s has no value; set it under params at the top of tree.yaml", name)
 		}
-		return val, nil
+		if _, nested := ParamRef(val); nested {
+			return nil, fmt.Errorf("$%s is %v: no other $name", name, val)
+		}
+		// a reference in params ("books.id") reads like one in place of $name
+		return resolveFetch(val, at, t, scope, first)
 	}
 	ref, ok := ParseRef(v, scope)
 	if !ok {

@@ -1075,6 +1075,28 @@ tree:
 	if st := built.Scenario.Steps[0]; text(st.Path["pilotId"]) != id {
 		t.Errorf("step: %+v", st)
 	}
+	// a value of params may name a node: it reads like the reference in
+	// place of $name, so that node must be fetched before
+	tr, d = fetch(t, s, `
+params:
+  pid: pilots.Id
+tree:
+  pilots:
+    call: GET /pilots
+    pick: {first: 1}
+  pilot: GET /pilots/{pilotId} pilotId=$pid
+`, base)
+	if got := d.Of(tr.Node("pilot")); len(got) != 1 || text(got[0].Value.(map[string]any)["id"]) != id {
+		t.Errorf("reference in params: %v %v", got, d.Notes)
+	}
+	late := parse(t, "params:\n  pid: pilots.id\ntree:\n  pilot: GET /pilots/{pilotId} pilotId=$pid\n  pilots: GET /pilots\n")
+	if problems := Check(s, late); len(problems) != 1 || !strings.Contains(problems[0], "pilot ($pid)") {
+		t.Errorf("check order: %v", problems)
+	}
+	nested := parse(t, "params:\n  a: $b\n  b: 1\ntree:\n  pilot: GET /pilots/{pilotId} pilotId=$a\n")
+	if problems := Check(s, nested); len(problems) != 1 || !strings.Contains(problems[0], "no other $name") {
+		t.Errorf("check nested: %v", problems)
+	}
 	// a $name params does not have is a problem of the file
 	bad := parse(t, "tree:\n  pilot: GET /pilots/{pilotId} pilotId=$nope\n")
 	if problems := Check(s, bad); len(problems) != 1 || !strings.Contains(problems[0], "params has no entry nope") {

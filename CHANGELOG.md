@@ -40,7 +40,8 @@ contain breaking changes, which are listed here.
     refer to; every other read below the node that gives its path
     parameters, across tags: `{bookId}` below the books, by the model, by
     resource name + key or by field name; a value no node gives becomes
-    `$name`, listed once under `params` at the top of the file to be set,
+    `$name`, listed once under `params` at the top of the file to be set
+    (a value or a reference to a node such as `books.id`),
     and the read still gets its place in the tree; write blocks with
     `body: from <read>` for every create, update and patch, from the read
     that covers the request best; every other write at the node whose

@@ -169,13 +169,22 @@ func Check(s *spec.Spec, t *Tree) []string {
 	}
 	// checkRefs: "<node>.field" must name a node of the tree; read by a node
 	// (write false), a node that is not above it must come before it
-	checkRefs := func(line int, where string, at *Node, write bool, values ...any) {
+	// "$name" counts as its value of params, where it is used
+	var checkRefs func(line int, where string, at *Node, write bool, values ...any)
+	checkRefs = func(line int, where string, at *Node, write bool, values ...any) {
 		for _, v := range values {
 			walkStrings(v, func(str string) {
 				if prm, isParam := ParamRef(str); isParam {
-					if _, known := t.Params[prm]; !known {
+					val, known := t.Params[prm]
+					if !known {
 						add(line, "%s: %q: params has no entry %s (add it at the top of tree.yaml)", where, str, prm)
+						return
 					}
+					if _, nested := ParamRef(val); nested {
+						add(line, "%s: params.%s is %v; a value of params is a value or a reference to a node (books.id), no other $name", where, prm, val)
+						return
+					}
+					checkRefs(line, where+" ($"+prm+")", at, write, val)
 					return
 				}
 				name, _, ok := strings.Cut(str, ".")

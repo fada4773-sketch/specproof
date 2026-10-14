@@ -364,6 +364,14 @@ func (b *builder) resolve(v any, at *Record, scope *Node, param, step string, ex
 			b.note(step, fmt.Sprintf("%s = $%s", param, name), "params has no value for it; set it at the top of tree.yaml")
 			return nil
 		}
+		if _, isRef := ParseRef(val, b.scope); isRef {
+			// a reference in params ("books.id") reads like one in place of $name
+			return b.resolve(val, at, scope, param, step, exclude)
+		}
+		if _, nested := ParamRef(val); nested {
+			b.note(step, fmt.Sprintf("%s = $%s", param, name), "params."+name+" names another $name; give a value or a reference to a node")
+			return nil
+		}
 		// a value of the stage: the placeholder of the record created for it
 		return b.placeholderFor(val, []string{param, name}, exclude, step)
 	}
