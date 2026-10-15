@@ -103,6 +103,12 @@ type fetcher struct {
 	model    *model.Model
 	global   map[*Node][]Clause
 	filtered map[string]bool
+	// prefer caches the prefer clauses per node, preferAt the resources a
+	// node reads, preferSub whether a prefer applies at or below a node.
+	prefer    map[*Node][]Clause
+	preferRes map[*Node][]string
+	preferAt  map[string]bool
+	preferSub map[*Node]bool
 }
 
 // first is the first record of a node fetched so far, nil without.
@@ -145,7 +151,8 @@ func Fetch(ctx context.Context, s *spec.Spec, t *Tree, opt Options) (*Data, erro
 		return nil, &FindingError{Problems: problems}
 	}
 	f := &fetcher{s: s, t: t, opt: opt, data: &Data{Source: opt.BaseURL}, cache: map[string]*answer{}, count: map[*Node]int{}, budget: t.Budget, scope: t.names(), unset: map[*Node]bool{},
-		global: map[*Node][]Clause{}, filtered: map[string]bool{}}
+		global: map[*Node][]Clause{}, filtered: map[string]bool{},
+		prefer: map[*Node][]Clause{}, preferRes: map[*Node][]string{}, preferAt: map[string]bool{}, preferSub: map[*Node]bool{}}
 	if f.budget <= 0 {
 		f.budget = DefaultBudget
 	}
@@ -162,6 +169,7 @@ func Fetch(ctx context.Context, s *spec.Spec, t *Tree, opt Options) (*Data, erro
 		}
 	}
 	f.unusedFilters()
+	f.unusedPrefers()
 	return f.data, nil
 }
 
@@ -256,6 +264,10 @@ func (f *fetcher) node(ctx context.Context, n *Node, parent *Record) error {
 		return nil
 	}
 	total := len(candidates)
+	f.prefers(n)
+	for _, r := range f.preferRes[n] {
+		f.preferAt[r] = true
+	}
 	var kept []cand
 	for _, c := range candidates {
 		if f.passes(n, c.value) {
@@ -266,6 +278,13 @@ func (f *fetcher) node(ctx context.Context, n *Node, parent *Record) error {
 	ordered, missing := f.order(n, kept)
 	if len(missing) > 0 {
 		f.note("%s: no record with key %s", where(n, parent), strings.Join(missing, ", "))
+	}
+	// prefer: the preferred records (and those that lead to one) first;
+	// keys and all pick what they name
+	if !single && !n.Pick.All && len(n.Pick.Keys) == 0 && f.preferBelow(n) {
+		if ordered, err = f.preferOrder(ctx, n, ordered, parent); err != nil {
+			return err
+		}
 	}
 	// want is what pick asks for, limit what can be taken
 	want := len(ordered)

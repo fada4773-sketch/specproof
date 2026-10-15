@@ -498,3 +498,169 @@ func TestColonyGlobalWhere(t *testing.T) {
 		}
 	}
 }
+
+// TestColonyWriteAtView: update and delete in the write block of the read
+// of one garden (GET /gardens/{gardenId} below the gardens) run on the
+// gardens the scenario creates: that read is a view of them.
+func TestColonyWriteAtView(t *testing.T) {
+	s := loadColony(t)
+	st := testserver.NewColony(treeToken, 500)
+	st.Fill()
+	hs := httptest.NewServer(st)
+	t.Cleanup(hs.Close)
+	b, err := ProposeScope(s, Scope{ExcludeTags: []string{"Admin"}}).Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := string(b)
+	for old, repl := range map[string]string{
+		"              garden: GET /gardens/{gardenId} gardenId=.id # getGardenById\n": "              garden:\n                call: GET /gardens/{gardenId}\n                path: {gardenId: .id}\n" +
+			"                write:\n                  update:\n                    call: PUT /gardens/{gardenId}\n                    path: {gardenId: .id}\n                    body: from garden\n" +
+			"                  delete: DELETE /gardens/{gardenId} gardenId=.id\n",
+		"              update:\n                call: PUT /gardens/{gardenId} # updateGardenById\n                path: {gardenId: .id}\n                body: from gardens\n": "",
+		"              delete: DELETE /gardens/{gardenId} gardenId=.id # deleteGardenById\n":                                                                                   "",
+		"              delete-by-code: DELETE /gardens/code/{code} code=.code # deleteGardenByCode\n":                                                                          "",
+		"              delete-by-name: DELETE /gardens/name/{name} name=.name # deleteGardenByName\n":                                                                          "",
+	} {
+		if !strings.Contains(file, old) {
+			t.Fatalf("not in the proposal: %q", old)
+		}
+		file = strings.Replace(file, old, repl, 1)
+	}
+	tr := parse(t, file)
+	if w := tr.Node("gardens").Write; w["update"] != nil || w["delete"] != nil || tr.Node("garden").Write["update"] == nil {
+		t.Fatalf("the writes are at garden:\n%s", file)
+	}
+	d, err := Fetch(context.Background(), s, tr, Options{BaseURL: hs.URL + "/api", Token: treeToken})
+	if err != nil {
+		t.Fatal(err)
+	}
+	built, err := Build(s, tr, d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range built.Notes {
+		if strings.Contains(n.What, "not run") {
+			t.Errorf("note: %+v", n)
+		}
+	}
+	text, err := built.Scenario.Encode(" test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range []string{"id: gardens1.update #", "id: gardens1.read.afterUpdate #", "id: gardens1.delete #", "id: gardens3.delete #", "id: gardens3.read.afterDelete #"} {
+		if !strings.Contains(string(text), step) {
+			t.Errorf("step %s missing:\n%s", step, text)
+		}
+	}
+	path := filepath.Join(t.TempDir(), "tree-scenario_gen.yaml")
+	if err := os.WriteFile(path, text, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var log strings.Builder
+	res, err := apitest.RunScenarioStandalone(context.Background(), apitest.ScenarioConfig{
+		Config:   apitest.Config{SpecPath: colonySpec, Handler: testserver.NewColony(treeToken, 1), Token: apitest.StaticToken(treeToken)},
+		Scenario: path,
+	}, apitest.StandaloneOptions{Out: &log})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Failed {
+		t.Fatalf("the scenario failed on an empty instance:\n%s\n%s", log.String(), text)
+	}
+}
+
+// TestColonyPrefer: prefer at the top makes a pick take that record first
+// and fills the rest with others; with pick 1 on planets, moons and gardens
+// the planet and moon of the preferred garden are taken, though the seed
+// would take others.
+func TestColonyPrefer(t *testing.T) {
+	s := loadColony(t)
+	st := testserver.NewColony(treeToken, 500)
+	st.Fill()
+	hs := httptest.NewServer(st)
+	t.Cleanup(hs.Close)
+	b, err := ProposeScope(s, Scope{ExcludeTags: []string{"Admin"}}).Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := string(b)
+	for old, repl := range map[string]string{
+		"call: GET /persons # listPersons\n    pick: 3": "call: GET /persons # listPersons\n    pick: 2",
+		"call: GET /planets # listPlanets\n    pick: 3": "call: GET /planets # listPlanets\n    pick: 1",
+		"path: {planetCode: .code}\n        pick: 3":    "path: {planetCode: .code}\n        pick: 1",
+		"path: {moonId: .id}\n            pick: 3":      "path: {moonId: .id}\n            pick: 1",
+	} {
+		if !strings.Contains(file, old) {
+			t.Fatalf("not in the proposal: %q", old)
+		}
+		file = strings.Replace(file, old, repl, 1)
+	}
+	fetch := func(top string) (*Tree, *Data) {
+		t.Helper()
+		tr := parse(t, file+top)
+		d, err := Fetch(context.Background(), s, tr, Options{BaseURL: hs.URL + "/api", Token: treeToken})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return tr, d
+	}
+	names := func(tr *Tree, d *Data, node string) []string {
+		var out []string
+		for _, r := range d.Of(tr.Node(node)) {
+			out = append(out, text(r.Value.(map[string]any)["name"]))
+		}
+		slices.Sort(out)
+		return out
+	}
+	tr, d := fetch("")
+	plain := names(tr, d, "gardens")
+	if len(plain) != 1 {
+		t.Fatalf("one garden: %v", plain)
+	}
+	// a garden the seed does not take; Rose and Sage on Mars, Mint on Terra
+	target := "Mint"
+	if plain[0] == "Mint" {
+		target = "Rose"
+	}
+	tr, d = fetch("prefer:\n  Garden.name: [" + target + "] # the garden of the test\n  Harvest.season: summer\n")
+	if g := names(tr, d, "gardens"); !slices.Equal(g, []string{target}) {
+		t.Errorf("gardens: %v, want %s (notes %v)", g, target, d.Notes)
+	}
+	// the rest of a pick are others: Grace and one more person
+	trPlain, dPlain := fetch("")
+	plainPersons := names(trPlain, dPlain, "persons")
+	// Ada, Lin and Grace tend gardens: prefer the one the seed leaves out
+	person := "Grace"
+	for _, p := range []string{"Ada", "Lin", "Grace"} {
+		if !slices.Contains(plainPersons, p) {
+			person = p
+		}
+	}
+	trP, dP := fetch("prefer:\n  Person:\n    name: " + person + "\n")
+	if p := names(trP, dP, "persons"); len(p) != 2 || !slices.Contains(p, person) {
+		t.Errorf("persons: %s and one more: %v (without prefer %v)", person, p, plainPersons)
+	}
+	if !slices.ContainsFunc(d.Notes, func(n string) bool {
+		return strings.Contains(n, "prefer Harvest: no node of the tree reads records of Harvest")
+	}) {
+		t.Errorf("notes: %v", d.Notes)
+	}
+	if len(tr.Prefer) != 2 || tr.Prefer[0].Clause.Note != "the garden of the test" {
+		t.Errorf("prefer: %+v", tr.Prefer)
+	}
+	// a value no record has is noted; a field the spec does not have is a
+	// problem
+	_, d = fetch("prefer:\n  Garden.name: [Nowhere]\n")
+	if !slices.ContainsFunc(d.Notes, func(n string) bool {
+		return strings.Contains(n, "prefer Garden: no record of the stage the tree reaches holds it")
+	}) {
+		t.Errorf("notes: %v", d.Notes)
+	}
+	if p := Check(s, parse(t, file+"prefer:\n  Garden.colour: red\n")); !slices.ContainsFunc(p, func(x string) bool { return strings.Contains(x, "prefer Garden.colour: Garden has no field colour") }) {
+		t.Errorf("check: %v", p)
+	}
+	if enc, _ := tr.Encode(); !strings.Contains(string(enc), "prefer:\n  Garden.name: ["+target+"] # the garden of the test\n  Harvest.season: summer") {
+		t.Errorf("encode:\n%s", enc)
+	}
+}

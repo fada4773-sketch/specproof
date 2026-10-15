@@ -1,6 +1,7 @@
 package tree
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"strings"
@@ -28,18 +29,18 @@ type Filter struct {
 	Line     int
 }
 
-// filters reads the where at the top: "Resource.field: test", or a
-// mapping per resource of fields to tests.
-func (p *parser) filters(v *yaml.Node) []Filter {
+// filters reads the where or prefer at the top (key): "Resource.field:
+// test", or a mapping per resource of fields to tests.
+func (p *parser) filters(v *yaml.Node, key string) []Filter {
 	if v.Kind != yaml.MappingNode {
-		p.errf(v, "where must be a mapping: Garden.name: [Rose, Mint], or Garden: {name: [Rose, Mint]}")
+		p.errf(v, "%s must be a mapping: Garden.name: [Rose, Mint], or Garden: {name: [Rose, Mint]}", key)
 		return nil
 	}
 	var out []Filter
 	add := func(res, field string, k, val *yaml.Node) {
 		x, err := yamldoc.Decode(val)
 		if err != nil {
-			p.errf(val, "where.%s.%s: %v", res, field, err)
+			p.errf(val, "%s.%s.%s: %v", key, res, field, err)
 			return
 		}
 		out = append(out, Filter{Resource: res, Clause: Clause{Field: field, Test: x, Note: noteOf(val)}, Line: k.Line})
@@ -54,7 +55,7 @@ func (p *parser) filters(v *yaml.Node) []Filter {
 		}
 		res, field, ok := strings.Cut(k.Value, ".")
 		if !ok || res == "" || field == "" {
-			p.errf(k, "where: %q: Resource.field (Garden.name: [Rose, Mint]), or a mapping per resource", k.Value)
+			p.errf(k, "%s: %q: Resource.field (Garden.name: [Rose, Mint]), or a mapping per resource", key, k.Value)
 			continue
 		}
 		add(res, field, k, val)
@@ -80,18 +81,22 @@ func filterSchema(s *spec.Spec, m *model.Model, name string) (string, bool) {
 	return "", false
 }
 
-// checkFilters reports filters of a resource or field the spec does not
-// have.
+// checkFilters reports where and prefer of a resource or field the spec
+// does not have.
 func checkFilters(s *spec.Spec, t *Tree) []string {
-	if len(t.Where) == 0 {
+	if len(t.Where)+len(t.Prefer) == 0 {
 		return nil
 	}
 	m := model.Detect(s, nil)
 	var out []string
-	for _, f := range t.Where {
+	for i, f := range append(slices.Clone(t.Where), t.Prefer...) {
+		key := "where"
+		if i >= len(t.Where) {
+			key = "prefer"
+		}
 		schema, ok := filterSchema(s, m, f.Resource)
 		if !ok {
-			out = append(out, fmt.Sprintf("line %d: where %s.%s: %s is no resource or schema of the spec", f.Line, f.Resource, f.Clause.Field, f.Resource))
+			out = append(out, fmt.Sprintf("line %d: %s %s.%s: %s is no resource or schema of the spec", f.Line, key, f.Resource, f.Clause.Field, f.Resource))
 			continue
 		}
 		ref := s.Doc.Components.Schemas[schema]
@@ -106,7 +111,7 @@ func checkFilters(s *spec.Spec, t *Tree) []string {
 					names = append(names, k)
 				}
 				slices.Sort(names)
-				out = append(out, fmt.Sprintf("line %d: where %s.%s: %s has no field %s (fields: %s)", f.Line, f.Resource, f.Clause.Field, schema, top, strings.Join(names, ", ")))
+				out = append(out, fmt.Sprintf("line %d: %s %s.%s: %s has no field %s (fields: %s)", f.Line, key, f.Resource, f.Clause.Field, schema, top, strings.Join(names, ", ")))
 			}
 		}
 	}
@@ -122,6 +127,32 @@ func (f *fetcher) globals(n *Node) []Clause {
 	if c, ok := f.global[n]; ok {
 		return c
 	}
+	out := f.clausesOf(n, f.t.Where, f.filtered)
+	f.global[n] = out
+	return out
+}
+
+// prefers are the prefer clauses of the records of a node.
+func (f *fetcher) prefers(n *Node) []Clause {
+	if len(f.t.Prefer) == 0 {
+		return nil
+	}
+	if c, ok := f.prefer[n]; ok {
+		return c
+	}
+	res := map[string]bool{}
+	out := f.clausesOf(n, f.t.Prefer, res)
+	for r := range res {
+		f.preferRes[n] = append(f.preferRes[n], r)
+	}
+	slices.Sort(f.preferRes[n])
+	f.prefer[n] = out
+	return out
+}
+
+// clausesOf are the clauses of the filters that apply to the records of a
+// node; used collects the resources applied.
+func (f *fetcher) clausesOf(n *Node, filters []Filter, used map[string]bool) []Clause {
 	if f.model == nil {
 		f.model = model.Detect(f.s, nil)
 	}
@@ -138,14 +169,142 @@ func (f *fetcher) globals(n *Node) []Clause {
 		}
 	}
 	var out []Clause
-	for _, flt := range f.t.Where {
+	for _, flt := range filters {
 		if slices.ContainsFunc(names, func(x string) bool { return strings.EqualFold(x, flt.Resource) }) {
 			out = append(out, flt.Clause)
-			f.filtered[flt.Resource] = true
+			used[flt.Resource] = true
 		}
 	}
-	f.global[n] = out
 	return out
+}
+
+// preferred reports whether a record holds the prefer of its node.
+func (f *fetcher) preferred(n *Node, rec any) bool {
+	cs := f.prefers(n)
+	for _, c := range cs {
+		if !c.holds(rec) {
+			return false
+		}
+	}
+	return len(cs) > 0
+}
+
+// preferBelow reports whether a prefer applies to the node or a node
+// below it.
+func (f *fetcher) preferBelow(n *Node) bool {
+	if len(f.t.Prefer) == 0 || !n.Enabled() {
+		return false
+	}
+	if v, ok := f.preferSub[n]; ok {
+		return v
+	}
+	v := len(f.prefers(n)) > 0
+	for _, c := range n.Each {
+		v = v || f.preferBelow(c)
+	}
+	f.preferSub[n] = v
+	return v
+}
+
+// preferOrder puts first the candidates that are preferred, then those
+// below which preferred records are (the moon of the preferred garden),
+// more prefers before fewer, then the others; ties keep their order.
+func (f *fetcher) preferOrder(ctx context.Context, n *Node, cands []cand, parent *Record) ([]cand, error) {
+	score := make([]int, len(cands))
+	for i, c := range cands {
+		if f.preferred(n, c.value) {
+			score[i] = len(f.t.Prefer) + 1
+			continue
+		}
+		found := map[string]bool{}
+		if err := f.reach(ctx, n, c.value, parent, 0, found); err != nil {
+			return nil, err
+		}
+		score[i] = len(found)
+	}
+	idx := make([]int, len(cands))
+	for i := range idx {
+		idx[i] = i
+	}
+	slices.SortStableFunc(idx, func(a, b int) int { return score[b] - score[a] })
+	out := make([]cand, len(cands))
+	for i, j := range idx {
+		out[i] = cands[j]
+	}
+	return out, nil
+}
+
+// reach collects the resources of the preferred records below a candidate
+// of n: it reads the child nodes that lead to a prefer, up to three levels
+// down (answers are cached, the fetch reads them again).
+func (f *fetcher) reach(ctx context.Context, n *Node, rec any, parent *Record, depth int, found map[string]bool) error {
+	probe := &Record{ID: n.Name + "?", Node: n, Parent: parent, Value: rec}
+	for _, c := range n.Each {
+		if !f.preferBelow(c) || len(unsetParams(f.t, c)) > 0 {
+			continue
+		}
+		op := lookupOp(f.s, c.Call)
+		if op == nil {
+			continue
+		}
+		reqs, err := f.requests(c, op, probe)
+		if err != nil {
+			continue
+		}
+		for _, rq := range reqs {
+			a, err := f.send(ctx, op.Method, rq.path, rq.query, rq.header, rq.body, rq.hasBody)
+			if err != nil {
+				return err
+			}
+			if a.status/100 != 2 {
+				continue
+			}
+			els, isList := listOf(c, op, a.body)
+			if !isList {
+				els = []any{a.body}
+			}
+			for _, el := range els {
+				if !f.passes(c, el) {
+					continue
+				}
+				if f.preferred(c, el) {
+					for _, r := range f.preferRes[c] {
+						found[r] = true
+					}
+				}
+				if depth < 2 {
+					if err := f.reach(ctx, c, el, probe, depth+1, found); err != nil {
+						return err
+					}
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// unusedPrefers notes the prefer no record of the fetch holds.
+func (f *fetcher) unusedPrefers() {
+	hit := map[string]bool{}
+	for _, r := range f.data.Records {
+		if f.preferred(r.Node, r.Value) {
+			for _, res := range f.preferRes[r.Node] {
+				hit[res] = true
+			}
+		}
+	}
+	var done []string
+	for _, flt := range f.t.Prefer {
+		if hit[flt.Resource] || slices.Contains(done, flt.Resource) {
+			continue
+		}
+		done = append(done, flt.Resource)
+		if !f.preferAt[flt.Resource] {
+			f.note("prefer %s: no node of the tree reads records of %s; the prefer did nothing", flt.Resource, flt.Resource)
+		} else {
+			f.note("prefer %s: no record of the stage the tree reaches holds it; the picks are as without (check the values and the where)", flt.Resource)
+		}
+	}
 }
 
 // passes reports whether a record holds the where of its node and the

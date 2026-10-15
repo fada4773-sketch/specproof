@@ -234,12 +234,18 @@ func FileSection(t *Tree, changes []Change, proposed bool) (string, string) {
 	if sc := scopeText(t.Scope); sc != "" {
 		fmt.Fprintf(&b, " Scope: %s.", sc)
 	}
-	if len(t.Where) > 0 {
+	for _, top := range []struct {
+		what    string
+		filters []Filter
+	}{{"Where for every node", t.Where}, {"Preferred at every pick", t.Prefer}} {
+		if len(top.filters) == 0 {
+			continue
+		}
 		var ws []string
-		for _, f := range t.Where {
+		for _, f := range top.filters {
 			ws = append(ws, f.Resource+"."+f.Clause.Field+" "+testText(f.Clause.Test))
 		}
-		fmt.Fprintf(&b, " Where for every node: %s.", strings.Join(ws, ", "))
+		fmt.Fprintf(&b, " %s: %s.", top.what, strings.Join(ws, ", "))
 	}
 	fmt.Fprintf(&b, " %d nodes, %d writes.\n", nodes, writes)
 	if len(changes) > 0 {

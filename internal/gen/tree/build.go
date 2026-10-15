@@ -1061,9 +1061,11 @@ func (b *builder) updates() {
 			if w == nil {
 				continue
 			}
+			// a record of the node the scenario created, or a view of one
+			// (the write block at GET /gardens/{gardenId} below the gardens)
 			var r *Record
 			for _, c := range b.d.Of(n) {
-				if b.created[c] {
+				if b.created[b.entity(c)] {
 					r = c
 					break
 				}
@@ -1085,13 +1087,16 @@ func (b *builder) update(r *Record, w *Write, op *spec.Operation, kind string) {
 	if expect == 0 {
 		expect = http.StatusOK
 	}
-	st := &scenario.Step{ID: b.id(r.ID + "." + kind), Call: callOf(op), Expect: expect}
+	// r may be a view of the created record e: the request takes the
+	// values of r, the step, ETag and read after it are those of e
+	e := b.entity(r)
+	st := &scenario.Step{ID: b.id(e.ID + "." + kind), Call: callOf(op), Expect: expect}
 	b.params(st, op, w.Path, w.Query, w.Header, r, r.Node, nil)
-	if p := ifMatch(op); p != nil && b.etag[r] != "" {
+	if p := ifMatch(op); p != nil && b.etag[e] != "" {
 		if st.Header == nil {
 			st.Header = map[string]any{}
 		}
-		st.Header[p.Name] = "{{" + b.etag[r] + "}}"
+		st.Header[p.Name] = "{{" + b.etag[e] + "}}"
 	}
 	changed := ""
 	action := IsAction(kind)
@@ -1111,30 +1116,30 @@ func (b *builder) update(r *Record, w *Write, op *spec.Operation, kind string) {
 		st.Body, st.HasBody = body, true
 		st.Unique = slices.DeleteFunc(st.Unique, func(ptr string) bool { return !hasField(body, strings.TrimPrefix(ptr, "/")) })
 	}
-	st.Why = KindBase(kind) + "s " + r.ID
+	st.Why = KindBase(kind) + "s " + e.ID
 	if by, ok := strings.CutPrefix(kind, KindBase(kind)+"-by-"); ok {
 		st.Why += " by " + by
 	}
 	if changed != "" {
 		st.Why += ", changes " + changed
 	}
-	if documentsHeader(op, expect, "ETag") && b.etag[r] != "" {
-		st.Save = map[string]string{b.etag[r]: "header ETag"}
+	if documentsHeader(op, expect, "ETag") && b.etag[e] != "" {
+		st.Save = map[string]string{b.etag[e]: "header ETag"}
 	}
 	b.add(st)
 	if action {
 		// an action changes the record in its own way: no read that
 		// expects the body
-		st.Why = "runs " + kind + " on " + r.ID
+		st.Why = "runs " + kind + " on " + e.ID
 		return
 	}
-	if read := b.readID[r]; read != "" && st.HasBody {
+	if read := b.readID[e]; read != "" && st.HasBody {
 		if rs := b.stepByID(read); rs != nil {
 			again := cloneStep(rs)
-			again.ID = b.id(r.ID + ".read.after" + camelKind(kind))
+			again.ID = b.id(e.ID + ".read.after" + camelKind(kind))
 			again.Equals = st.ID
 			again.Contains = nil
-			again.Why = "reads " + r.ID + " again, it holds what " + st.ID + " sent"
+			again.Why = "reads " + e.ID + " again, it holds what " + st.ID + " sent"
 			b.steps = append(b.steps, again)
 		}
 	}
@@ -1275,12 +1280,24 @@ func (b *builder) deletes(order []*Record) {
 	turn := map[*Node]int{}
 	for i := len(order) - 1; i >= 0; i-- {
 		r := order[i]
+		// the deletes of its node, else of a view of it (the write block at
+		// GET /gardens/{gardenId} below the gardens): src gives the values
+		src := r
+		kinds := b.deleteKinds(r.Node)
+		for _, c := range b.d.Records {
+			if len(kinds) > 0 {
+				break
+			}
+			if c != r && b.entity(c) == r {
+				src, kinds = c, b.deleteKinds(c.Node)
+			}
+		}
 		var kind string
 		var w *Write
 		var op *spec.Operation
-		if kinds := b.deleteKinds(r.Node); len(kinds) > 0 {
-			kind = kinds[turn[r.Node]%len(kinds)]
-			w, op = b.writeOf(r.Node, kind)
+		if len(kinds) > 0 {
+			kind = kinds[turn[src.Node]%len(kinds)]
+			w, op = b.writeOf(src.Node, kind)
 		}
 		if w == nil {
 			continue
@@ -1306,7 +1323,7 @@ func (b *builder) deletes(order []*Record) {
 		if by, ok := strings.CutPrefix(kind, WriteDelete+"-by-"); ok {
 			st.Why += " by " + by
 		}
-		b.params(st, op, w.Path, w.Query, w.Header, r, r.Node, nil)
+		b.params(st, op, w.Path, w.Query, w.Header, src, src.Node, nil)
 		if p := ifMatch(op); p != nil && b.etag[r] != "" {
 			if st.Header == nil {
 				st.Header = map[string]any{}
@@ -1315,11 +1332,11 @@ func (b *builder) deletes(order []*Record) {
 		}
 		b.add(st)
 		deleted[r] = true
-		turn[r.Node]++
-		if afterRead[r.Node.Name+"."+kind] {
+		turn[src.Node]++
+		if afterRead[src.Node.Name+"."+kind] {
 			continue
 		}
-		afterRead[r.Node.Name+"."+kind] = true
+		afterRead[src.Node.Name+"."+kind] = true
 		rs := b.stepByID(b.readID[r])
 		if rs == nil {
 			continue

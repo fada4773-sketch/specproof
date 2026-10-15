@@ -263,6 +263,26 @@ a record (`GET /gardens/{gardenId}/details`) are not. Resource and field
 are checked against the spec; a condition no node of the tree applies is
 noted after the fetch.
 
+Without a match a `where` takes nothing: `pick: 3` under a moon with one
+such garden gives that one garden (the review says "1 of 3 picked …
+left out by where").
+
+**Prefer.** `prefer` at the top, in the same form, does not filter: a
+pick takes the records that hold it first and fills the rest with others
+(at random by `seed`, or the first). The nodes above come along: a planet
+and a moon below which a preferred garden is are picked before the
+others (up to three levels down; a candidate that leads to more prefers
+first).
+
+```yaml
+prefer:
+  Garden.name: [mygarden]   # gardens pick: 3 → mygarden and 2 more
+```
+
+`where` and `prefer` combine: the where filters, the prefer orders what
+is left. A pick of keys (`pick: [..]`) and `pick: all` take what they
+name. A prefer no fetched record holds is noted.
+
 | Key of a node | Meaning |
 |---|---|
 | `call` | `METHOD /path` or the operationId; a node only reads: GET, or POST with `read: true` |
@@ -460,7 +480,10 @@ the records in an empty instance:
   record, each followed by a read that must hold what was sent; the
   variants by other keys too (`gardens1.update-by-code`), each with a
   change of its own. Unique fields of the create are marked again, so a
-  run with `-unique` sends the same new values.
+  run with `-unique` sends the same new values. A write block at the read
+  of one record below its list (`garden: GET /gardens/{gardenId}` below
+  `gardens`) works on the records the list node creates: update and
+  delete take their values from that read.
 - **401.** Per reading operation that needs a token and documents 401, the
   first read again without a token.
 - **Deletes** of the created records in reverse order, each node's first

@@ -91,6 +91,9 @@ contain breaking changes, which are listed here.
     (`Garden.name: [Rose, Mint]`, or `Garden: {code: [rose, mint]}`)
     holds for every record of that resource at every node of the fetch,
     `require` included; resource and field are checked against the spec.
+    `prefer` in the same form does not filter: a pick takes those records
+    first and fills the rest with others, and the nodes above a preferred
+    record (its planet and moon) are picked first too.
   - `apitest-gen regression init|pre|post|diff`: a check before and after a
     deployment that only sends GET requests. `pre` draws real records of a
     stage by the rules of `regression-sample.yaml` (a new sample every
