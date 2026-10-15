@@ -32,13 +32,17 @@ rebuild them as an integration test in an empty one.
 
 Usage:
   apitest-gen tree -spec <openapi.yaml> [-file tree.yaml]
-  apitest-gen tree -spec <openapi.yaml> [-file tree.yaml] -base-url <url> [-token … | -token-env NAME]
+  apitest-gen tree -spec <openapi.yaml> [-file tree.yaml] [-tags A,B] [-exclude-tags X] [-exclude-ops opId] [-with-deps]
+  apitest-gen tree -spec <openapi.yaml> [-file tree.yaml] -base-url <url> [-node name] [-token … | -token-env NAME]
   apitest-gen tree run -spec <openapi.yaml> -base-url <url> [-update] [-token … | -token-env NAME] [flags]
 
   tree       writes tree.yaml, the records to fetch and how they hang
              together, proposed from the spec; an existing file stays as it
              is and gets only the endpoints it does not name yet, at their
-             place. With -base-url it fetches the records (GET only, and
+             place. -tags proposes only those tags (scope of the file; add
+             tags later, step by step), -exclude-tags and -exclude-ops
+             leave tags and operations out. With -base-url it fetches the
+             records (GET only, and
              POSTs marked read: true) and writes next to tree.yaml:
                tree-data_gen.yaml      the records (data of the instance)
                tree-scenario_gen.yaml  the steps that rebuild them in an
@@ -95,6 +99,9 @@ func resolveToken(direct, env, fallback, what string) (string, error) {
 
 type treeOptions struct {
 	spec, file, baseURL              string
+	tags, excludeTags, excludeOps    string
+	only                             string
+	deps                             bool
 	scenario, golden, report, junit  string
 	settings, errors, run, skip      string
 	update, noExamples, remote, uniq bool
@@ -172,6 +179,11 @@ func treeFlags(name string, out io.Writer) (*flag.FlagSet, *treeOptions) {
 	} else {
 		fs.StringVar(&o.baseURL, "base-url", "", "the instance to fetch the records from, with base path (GET only)")
 		o.tok.register(fs, false)
+		fs.StringVar(&o.tags, "tags", "", `propose only these tags, comma separated; added to scope.tags of the file (step by step: "Book", later "Book,Author")`)
+		fs.StringVar(&o.excludeTags, "exclude-tags", "", "never propose these tags; added to scope.exclude.tags (* matches any text)")
+		fs.StringVar(&o.excludeOps, "exclude-ops", "", `never propose these operations (operationId or "METHOD /path"); added to scope.exclude.ops`)
+		fs.BoolVar(&o.deps, "with-deps", false, "also propose the reads of other tags that give values the scope needs (scope.deps)")
+		fs.StringVar(&o.only, "node", "", "with -base-url: fetch only this node and what hangs below it again; the other records stay")
 	}
 	return fs, o
 }
@@ -192,10 +204,11 @@ func treeMain(o *treeOptions, out io.Writer) (int, error) {
 	if s.Doc.Info != nil {
 		version = s.Doc.Info.Version
 	}
-	proposal := tree.Propose(s)
+	add := tree.Scope{Tags: splitList(o.tags), ExcludeTags: splitList(o.excludeTags), ExcludeOps: splitList(o.excludeOps), Deps: o.deps}
 	var t *tree.Tree
 	var changes []tree.Change
 	if _, statErr := os.Stat(o.file); errors.Is(statErr, os.ErrNotExist) {
+		proposal := tree.ProposeScope(s, add)
 		b, err := proposal.Encode()
 		if err != nil {
 			return 1, err
@@ -211,7 +224,8 @@ func treeMain(o *treeOptions, out io.Writer) (int, error) {
 		if t, err = tree.Load(o.file); err != nil {
 			return 1, fmt.Errorf("%s:\n%w", o.file, err)
 		}
-		changes = tree.Merge(s, t, proposal, version)
+		changes = t.AddScope(add)
+		changes = append(changes, tree.Merge(s, t, tree.ProposeScope(s, t.Scope), version)...)
 		if len(changes) > 0 {
 			b, err := t.Bytes()
 			if err != nil {
@@ -247,7 +261,15 @@ func treeMain(o *treeOptions, out io.Writer) (int, error) {
 			return 2, err
 		}
 		fmt.Fprintf(out, "fetching from %s (GET only)\n", o.baseURL)
-		data, err = tree.Fetch(ctx, s, t, tree.Options{BaseURL: o.baseURL, Token: tok, Headers: o.tok.headers, Timeout: o.timeout})
+		opt := tree.Options{BaseURL: o.baseURL, Token: tok, Headers: o.tok.headers, Timeout: o.timeout, Only: o.only}
+		if o.only != "" {
+			if _, err := os.Stat(dataPath); err == nil {
+				if opt.Before, _, err = tree.LoadData(dataPath, t); err != nil {
+					return 1, err
+				}
+			}
+		}
+		data, err = tree.Fetch(ctx, s, t, opt)
 		if err != nil {
 			return 1, err
 		}
@@ -294,6 +316,17 @@ func treeMain(o *treeOptions, out io.Writer) (int, error) {
 	}
 	fmt.Fprintf(out, "  %s: %d notes\n", o.next(treeReviewFile), len(built.Notes)+len(data.Notes))
 	return 0, nil
+}
+
+// splitList reads a comma separated flag value.
+func splitList(s string) []string {
+	var out []string
+	for _, x := range strings.Split(s, ",") {
+		if x = strings.TrimSpace(x); x != "" {
+			out = append(out, x)
+		}
+	}
+	return out
 }
 
 // treeRun runs the scenario against an empty instance.

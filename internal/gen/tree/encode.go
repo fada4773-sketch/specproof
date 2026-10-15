@@ -29,6 +29,11 @@ func (t *Tree) Encode() ([]byte, error) {
 	doc := yamldoc.New(fileHead)
 	root := doc.Root
 	add := func(k string, v *yaml.Node) { root.Content = append(root.Content, scalar(k), v) }
+	if sc := scopeYAML(t.Scope); sc != nil {
+		k := scalar("scope")
+		k.HeadComment = scopeHead
+		root.Content = append(root.Content, k, sc)
+	}
 	if len(t.ParamNames) > 0 {
 		root.Content = append(root.Content, paramsKey(), paramsYAML(t))
 	}
@@ -43,6 +48,42 @@ func (t *Tree) Encode() ([]byte, error) {
 		add("ignore", l)
 	}
 	return doc.Bytes()
+}
+
+// scopeHead explains the scope section.
+const scopeHead = `What the generator proposes: only these tags (add more later, the next
+run hangs their endpoints at their place), none of exclude (tags,
+operationIds or METHOD /path; * matches any text). deps: also the reads of
+other tags that give values these need.`
+
+func scopeYAML(sc Scope) *yaml.Node {
+	if len(sc.Tags) == 0 && len(sc.ExcludeTags) == 0 && len(sc.ExcludeOps) == 0 && !sc.Deps {
+		return nil
+	}
+	m := &yaml.Node{Kind: yaml.MappingNode}
+	add := func(k string, v *yaml.Node) { m.Content = append(m.Content, scalar(k), v) }
+	flow := func(l []string) *yaml.Node {
+		n := stringsYAML(l)
+		n.Style = yaml.FlowStyle
+		return n
+	}
+	if len(sc.Tags) > 0 {
+		add("tags", flow(sc.Tags))
+	}
+	if len(sc.ExcludeTags) > 0 || len(sc.ExcludeOps) > 0 {
+		ex := &yaml.Node{Kind: yaml.MappingNode}
+		if len(sc.ExcludeTags) > 0 {
+			ex.Content = append(ex.Content, scalar("tags"), flow(sc.ExcludeTags))
+		}
+		if len(sc.ExcludeOps) > 0 {
+			ex.Content = append(ex.Content, scalar("ops"), flow(sc.ExcludeOps))
+		}
+		add("exclude", ex)
+	}
+	if sc.Deps {
+		add("deps", scalar("true"))
+	}
+	return m
 }
 
 // paramsHead explains the params section.
@@ -159,7 +200,7 @@ func comment(parts ...string) string {
 // short reports whether a node has nothing but a call with path values.
 func (n *Node) short() bool {
 	return len(n.Query) == 0 && len(n.Header) == 0 && !n.HasBody && !n.Read && !n.HasItems && n.Page == nil &&
-		n.Pick.N == 0 && !n.Pick.All && len(n.Pick.Keys) == 0 && n.Candidates == 0 && len(n.Where) == 0 &&
+		n.Pick.N == 0 && !n.Pick.All && len(n.Pick.Keys) == 0 && n.Candidates == 0 && n.Min == 0 && len(n.Where) == 0 &&
 		len(n.WhereAny) == 0 && len(n.Require) == 0 && len(n.Key) == 0 && len(n.Save) == 0 && len(n.Write) == 0 &&
 		len(n.Each) == 0 && !n.Off
 }
@@ -214,15 +255,23 @@ func nodeYAML(n *Node) *yaml.Node {
 	if n.Candidates > 0 {
 		add("candidates", scalar(strconv.Itoa(n.Candidates)))
 	}
+	if n.Min > 0 {
+		add("min", scalar(strconv.Itoa(n.Min)))
+	}
+	clause := func(c Clause) *yaml.Node {
+		v := valueYAML(c.Test, true)
+		v.LineComment = comment(c.Note)
+		return v
+	}
 	if len(n.Where) > 0 || len(n.WhereAny) > 0 {
 		w := &yaml.Node{Kind: yaml.MappingNode}
 		for _, c := range n.Where {
-			w.Content = append(w.Content, scalar(c.Field), valueYAML(c.Test, true))
+			w.Content = append(w.Content, scalar(c.Field), clause(c))
 		}
 		if len(n.WhereAny) > 0 {
 			a := &yaml.Node{Kind: yaml.MappingNode}
 			for _, c := range n.WhereAny {
-				a.Content = append(a.Content, scalar(c.Field), valueYAML(c.Test, true))
+				a.Content = append(a.Content, scalar(c.Field), clause(c))
 			}
 			w.Content = append(w.Content, scalar("any"), a)
 		}
@@ -277,10 +326,8 @@ func pageYAML(p *Page) *yaml.Node {
 
 func writesYAML(ws map[string]*Write) *yaml.Node {
 	m := &yaml.Node{Kind: yaml.MappingNode}
-	for _, kind := range writeKinds {
-		if w := ws[kind]; w != nil {
-			m.Content = append(m.Content, scalar(kind), writeYAML(w))
-		}
+	for _, kind := range kindsOf(ws) {
+		m.Content = append(m.Content, scalar(kind), writeYAML(ws[kind]))
 	}
 	return m
 }

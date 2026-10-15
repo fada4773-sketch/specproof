@@ -50,7 +50,20 @@ contain breaking changes, which are listed here.
     keeps the file and only adds what it does not name yet at its place
     (below the nodes of the file that give its values; values the file
     lacks into `params`), follows renamed paths and marks operations the
-    spec lost. With
+    spec lost. Large specs step by step: `-tags` (kept as `scope` in the
+    file, each run adds the endpoints of new tags at their place),
+    `-exclude-tags` and `-exclude-ops` (patterns with `*`), `-with-deps`
+    for the reads of other tags that give needed values; a `$name` a new
+    tag gives is replaced by the reference to its node; `-node` fetches
+    one subtree again. The operationIds are read as words
+    (`getGardensByPersonName`: the filter Person.name, so the read hangs
+    below the persons even when the parameter is only `name`), and list
+    nodes get `where` and `require` with the reason as comment: from such
+    filters (`min: 1`, new key of `require`), from reads that answer 404,
+    from lists of records below, from fields that name other records, from
+    state words (`getOpenGardens`) and from actions; actions
+    (`POST /gardens/{gardenId}/open`) are write kinds of their own name,
+    run once on a created record, those that end a record last. With
     `-base-url` it fetches the records (GET only) into
     `tree-data_gen.yaml` and writes `tree-scenario_gen.yaml`: the creates
     in the order the references need (the ids of the stage replaced by

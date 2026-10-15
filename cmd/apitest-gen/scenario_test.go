@@ -293,3 +293,44 @@ func TestRegressionPrePost(t *testing.T) {
 		}
 	}
 }
+
+func TestTreeTagsStepByStep(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "tree.yaml")
+	spec := "../../testdata/gen/tree-colony.yaml"
+	// 1. two tags, an operation left out
+	code, out, errOut := cli("tree", "-spec", spec, "-file", file, "-tags", "Garden, Bed", "-exclude-ops", "getOpen*")
+	if code != 0 || !strings.Contains(out, "proposed from the spec") {
+		t.Fatalf("propose: %d\n%s%s", code, out, errOut)
+	}
+	b, _ := os.ReadFile(file)
+	if !strings.Contains(string(b), "tags: [Garden, Bed]") || !strings.Contains(string(b), "ops: [getOpen*]") || strings.Contains(string(b), "getOpenGardens") ||
+		strings.Contains(string(b), "listPersons") {
+		t.Fatalf("first step:\n%s", b)
+	}
+	// 2. one more tag: the file keeps what it has, the scope grows
+	code, out, errOut = cli("tree", "-spec", spec, "-file", file, "-tags", "Moon", "-exclude-tags", "Admin")
+	if code != 0 || !strings.Contains(out, "scope: tag Moon") || !strings.Contains(out, "scope: excluded tag Admin") {
+		t.Fatalf("second step: %d\n%s%s", code, out, errOut)
+	}
+	b, _ = os.ReadFile(file)
+	if !strings.Contains(string(b), "tags: [Garden, Bed, Moon]") || !strings.Contains(string(b), "listMoons") {
+		t.Errorf("second step:\n%s", b)
+	}
+	if !strings.Contains(out, "params without value") {
+		t.Errorf("the open values are printed:\n%s", out)
+	}
+	// 3. a node fetched again needs a fetch before
+	srv := testserver.NewColony("colony-token", 500)
+	srv.Fill()
+	hs := httptest.NewServer(srv)
+	t.Cleanup(hs.Close)
+	t.Setenv("CLI_COLONY_TOKEN", "colony-token")
+	code, out, errOut = cli("tree", "-spec", spec, "-file", file, "-base-url", hs.URL+"/api", "-token-env", "CLI_COLONY_TOKEN")
+	if code != 0 {
+		t.Fatalf("fetch: %d\n%s%s", code, out, errOut)
+	}
+	code, out, errOut = cli("tree", "-spec", spec, "-file", file, "-base-url", hs.URL+"/api", "-token-env", "CLI_COLONY_TOKEN", "-node", "beds")
+	if code != 0 || !strings.Contains(out, "only beds was fetched again") {
+		t.Errorf("fetch one node: %d\n%s%s", code, out, errOut)
+	}
+}

@@ -30,10 +30,46 @@ const maxDepth = 5
 // read hangs below the nodes that give its other values, else at the top.
 // Each resource gets the write block of its resource once, with the body
 // taken from the read that covers its request best; every other write
-// goes to the node whose records it writes.
+// goes to the node whose records it writes, an action (POST
+// /gardens/{gardenId}/open) under its own name. The operationIds add
+// conditions: GetGardensByPersonName hangs below the persons, which then
+// require gardens; reads that answer 404 and lists of records below make
+// require, fields that name a record where present, actions and state
+// words (GetOpenGardens) where on the state.
 func Propose(s *spec.Spec) *Tree {
+	return ProposeScope(s, Scope{})
+}
+
+// ProposeScope proposes the tree for the operations of the scope; with
+// Deps also the reads of other tags that give values the scope needs.
+func ProposeScope(s *spec.Spec, sc Scope) *Tree {
+	in := inScope(s, sc)
+	t := propose(s, in)
+	if sc.Deps {
+		for range 3 {
+			more := deps(s, in, t, sc)
+			if len(more) == 0 {
+				break
+			}
+			in = append(in, more...)
+			t = propose(s, in)
+		}
+	}
+	t.Scope = sc
+	return t
+}
+
+func propose(full *spec.Spec, ops []*spec.Operation) *Tree {
+	fs := *full
+	fs.Ops = ops
+	s := &fs
 	p := &proposer{s: s, m: model.Detect(s, nil), used: map[*spec.Operation]bool{}, names: map[string]int{},
-		res: map[*Node]*model.Resource{}, written: map[*spec.Operation]bool{}}
+		res: map[*Node]*model.Resource{}, written: map[*spec.Operation]bool{}, placedBy: map[*Node]hint{}}
+	p.all = p.m
+	if len(ops) < len(full.Ops) {
+		// the operationIds name resources of other tags too
+		p.all = model.Detect(full, nil)
+	}
 	t := &Tree{Seed: 1, Budget: DefaultBudget, Params: map[string]any{}, ParamNotes: map[string]string{}}
 	p.t = t
 	for _, r := range p.m.Resources {
@@ -45,10 +81,10 @@ func Propose(s *spec.Spec) *Tree {
 		}
 	}
 	for _, op := range s.Ops {
-		if op.Method == http.MethodGet && !p.used[op] && len(needs(op)) == 0 {
+		if op.Method == http.MethodGet && !p.used[op] && len(p.needs(op)) == 0 {
 			// a read of its own (counters, settings): a root
 			p.used[op] = true
-			n := &Node{Name: p.name(viewName(op), op), Call: callOf(op), Comment: op.ID}
+			n := &Node{Name: p.name(p.viewName(op), op), Call: callOf(op), Comment: op.ID}
 			if isList(op) {
 				n.Pick = Pick{N: DefaultPick}
 			}
@@ -59,10 +95,18 @@ func Propose(s *spec.Spec) *Tree {
 	p.placeRest()
 	p.addWrites()
 	p.attachWrites()
+	p.conditions()
 	for name, ops := range p.paramOps {
 		t.ParamNotes[name] = usedBy(ops)
 	}
 	return t
+}
+
+// hinted reports whether the operationId of op names what a parameter
+// holds.
+func (p *proposer) hinted(op *spec.Operation, name string) bool {
+	_, ok := p.hints(op)[name]
+	return ok
 }
 
 // usedBy names the operations that use a value of params.
@@ -103,6 +147,14 @@ type proposer struct {
 	written map[*spec.Operation]bool
 	// paramOps are the operations that use a value of params.
 	paramOps map[string][]string
+	// all is the model of the whole spec, for the resources operationIds
+	// name outside the scope.
+	all *model.Model
+	// hintCache holds what the operationIds say about parameters.
+	hintCache map[*spec.Operation]map[string]hint
+	// placedBy are the nodes placed below a node for a filter their
+	// operationId names (GetGardensByPersonName below the persons).
+	placedBy map[*Node]hint
 }
 
 func (p *proposer) resourceOf(op *spec.Operation) *model.Resource {
@@ -185,8 +237,10 @@ func (p *proposer) name(base string, op *spec.Operation) string {
 
 // freeList is the list of a resource that needs no path parameter.
 func (p *proposer) freeList(r *model.Resource) *spec.Operation {
+	// a list whose operationId names a filter (GetPersonsByGardenName)
+	// hangs below the node that gives it, not at the top
 	for _, mo := range r.OpsWith(model.RoleList) {
-		if len(pathParams(mo.Op)) == 0 && !requiredQuery(mo.Op) {
+		if len(p.needs(mo.Op)) == 0 {
 			return mo.Op
 		}
 	}
@@ -289,7 +343,12 @@ func (p *proposer) children(n *Node, r *model.Resource, here *chain) {
 			continue
 		}
 		p.used[mo.Op] = true
-		c := &Node{Name: p.name(lowerFirst(r.Name), mo.Op), Call: callOf(mo.Op), Comment: mo.Op.ID, Parent: n}
+		// the first read is the record itself, others are views (details)
+		base := lowerFirst(r.Name)
+		if p.names[base] > 0 {
+			base = viewName(mo.Op)
+		}
+		c := &Node{Name: p.name(base, mo.Op), Call: callOf(mo.Op), Comment: mo.Op.ID, Parent: n}
 		p.fill(c, mo.Op, here)
 		p.res[c] = r
 		n.Each = append(n.Each, c)
@@ -310,7 +369,7 @@ func (p *proposer) children(n *Node, r *model.Resource, here *chain) {
 			continue
 		}
 		p.used[op] = true
-		c := &Node{Name: p.name(viewName(op), op), Call: callOf(op), Comment: op.ID, Parent: n}
+		c := &Node{Name: p.name(p.viewName(op), op), Call: callOf(op), Comment: op.ID, Parent: n}
 		p.fill(c, op, here)
 		if isList(op) {
 			c.Pick = Pick{N: DefaultPick}
@@ -322,7 +381,11 @@ func (p *proposer) children(n *Node, r *model.Resource, here *chain) {
 		if child.Parent != r || here.has(child) {
 			continue
 		}
-		for _, mo := range child.OpsWith(model.RoleList) {
+		// the list below the record (by its key in the path) before a list
+		// a filter of the operationId gives values to
+		lists := child.OpsWith(model.RoleList)
+		slices.SortStableFunc(lists, func(a, b *model.Op) int { return len(p.hints(a.Op)) - len(p.hints(b.Op)) })
+		for _, mo := range lists {
 			if !p.used[mo.Op] && p.reachable(mo.Op, here) {
 				n.Each = append(n.Each, p.listNode(child, mo.Op, n, here))
 				break
@@ -380,7 +443,7 @@ func (p *proposer) reachable(op *spec.Operation, here *chain) bool {
 // becomes "$name" of params.
 func (p *proposer) fill(n *Node, op *spec.Operation, here *chain) {
 	vals, missing := p.paramValues(op, here)
-	for _, nd := range needs(op) {
+	for _, nd := range p.needs(op) {
 		if v, ok := vals[nd.name]; ok {
 			n.set(nd, v)
 		}
@@ -415,6 +478,10 @@ func (p *proposer) provides(op *spec.Operation, param string, r *model.Resource)
 		if mp := mo.Param(param); mp != nil && mp.Resource == r && mp.Field != "" {
 			return mp.Field, 100
 		}
+	}
+	if h, ok := p.hints(op)[param]; ok && h.res.Name == r.Name {
+		// the operationId names it: GetGardensByPersonName → Person.name
+		return h.field, 85
 	}
 	lp := strings.ToLower(param)
 	keys := r.Keys
@@ -457,7 +524,7 @@ func generic(name string) bool {
 func (p *proposer) paramValues(op *spec.Operation, here *chain) (map[string]any, []need) {
 	out := map[string]any{}
 	var missing []need
-	for _, nd := range needs(op) {
+	for _, nd := range p.needs(op) {
 		name := nd.name
 		var best *chain
 		field, score := "", 0
@@ -471,7 +538,7 @@ func (p *proposer) paramValues(op *spec.Operation, here *chain) (map[string]any,
 			out[name] = "." + field
 		case best != nil:
 			out[name] = best.node.Name + "." + field
-		case here != nil && here.res != nil && here.res.Field(name) != "":
+		case nd.in == openapi3.ParameterInPath && here != nil && here.res != nil && here.res.Field(name) != "" && !p.hinted(op, name):
 			// a field of the record above with the parameter's name
 			out[name] = "." + here.res.Field(name)
 		default:
@@ -509,14 +576,18 @@ func (p *proposer) providers(op *spec.Operation) (map[string]provider, []need) {
 	nodes := p.order()
 	out := map[string]provider{}
 	var missing []need
-	for _, nd := range needs(op) {
+	for _, nd := range p.needs(op) {
 		prm := nd.name
 		var best provider
 		for i, n := range nodes {
 			if n.Off {
 				continue
 			}
-			if f, s := p.provides(op, prm, p.res[n]); s > best.score {
+			// on a tie a node of the main chain wins over a node placed for
+			// a filter (the gardens of a moon over the gardens of a person)
+			_, side := p.placedBy[n]
+			_, bestSide := p.placedBy[best.node]
+			if f, s := p.provides(op, prm, p.res[n]); s > best.score || s > 0 && s == best.score && bestSide && !side {
 				best = provider{node: n, field: f, score: s, at: i}
 			}
 		}
@@ -550,7 +621,7 @@ func (p *proposer) placeRest() {
 func (p *proposer) placeOnce(withParams bool) bool {
 	placed := false
 	for _, op := range p.s.Ops {
-		if op.Method != http.MethodGet || p.used[op] || len(needs(op)) == 0 {
+		if op.Method != http.MethodGet || p.used[op] || len(p.needs(op)) == 0 {
 			continue
 		}
 		provs, missing := p.providers(op)
@@ -571,8 +642,8 @@ func (p *proposer) placeOnce(withParams bool) bool {
 			parent = provider{}
 		}
 		p.used[op] = true
-		c := &Node{Name: p.name(viewName(op), op), Call: callOf(op), Comment: op.ID, Parent: parent.node}
-		for _, nd := range needs(op) {
+		c := &Node{Name: p.name(p.viewName(op), op), Call: callOf(op), Comment: op.ID, Parent: parent.node}
+		for _, nd := range p.needs(op) {
 			pr, ok := provs[nd.name]
 			switch {
 			case !ok:
@@ -595,6 +666,12 @@ func (p *proposer) placeOnce(withParams bool) bool {
 			p.t.Roots = append(p.t.Roots, c)
 		} else {
 			parent.node.Each = append(parent.node.Each, c)
+			// placed there for a filter its operationId names
+			for name, pr := range provs {
+				if h, ok := p.hints(op)[name]; ok && pr.node == parent.node && p.res[parent.node] != nil && h.res.Name == p.res[parent.node].Name {
+					p.placedBy[c] = h
+				}
+			}
 		}
 		placed = true
 		if withParams {
@@ -617,15 +694,27 @@ func depth(n *Node) int {
 func (p *proposer) addWrites() {
 	p.home = map[*model.Resource]*Node{}
 	nodes := p.order()
-	// list nodes first: they hold the records of a resource
-	for _, pass := range []bool{true, false} {
+	// list nodes first: they hold the records of a resource; a list by the
+	// key of its parent before a list a filter of the operationId gives
+	// values to (the gardens of a moon before the gardens of a person)
+	for pass := range 3 {
 		for _, n := range nodes {
 			r := p.res[n]
 			if r == nil || p.home[r] != nil || n.Off || len(n.Key) == 0 {
 				continue
 			}
 			op := lookupOp(p.s, n.Call)
-			if op == nil || isList(op) != pass {
+			if op == nil {
+				continue
+			}
+			tier := 2
+			if isList(op) {
+				tier = 0
+				if len(p.hints(op)) > 0 {
+					tier = 1
+				}
+			}
+			if tier != pass {
 				continue
 			}
 			if mo := p.m.Op(op); mo == nil || mo.Resource != r {
@@ -647,13 +736,17 @@ func (p *proposer) writes(r *model.Resource, n *Node) map[string]*Write {
 		}
 		out[kind] = p.write(kind, mo.Op, r, n)
 	}
-	creates := r.OpsWith(model.RoleCreate)
+	// actions (POST /gardens/{gardenId}/open) go to attachWrites
+	creates := slices.DeleteFunc(r.OpsWith(model.RoleCreate), func(mo *model.Op) bool { return actionName(p.s, mo.Op) != "" })
 	if len(creates) == 0 {
 		out[WriteCreate] = &Write{Kind: WriteCreate, None: true, Note: "no create of " + r.Name + " in the spec: the instance must hold these records"}
 	} else {
 		add(WriteCreate, creates[0])
 	}
 	for _, mo := range r.OpsWith(model.RoleUpdate) {
+		if actionName(p.s, mo.Op) != "" {
+			continue
+		}
 		switch mo.Op.Method {
 		case http.MethodPatch:
 			add(WritePatch, mo)
@@ -673,7 +766,7 @@ func (p *proposer) write(kind string, op *spec.Operation, r *model.Resource, n *
 	p.written[op] = true
 	w := &Write{Kind: kind, Call: callOf(op), Comment: op.ID}
 	vals := p.writeParams(op, r, n, kind == WriteCreate)
-	for _, nd := range needs(op) {
+	for _, nd := range p.needs(op) {
 		v, ok := vals[nd.name]
 		if !ok {
 			v = p.param(nd.name, op)
@@ -711,7 +804,7 @@ func (p *proposer) writeParams(op *spec.Operation, r *model.Resource, n *Node, c
 		}
 		return ""
 	}
-	for _, nd := range needs(op) {
+	for _, nd := range p.needs(op) {
 		prm := nd.name
 		// the record itself: a field that names the value
 		self, selfScore := p.provides(op, prm, r)
@@ -883,6 +976,23 @@ func listName(op *spec.Operation, r *model.Resource) string {
 	return lowerFirst(r.Name) + "s"
 }
 
+// viewName names a read after the last word of its path, or after its
+// resource when that word names another resource (GET
+// /reports/gardens/{gardenId} answers a GardenReport: gardenReport).
+func (p *proposer) viewName(op *spec.Operation) string {
+	name := viewName(op)
+	res := p.resourceOf(op)
+	if res == nil || isList(op) {
+		return name
+	}
+	for _, r := range p.m.Resources {
+		if r != res && sameName(r.Name, []string{name}) {
+			return lowerFirst(res.Name)
+		}
+	}
+	return name
+}
+
 // viewName names a read after the last word of its path.
 func viewName(op *spec.Operation) string {
 	if seg := lastLiteral(op.Path); seg != "" {
@@ -921,7 +1031,10 @@ func (p *proposer) attachWrites() {
 		if op.Method == http.MethodGet || p.written[op] || p.used[op] {
 			continue
 		}
-		kind := writeKind(op.Method)
+		kind := actionName(p.s, op)
+		if kind == "" {
+			kind = writeKind(op.Method)
+		}
 		if kind == "" {
 			continue
 		}
@@ -984,9 +1097,6 @@ func (p *proposer) writesTo(op *spec.Operation, mo *model.Op, n *Node) int {
 	score := 0
 	if mo != nil && r == mo.Resource {
 		score = 100
-		if p.home[r] == n {
-			score += 5
-		}
 	}
 	if read.Path == op.Path {
 		score = max(score, 90)
@@ -1015,6 +1125,10 @@ func (p *proposer) writesTo(op *spec.Operation, mo *model.Op, n *Node) int {
 		if covered >= 2 && covered*2 >= writable {
 			score = 40
 		}
+	}
+	if score > 0 && r != nil && p.home[r] == n {
+		// the node that holds the write block of the resource
+		score += 5
 	}
 	return score
 }
@@ -1060,9 +1174,9 @@ func (p *proposer) search(op *spec.Operation) {
 			parent = pr
 		}
 	}
-	c := &Node{Name: p.name(viewName(op), op), Call: callOf(op), Comment: op.ID, Parent: parent.node, Read: true,
+	c := &Node{Name: p.name(p.viewName(op), op), Call: callOf(op), Comment: op.ID, Parent: parent.node, Read: true,
 		Body: map[string]any{}, HasBody: true, Pick: Pick{N: DefaultPick}}
-	for _, nd := range needs(op) {
+	for _, nd := range p.needs(op) {
 		pr, ok := provs[nd.name]
 		switch {
 		case !ok:

@@ -126,7 +126,7 @@ func TestParseProblems(t *testing.T) {
 		"tree: {a: {call: GET /a, candidates: 0}}":                "positive number",
 		"tree: {a: {call: GET /a, page: {max: 2}}}":               "page.param is missing",
 		"tree: {a: {call: GET /a, page: {param: p, in: header}}}": "query or body",
-		"tree: {a: {call: GET /a, write: {remove: none}}}":        `unknown key "remove"`,
+		"tree: {a: {call: GET /a, write: {remove: none}}}":        `only create can be none`,
 		"tree: {a: {call: GET /a, write: {create: {expect: 1}}}}": "HTTP status",
 		"tree: {a: {call: GET /a, write: {create: {path: {}}}}}":  "call is missing",
 		"tree: {a: GET /a x}":                                     "is no name=value",
@@ -164,7 +164,7 @@ func TestWhere(t *testing.T) {
 			t.Errorf("%s %v: got %v", c.field, c.test, got)
 		}
 	}
-	n := &Node{Where: []Clause{{"name", "present"}}, WhereAny: []Clause{{"label", "present"}, {"status", "OPEN"}}}
+	n := &Node{Where: []Clause{{Field: "name", Test: "present"}}, WhereAny: []Clause{{Field: "label", Test: "present"}, {Field: "status", Test: "OPEN"}}}
 	if !n.Holds(rec) || n.Holds(map[string]any{"name": "x", "status": "CLOSED"}) {
 		t.Error("any")
 	}

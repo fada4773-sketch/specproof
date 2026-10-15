@@ -223,7 +223,7 @@ func Check(s *spec.Spec, t *Tree) []string {
 					add(r.Line, "%s: require %s: %q is no reading operation of the spec", n.Name, r.Name, r.Call)
 				}
 			}
-			for _, kind := range writeKinds {
+			for _, kind := range n.Kinds() {
 				w := n.Write[kind]
 				if w == nil || w.None || w.Off || w.Gone {
 					continue

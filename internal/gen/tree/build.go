@@ -234,7 +234,11 @@ func (b *builder) entity(r *Record) *Record {
 // entities finds the records that stand for others and the records the
 // scenario creates, with the names of their keys.
 func (b *builder) entities() {
-	first := map[string]*Record{}
+	// per kind and key the records that are the same; the first of a node
+	// that can create stands for them (a garden found by a search stands
+	// behind the garden of its moon), else the first
+	groups := map[string][]*Record{}
+	var order []string
 	for _, r := range b.d.Records {
 		if r.Node.IsRequire || b.isView(r) {
 			continue
@@ -247,11 +251,26 @@ func (b *builder) entities() {
 		if key == "" {
 			continue
 		}
-		if f := first[kind+"\x00"+key]; f != nil {
-			b.canon[r] = f
-			continue
+		k := kind + "\x00" + key
+		if groups[k] == nil {
+			order = append(order, k)
 		}
-		first[kind+"\x00"+key] = r
+		groups[k] = append(groups[k], r)
+	}
+	for _, k := range order {
+		g := groups[k]
+		head := g[0]
+		for _, r := range g {
+			if w, _ := b.createOf(r.Node); w != nil {
+				head = r
+				break
+			}
+		}
+		for _, r := range g {
+			if r != head {
+				b.canon[r] = head
+			}
+		}
 	}
 	for _, r := range b.d.Records {
 		if b.isView(r) || b.canon[r] != nil {
@@ -612,7 +631,7 @@ func documentsHeader(op *spec.Operation, status int, name string) bool {
 
 // usesIfMatch reports whether a write of the node takes If-Match.
 func (b *builder) usesIfMatch(n *Node) bool {
-	for _, kind := range writeKinds {
+	for _, kind := range n.Kinds() {
 		if _, op := b.writeOf(n, kind); op != nil && ifMatch(op) != nil {
 			return true
 		}
@@ -1032,7 +1051,10 @@ func (b *builder) updates() {
 		}
 	})
 	for _, n := range nodes {
-		for _, kind := range []string{WriteUpdate, WritePatch} {
+		for _, kind := range n.Kinds() {
+			if kind != WriteUpdate && kind != WritePatch && !IsAction(kind) {
+				continue
+			}
 			w, op := b.writeOf(n, kind)
 			if w == nil {
 				continue
@@ -1070,9 +1092,10 @@ func (b *builder) update(r *Record, w *Write, op *spec.Operation, kind string) {
 		st.Header[p.Name] = "{{" + b.etag[r] + "}}"
 	}
 	changed := ""
+	action := IsAction(kind)
 	if ref := requestRef(op); ref != nil || w.HasBody {
 		body, _ := b.body(st.ID, r, w, ref)
-		if !w.HasBody {
+		if !w.HasBody && !action {
 			full := kind == WriteUpdate
 			body, changed = b.change(body, schemaOf(ref), r, w.Change, full)
 		}
@@ -1086,6 +1109,12 @@ func (b *builder) update(r *Record, w *Write, op *spec.Operation, kind string) {
 		st.Save = map[string]string{b.etag[r]: "header ETag"}
 	}
 	b.add(st)
+	if action {
+		// an action changes the record in its own way: no read that
+		// expects the body
+		st.Why = "runs " + kind + " on " + r.ID
+		return
+	}
 	if read := b.readID[r]; read != "" && st.HasBody {
 		if rs := b.stepByID(read); rs != nil {
 			again := cloneStep(rs)

@@ -52,6 +52,7 @@ func Merge(s *spec.Spec, t *Tree, proposal *Tree, version string) []Change {
 	}
 	m.proposed(proposal.Roots, nil)
 	m.moveWrites()
+	m.bindParams()
 	m.bodies()
 	m.ignore()
 	m.params()
@@ -361,6 +362,172 @@ func (m *merger) proposed(list []*Node, parent *Node) {
 	}
 }
 
+// bindParams replaces a "$name" without value by a reference to a node of
+// the file that gives it now (a tag added later: $personId → persons.id):
+// a node above, or fetched before; for a write any node. An entry of
+// params that nothing uses any more is removed. A $name with a value
+// stays: the value was chosen.
+func (m *merger) bindParams() {
+	pr := m.fileProposer()
+	order := pr.order()
+	pos := map[*Node]int{}
+	for i, n := range order {
+		pos[n] = i
+	}
+	bound := map[string]bool{}
+	// best is the node that gives a value of op for a value at node n:
+	// above n, or (write) anywhere, or fetched before n
+	best := func(op *spec.Operation, name string, n *Node, write bool) (*Node, string) {
+		var at *Node
+		field, score := "", 0
+		for _, x := range order {
+			ok := write || n.Ancestor(x.Name) != nil && x != n || pos[x] < pos[n] && !inside(x, n)
+			if !ok || x.Off {
+				continue
+			}
+			if f, s := pr.provides(op, name, pr.res[x]); s > score {
+				at, field, score = x, f, s
+			}
+		}
+		return at, field
+	}
+	ref := func(at, from *Node, field string, write bool) string {
+		if write && at == from || !write && at == from.Parent {
+			return "." + field
+		}
+		return at.Name + "." + field
+	}
+	for _, n := range order {
+		if n.Gone {
+			continue
+		}
+		if op := lookupOp(m.s, n.Call); op != nil {
+			for _, vals := range []map[string]any{n.Path, n.Query} {
+				for k, v := range vals {
+					name, ok := ParamRef(v)
+					if !ok || m.t.Params[name] != nil {
+						continue
+					}
+					if at, field := best(op, k, n, false); at != nil {
+						r := ref(at, n, field, false)
+						m.replaceParam(n.value, k, name, r)
+						m.changed(n.Name, "%s = %s: given by %s now", k, r, at.Name)
+						bound[name] = true
+					}
+				}
+			}
+		}
+		for _, kind := range n.Kinds() {
+			w := n.Write[kind]
+			op := lookupOp(m.s, w.Call)
+			if op == nil || w.Gone || w.None {
+				continue
+			}
+			for _, vals := range []map[string]any{w.Path, w.Query} {
+				for k, v := range vals {
+					name, ok := ParamRef(v)
+					if !ok || m.t.Params[name] != nil {
+						continue
+					}
+					if at, field := best(op, k, n, true); at != nil {
+						r := ref(at, n, field, true)
+						m.replaceParam(w.value, k, name, r)
+						m.changed(n.Name+".write."+kind, "%s = %s: given by %s now", k, r, at.Name)
+						bound[name] = true
+					}
+				}
+			}
+		}
+	}
+	if len(bound) == 0 {
+		return
+	}
+	m.reload()
+	// entries nothing uses any more
+	used := map[string]bool{}
+	m.t.Walk(func(n *Node) {
+		vals := []any{anyMap(n.Path), anyMap(n.Query), anyMap(n.Header), n.Body}
+		for _, w := range n.Write {
+			vals = append(vals, anyMap(w.Path), anyMap(w.Query), anyMap(w.Header), w.Body)
+		}
+		for _, v := range vals {
+			walkStrings(v, func(s string) {
+				if name, ok := ParamRef(s); ok {
+					used[name] = true
+				}
+			})
+		}
+	})
+	section := valueOf(m.t.doc.Root, "params")
+	if section == nil || section.Kind != yaml.MappingNode {
+		return
+	}
+	for i := 0; i+1 < len(section.Content); {
+		name := section.Content[i].Value
+		if bound[name] && !used[name] {
+			section.Content = append(section.Content[:i], section.Content[i+2:]...)
+			m.changed("params."+name, "removed: a node gives it now")
+			continue
+		}
+		i += 2
+	}
+	if len(section.Content) == 0 {
+		root := m.t.doc.Root
+		for i := 0; i+1 < len(root.Content); i += 2 {
+			if root.Content[i].Value == "params" {
+				// keep the head of the file on the next key
+				if i+2 < len(root.Content) && root.Content[i].HeadComment != "" {
+					head := strings.TrimSuffix(root.Content[i].HeadComment, paramsHeadComment())
+					root.Content[i+2].HeadComment = strings.TrimSpace(head)
+				}
+				root.Content = append(root.Content[:i], root.Content[i+2:]...)
+				break
+			}
+		}
+	}
+	m.reload()
+}
+
+func paramsHeadComment() string { return paramsKey().HeadComment }
+
+// inside reports whether x lies below n (n's subtree is fetched after n).
+func inside(x, n *Node) bool {
+	for p := x.Parent; p != nil; p = p.Parent {
+		if p == n {
+			return true
+		}
+	}
+	return false
+}
+
+// replaceParam sets the value of parameter key from "$name" to a
+// reference, in the short form ("k=$name") or a path, query or header
+// mapping of a node or write value.
+func (m *merger) replaceParam(v *yaml.Node, key, name, ref string) {
+	if v == nil {
+		return
+	}
+	switch v.Kind {
+	case yaml.ScalarNode:
+		v.Value = strings.Replace(v.Value, key+"=$"+name, key+"="+ref, 1)
+	case yaml.MappingNode:
+		if c := valueOf(v, "call"); c != nil {
+			c.Value = strings.Replace(c.Value, key+"=$"+name, key+"="+ref, 1)
+		}
+		for _, sec := range []string{"path", "query", "header"} {
+			mp := valueOf(v, sec)
+			if mp == nil || mp.Kind != yaml.MappingNode {
+				continue
+			}
+			for i := 0; i+1 < len(mp.Content); i += 2 {
+				if mp.Content[i].Value == key && mp.Content[i+1].Value == "$"+name {
+					mp.Content[i+1].Value = ref
+				}
+			}
+		}
+	}
+}
+
 // fileProposer finds providers among the nodes of the file.
 func (m *merger) fileProposer() *proposer {
 	if m.model == nil {
@@ -417,7 +584,8 @@ func (m *merger) relocate(p *Node) {
 		m.addRoot(p)
 		return
 	}
-	provs, _ := m.fileProposer().providers(op)
+	pr := m.fileProposer()
+	provs, _ := pr.providers(op)
 	var parent provider
 	for _, x := range provs {
 		if parent.node == nil || x.at > parent.at {
@@ -430,7 +598,7 @@ func (m *merger) relocate(p *Node) {
 	}
 	q := *p
 	q.Path, q.Query = nil, nil
-	for _, nd := range needs(op) {
+	for _, nd := range pr.needs(op) {
 		x, ok := provs[nd.name]
 		switch {
 		case !ok:
@@ -514,7 +682,13 @@ func (m *merger) addRoot(p *Node) {
 	m.newNote(c)
 	c.Name = m.freeName(c.Name)
 	tree := m.section("tree")
-	tree.Content = append(tree.Content, scalar(c.Name), nodeYAML(c))
+	if len(c.Path) == 0 && len(c.Query) == 0 {
+		// a root that needs no value comes first: the nodes of the file may
+		// read it ("persons.id" for a $personId it gives now)
+		tree.Content = append([]*yaml.Node{scalar(c.Name), nodeYAML(c)}, tree.Content...)
+	} else {
+		tree.Content = append(tree.Content, scalar(c.Name), nodeYAML(c))
+	}
 	m.markTree(p)
 	m.changed(c.Name, "new root %s", c.Call)
 	m.reload()
@@ -541,7 +715,7 @@ func (m *merger) addChild(into *Node, p *Node) {
 // addWrites adds the write kinds of a proposal node the file's node lacks.
 func (m *merger) addWrites(p, e *Node) {
 	var add []*Write
-	for _, kind := range writeKinds {
+	for _, kind := range p.Kinds() {
 		w := p.Write[kind]
 		if w == nil || w.None || m.knows(w.Call) || e.Write[kind] != nil {
 			continue

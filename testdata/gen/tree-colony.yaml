@@ -1,0 +1,442 @@
+openapi: 3.0.3
+info:
+  title: Colony
+  version: "2.0"
+  description: |
+    A chained test API of apitest-gen tree. Planets are seed data; a planet
+    has moons, a moon gardens, a garden beds. A garden names the person who
+    tends it and has a state (DRAFT, OPEN, CLOSED, ARCHIVED) with actions.
+    Some reads name their filter only in the operationId
+    (getGardensByPersonName takes "name"), a harvest needs a season no
+    record gives, and the admin tag must not be touched.
+servers:
+  - url: /api
+security:
+  - bearer: []
+paths:
+  /planets:
+    get:
+      operationId: listPlanets
+      tags: [Planet]
+      responses:
+        '200':
+          description: all planets
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/Planet'}}
+  /planets/{planetCode}:
+    get:
+      operationId: getPlanet
+      tags: [Planet]
+      parameters:
+        - {name: planetCode, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: one planet
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Planet'}
+        '404': {description: no such planet}
+  /planets/{planetCode}/moons:
+    parameters:
+      - {name: planetCode, in: path, required: true, schema: {type: string}}
+    get:
+      operationId: listMoons
+      tags: [Moon]
+      responses:
+        '200':
+          description: the moons of a planet
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/Moon'}}
+    post:
+      operationId: createMoon
+      tags: [Moon]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/MoonWrite'}
+      responses:
+        '201':
+          description: created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Moon'}
+  /moons/{moonId}:
+    parameters:
+      - {name: moonId, in: path, required: true, schema: {type: integer}}
+    get:
+      operationId: getMoon
+      tags: [Moon]
+      responses:
+        '200':
+          description: one moon
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Moon'}
+        '404': {description: no such moon}
+    delete:
+      operationId: deleteMoon
+      tags: [Moon]
+      responses:
+        '204': {description: deleted}
+  /moons/{moonId}/gardens:
+    parameters:
+      - {name: moonId, in: path, required: true, schema: {type: integer}}
+    get:
+      operationId: listGardens
+      tags: [Garden]
+      responses:
+        '200':
+          description: the gardens of a moon
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/Garden'}}
+    post:
+      operationId: createGarden
+      tags: [Garden]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/GardenWrite'}
+      responses:
+        '201':
+          description: created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Garden'}
+  /gardens/{gardenId}:
+    parameters:
+      - {name: gardenId, in: path, required: true, schema: {type: integer}}
+    get:
+      operationId: getGarden
+      tags: [Garden]
+      responses:
+        '200':
+          description: one garden
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Garden'}
+        '404': {description: no such garden}
+    put:
+      operationId: updateGarden
+      tags: [Garden]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/GardenWrite'}
+      responses:
+        '200':
+          description: updated
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Garden'}
+    delete:
+      operationId: deleteGarden
+      tags: [Garden]
+      responses:
+        '204': {description: deleted}
+  /gardens/{gardenId}/details:
+    get:
+      operationId: getGardenDetails
+      tags: [Garden]
+      parameters:
+        - {name: gardenId, in: path, required: true, schema: {type: integer}}
+      responses:
+        '200':
+          description: soil and climate of a garden
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/GardenDetails'}
+        '404': {description: the garden has no details yet}
+  /gardens/{gardenId}/open:
+    post:
+      operationId: openGarden
+      tags: [Garden]
+      parameters:
+        - {name: gardenId, in: path, required: true, schema: {type: integer}}
+      responses:
+        '200':
+          description: opened
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Garden'}
+  /gardens/{gardenId}/archive:
+    post:
+      operationId: archiveGarden
+      tags: [Garden]
+      parameters:
+        - {name: gardenId, in: path, required: true, schema: {type: integer}}
+      responses:
+        '200':
+          description: archived
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Garden'}
+  /gardens/{gardenId}/beds:
+    parameters:
+      - {name: gardenId, in: path, required: true, schema: {type: integer}}
+    get:
+      operationId: listBeds
+      tags: [Bed]
+      responses:
+        '200':
+          description: the beds of a garden
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/Bed'}}
+    post:
+      operationId: createBed
+      tags: [Bed]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/BedWrite'}
+      responses:
+        '201':
+          description: created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Bed'}
+  /beds/{bedId}:
+    parameters:
+      - {name: bedId, in: path, required: true, schema: {type: integer}}
+    get:
+      operationId: getBed
+      tags: [Bed]
+      responses:
+        '200':
+          description: one bed
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Bed'}
+    patch:
+      operationId: patchBed
+      tags: [Bed]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/BedPatch'}
+      responses:
+        '200':
+          description: patched
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Bed'}
+    delete:
+      operationId: deleteBed
+      tags: [Bed]
+      responses:
+        '204': {description: deleted}
+  /persons:
+    get:
+      operationId: listPersons
+      tags: [Person]
+      responses:
+        '200':
+          description: all persons
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/Person'}}
+    post:
+      operationId: createPerson
+      tags: [Person]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PersonWrite'}
+      responses:
+        '201':
+          description: created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Person'}
+  /persons/{personId}:
+    parameters:
+      - {name: personId, in: path, required: true, schema: {type: integer}}
+    get:
+      operationId: getPerson
+      tags: [Person]
+      responses:
+        '200':
+          description: one person
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Person'}
+    delete:
+      operationId: deletePerson
+      tags: [Person]
+      responses:
+        '204': {description: deleted}
+  /garden-search:
+    get:
+      operationId: getGardensByPersonName
+      tags: [Garden]
+      parameters:
+        - {name: name, in: query, schema: {type: string}}
+        - {name: page, in: query, schema: {type: integer, default: 1}}
+      responses:
+        '200':
+          description: the gardens a person of that name tends
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/Garden'}}
+  /person-search:
+    get:
+      operationId: getPersonsByGardenName
+      tags: [Person]
+      parameters:
+        - {name: gardenName, in: query, schema: {type: string}}
+      responses:
+        '200':
+          description: the persons who tend a garden of that name
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/Person'}}
+  /open-gardens:
+    get:
+      operationId: getOpenGardens
+      tags: [Garden]
+      responses:
+        '200':
+          description: the gardens that are open
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/Garden'}}
+  /harvests:
+    get:
+      operationId: getHarvestsByPersonAndSeason
+      tags: [Harvest]
+      parameters:
+        - {name: personId, in: query, required: true, schema: {type: integer}}
+        - {name: season, in: query, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: what a person harvested in a season
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/Harvest'}}
+  /reports/gardens/{gardenId}:
+    get:
+      operationId: getGardenReport
+      tags: [Report]
+      parameters:
+        - {name: gardenId, in: path, required: true, schema: {type: integer}}
+      responses:
+        '200':
+          description: the report of a garden
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/GardenReport'}
+  /admin/stats:
+    get:
+      operationId: getAdminStats
+      tags: [Admin]
+      responses:
+        '200':
+          description: counters
+          content:
+            application/json:
+              schema: {type: object, properties: {gardens: {type: integer}}}
+  /admin/purge:
+    delete:
+      operationId: purgeAll
+      tags: [Admin]
+      responses:
+        '204': {description: everything removed}
+components:
+  securitySchemes:
+    bearer: {type: http, scheme: bearer}
+  schemas:
+    Planet:
+      type: object
+      required: [code, name]
+      properties:
+        code: {type: string}
+        name: {type: string}
+    Moon:
+      type: object
+      required: [id, planetCode, name]
+      properties:
+        id: {type: integer, readOnly: true}
+        planetCode: {type: string, readOnly: true}
+        name: {type: string}
+    MoonWrite:
+      type: object
+      required: [name]
+      properties:
+        name: {type: string}
+    Garden:
+      type: object
+      required: [id, moonId, name, status]
+      properties:
+        id: {type: integer, readOnly: true}
+        moonId: {type: integer, readOnly: true}
+        name: {type: string}
+        personId: {type: integer}
+        size: {type: integer}
+        status: {type: string, enum: [DRAFT, OPEN, CLOSED, ARCHIVED]}
+    GardenWrite:
+      type: object
+      required: [name]
+      properties:
+        name: {type: string}
+        personId: {type: integer}
+        size: {type: integer}
+        status: {type: string, enum: [DRAFT, OPEN, CLOSED, ARCHIVED]}
+    GardenDetails:
+      type: object
+      properties:
+        gardenId: {type: integer}
+        soil: {type: string}
+        climate: {type: string}
+    Bed:
+      type: object
+      required: [id, gardenId, plant]
+      properties:
+        id: {type: integer, readOnly: true}
+        gardenId: {type: integer, readOnly: true}
+        plant: {type: string}
+        rows: {type: integer}
+    BedWrite:
+      type: object
+      required: [plant]
+      properties:
+        plant: {type: string}
+        rows: {type: integer}
+    BedPatch:
+      type: object
+      properties:
+        rows: {type: integer}
+    Person:
+      type: object
+      required: [id, name]
+      properties:
+        id: {type: integer, readOnly: true}
+        name: {type: string}
+        email: {type: string}
+    PersonWrite:
+      type: object
+      required: [name]
+      properties:
+        name: {type: string}
+        email: {type: string}
+    Harvest:
+      type: object
+      properties:
+        id: {type: integer}
+        personId: {type: integer}
+        gardenId: {type: integer}
+        season: {type: string}
+        amount: {type: integer}
+    GardenReport:
+      type: object
+      properties:
+        gardenId: {type: integer}
+        total: {type: integer}

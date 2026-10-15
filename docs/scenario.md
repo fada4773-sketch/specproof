@@ -96,6 +96,32 @@ apitest-gen tree run -spec api/openapi.yaml -file apitest/tree/tree.yaml -base-u
 apitest-gen tree run -spec api/openapi.yaml -file apitest/tree/tree.yaml -base-url http://localhost:8080/api -token-env STARPORT_TOKEN -junit out/tree.xml
 ```
 
+**Step by step.** For a large spec, start with a few tags and add more
+later; the scope is kept in `tree.yaml`, each run adds the endpoints of the
+new tags at their place:
+
+```sh
+apitest-gen tree -spec api/openapi.yaml -file apitest/tree/tree.yaml -tags Planet,Moon,Garden -exclude-tags Admin
+apitest-gen tree -spec api/openapi.yaml -file apitest/tree/tree.yaml -tags Person          # adds Person
+apitest-gen tree -spec api/openapi.yaml -file apitest/tree/tree.yaml -base-url … -node beds  # fetch only beds again
+```
+
+```yaml
+scope:
+  tags: [Planet, Moon, Garden, Person]
+  exclude:
+    tags: [Admin, Internal*]           # * matches any text
+    ops: [purgeAll, "DELETE /cache"]   # operationIds or METHOD /path
+  deps: false                          # true: also the reads of other tags that give needed values
+```
+
+A value of another tag that is not in the scope yet becomes `$name` under
+`params`. When that tag comes in later, the run replaces `$name` by the
+node that gives it (`$name` → `persons.name`) and removes the entry, as
+long as you did not set a value. `-with-deps` (`deps: true`) takes the
+lists of such tags in at once. `-node <name>` fetches one node and what
+hangs below it again and keeps the other records of the fetch before.
+
 Step 3 without `-base-url` builds the scenario again from
 `tree-data_gen.yaml`, for a change of the write blocks that needs no new
 data. After a change of the spec, run step 1 (or 3) again: `tree.yaml`
@@ -206,12 +232,13 @@ is sent as it is. A list as a query value
 | `items` | JSON pointer of the list in the answer (`/content`; `""` for the answer itself); by default the schema decides: an array, or a page with one list of objects |
 | `page` | `param` (page number or offset), `size: {name: n}`, `max` pages (default 1), `start`, `step`, `next` (JSON pointer of a cursor in the answer), `in: body` (with `param` a JSON pointer into the body) |
 | `pick` | a number (at random, seeded), `{first: n}`, `all`, or a list of keys (by the first key) |
+| `min` | in `require`: the answer must list at least this many elements (that hold its `where`) |
 | `where` | conditions on fields, all must hold: `present`, `absent`, a value, a list (one of), `>=`, `<=`, `>`, `<`, `!=` (numbers, else text: ISO dates compare); `any:` holds alternatives |
 | `require` | named requests per candidate (`.field` is the candidate); each must answer 2xx and pass its own `where` |
 | `candidates` | how many candidates `require` checks at most |
 | `key` | JSON pointers that identify a record (default `/id`); records are matched by them |
 | `save` | values under a name: `/pointer`, or `header <Name>` |
-| `write` | `create` (or `none`), `update`, `patch`, `delete` |
+| `write` | `create` (or `none`), `update`, `patch`, `delete`, and actions under any other name (`open: POST /gardens/{gardenId}/open gardenId=.id`) |
 | `each` | the child nodes |
 | `off` | the node and its children are not fetched |
 
@@ -260,12 +287,46 @@ spec (the model apitest-gen uses for its examples):
   node of the tree, else `$name`. Create, update and patch always get
   `body: from <read>`: the read of the record that covers most fields of
   the request (`from profile`), else the node itself;
+- an action (a POST, PUT or PATCH whose path ends in a word after a
+  parameter, `POST /gardens/{gardenId}/open`) goes into the write block
+  under its own name. The scenario runs it once on a record it created,
+  after update and patch; actions that end what a record can do
+  (`archive`, `cancel`, `close`, …) run last;
 - every other write goes to the node whose records it writes: a node of
   its resource, the node that reads its path (`PUT /docks/{dockId}` to
   `GET /docks/{dockId}`), a node whose key its path takes, or whose records
   cover its body. A POST that answers with a list and creates nothing is a
   search: a node with `read: true`. A write without such a node goes to
   `ignore` with the reason.
+
+**The operationIds.** An operationId is read as words:
+`getGardensByPersonName` is the verb, the subject (gardens) and the filter
+after `By` (person name → `Person.name`; `For`, `Of`, `In` alike, `And`
+separates filters, `With` names what the answer must have). The parameter
+that takes the filter is the one named like it (`personName`, `name`), else
+the only free query parameter. So the read hangs below the persons
+(`query: {name: .name}`), even when the parameter is only called `name`;
+`getPersonsByGardenName` hangs below the gardens, the other way round. A
+filter of a resource outside the scope becomes `$name`.
+
+**where and require.** List nodes get the conditions their children and
+operationIds suggest, each with the reason as comment, so you see what was
+guessed:
+
+| What | Proposed |
+|---|---|
+| a read below the node for a filter its operationId names | `require` it with `min: 1`; the field it reads `present` |
+| a read about the record that answers 404 without it (`details`) | `require` it |
+| the first list of records that belong to the record (`beds` of a garden) | `require` it with `min: 1` |
+| a field a child reads to name another record (`personId`) | `where: {personId: present}` |
+| state words of the node's operationId (`getOpenGardens`) | `where: {status: OPEN}` |
+| `With` (`getGardensWithBeds`) | the field `present`, or `require` the list with `min: 1` |
+| actions of the write block, when the create sends the state | the states they start from: `open` and `archive` → `status: [DRAFT, CLOSED]` |
+
+A node with `require` checks at most 20 candidates (`candidates: 20`). A
+read with a `$name` is no `require`: until the value is set it would drop
+every candidate. Delete what you do not want; a later run does not add
+conditions to nodes your file has.
 
 Each call gets its operationId as a comment. Names are unique in the file:
 a name that is taken becomes the operationId (`getPilot`), only then a
@@ -281,6 +342,8 @@ block or `ignore`.
 | Case | What happens |
 |---|---|
 | a new read the proposal hangs below a node | added below the node of your file with the same call, `# … · new in <version>` |
+| a new root that needs no value | added at the top of `tree`, so the nodes of the file can read it |
+| a `$name` without value that a node gives now (a tag added later) | replaced by the reference to that node; the `params` entry goes when nothing uses it |
 | a new write of a resource | added to the write block of that node |
 | a new read whose parent your file does not have | below the nodes of your file that give its values (`pilotId=.pilotId` below the ships when the list of pilots is ignored), else at the top; a value none gives becomes `$name` with a new entry in `params` |
 | a write of a node your file does not have | to the first node of your file of the same resource |
@@ -673,7 +736,7 @@ seed the review lists); apitest only gets its URL. The reports and the diff are 
 ## Command reference
 
 ```
-apitest-gen tree            -spec <openapi.yaml> [-file tree.yaml] [-base-url <url> [tokens]] [-timeout 10s]
+apitest-gen tree            -spec <openapi.yaml> [-file tree.yaml] [-tags A,B] [-exclude-tags X] [-exclude-ops opId] [-with-deps] [-base-url <url> [tokens] [-node name]] [-timeout 10s]
 apitest-gen tree run        -spec <openapi.yaml> [-file tree.yaml] -base-url <url> [tokens] [-update] [-no-examples] [-errors 401,404] [-run <pattern>] [-skip <pattern>] [-unique] [-junit <file>]
 apitest-gen regression init -spec <openapi.yaml> [-out regression-sample.yaml]
 apitest-gen regression pre  -spec <openapi.yaml> -sample <file> -base-url <url> [tokens] [-out dir] [-seed n] [-probe 2s] [-strict] [-junit <file>]

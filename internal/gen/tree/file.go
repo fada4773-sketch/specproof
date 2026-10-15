@@ -52,6 +52,49 @@ const (
 
 var writeKinds = []string{WriteCreate, WriteUpdate, WritePatch, WriteDelete}
 
+// terminalVerbs start actions that end what a record can do.
+var terminalVerbs = []string{"archive", "cancel", "close", "complete", "reject", "lock", "disable", "suspend", "deactivate", "expire", "finish", "end", "retire"}
+
+func terminal(kind string) bool {
+	ws := words(kind)
+	return len(ws) > 0 && slices.Contains(terminalVerbs, ws[0])
+}
+
+// IsAction reports whether a write kind is an action: any other name of a
+// write block (publish: POST /books/{bookId}/publish). The scenario runs it
+// once on a record it created, after update and patch.
+func IsAction(kind string) bool { return !slices.Contains(writeKinds, kind) }
+
+// Kinds are the write kinds of a node in the order they run: create,
+// update, patch, delete, then the actions by name, those that end a record's
+// life (archive, cancel, close …) last: after them other actions fail.
+func (n *Node) Kinds() []string { return kindsOf(n.Write) }
+
+func kindsOf(ws map[string]*Write) []string {
+	var out, actions []string
+	for _, k := range writeKinds {
+		if ws[k] != nil {
+			out = append(out, k)
+		}
+	}
+	for k := range ws {
+		if IsAction(k) {
+			actions = append(actions, k)
+		}
+	}
+	slices.SortFunc(actions, func(a, b string) int {
+		ta, tb := terminal(a), terminal(b)
+		switch {
+		case ta && !tb:
+			return 1
+		case tb && !ta:
+			return -1
+		}
+		return strings.Compare(a, b)
+	})
+	return append(out, actions...)
+}
+
 // DefaultBudget is the number of requests a fetch sends at most.
 const DefaultBudget = 2000
 
@@ -74,10 +117,23 @@ type Tree struct {
 	// never proposes; IgnoreNotes says why the generator put one there.
 	Ignore      []string
 	IgnoreNotes map[string]string
+	// Scope limits what the generator proposes: tags and operations in,
+	// tags and operations out.
+	Scope Scope
 
 	// legacy are the nodes of an "unplaced" section of an earlier version.
 	legacy []*Node
 	doc    *yamldoc.Doc
+}
+
+// Scope is the part of the spec the generator proposes: only operations of
+// Tags (all without), none of ExcludeTags or ExcludeOps (operationIds or
+// "METHOD /path"; * matches any text). Deps also proposes the reads of
+// other tags that give values the scope needs (a list of authors for
+// {authorId}).
+type Scope struct {
+	Tags, ExcludeTags, ExcludeOps []string
+	Deps                          bool
 }
 
 // Node is one request of the tree and the records it answers with.
@@ -99,7 +155,10 @@ type Node struct {
 	Pick     Pick
 	// Candidates limits the elements require checks.
 	Candidates int
-	Where      []Clause
+	// Min is, for a node of require, the number of elements its answer
+	// must list at least.
+	Min   int
+	Where []Clause
 	// WhereAny holds alternatives: one of them must hold.
 	WhereAny []Clause
 	Require  []*Node
@@ -190,6 +249,8 @@ type Pick struct {
 type Clause struct {
 	Field string
 	Test  any
+	// Note says why the generator proposed it.
+	Note string
 }
 
 // FindingError lists the problems of a file.
@@ -234,6 +295,8 @@ func fromDoc(doc *yamldoc.Doc) (*Tree, error) {
 				t.Params[name] = x
 				t.ParamNames = append(t.ParamNames, name)
 			}
+		case "scope":
+			t.Scope = p.scope(v)
 		case "seed":
 			n, err := strconv.ParseUint(v.Value, 10, 64)
 			if err != nil {
@@ -261,7 +324,7 @@ func fromDoc(doc *yamldoc.Doc) (*Tree, error) {
 				t.Ignore = append(t.Ignore, strings.TrimSpace(c.Value))
 			}
 		default:
-			p.errf(k, "unknown key %q (known: params, seed, budget, tree, ignore)", k.Value)
+			p.errf(k, "unknown key %q (known: scope, params, seed, budget, tree, ignore)", k.Value)
 		}
 	}
 	p.uniqueNames(t)
@@ -278,7 +341,59 @@ func (p *parser) errf(n *yaml.Node, format string, args ...any) {
 }
 
 var nodeKeys = []string{"call", "path", "query", "header", "body", "read", "items", "page", "pick", "candidates",
-	"where", "require", "key", "save", "write", "each", "off"}
+	"min", "where", "require", "key", "save", "write", "each", "off"}
+
+func (p *parser) scope(v *yaml.Node) Scope {
+	var sc Scope
+	if v.Kind != yaml.MappingNode {
+		p.errf(v, "scope must be a mapping (tags, exclude, deps)")
+		return sc
+	}
+	list := func(n *yaml.Node, where string) []string {
+		switch n.Kind {
+		case yaml.ScalarNode:
+			if n.Tag == "!!null" {
+				return nil
+			}
+			return []string{n.Value}
+		case yaml.SequenceNode:
+			var out []string
+			for _, c := range n.Content {
+				out = append(out, strings.TrimSpace(c.Value))
+			}
+			return out
+		}
+		p.errf(n, "%s must be a list", where)
+		return nil
+	}
+	for i := 0; i+1 < len(v.Content); i += 2 {
+		k, val := v.Content[i], v.Content[i+1]
+		switch k.Value {
+		case "tags":
+			sc.Tags = list(val, "scope.tags")
+		case "deps":
+			sc.Deps = p.boolean(val, "scope.deps")
+		case "exclude":
+			if val.Kind != yaml.MappingNode {
+				p.errf(val, "scope.exclude must be a mapping (tags, ops)")
+				continue
+			}
+			for j := 0; j+1 < len(val.Content); j += 2 {
+				switch val.Content[j].Value {
+				case "tags":
+					sc.ExcludeTags = list(val.Content[j+1], "scope.exclude.tags")
+				case "ops":
+					sc.ExcludeOps = list(val.Content[j+1], "scope.exclude.ops")
+				default:
+					p.errf(val.Content[j], "scope.exclude: unknown key %q (known: tags, ops)", val.Content[j].Value)
+				}
+			}
+		default:
+			p.errf(k, "scope: unknown key %q (known: tags, exclude, deps)", k.Value)
+		}
+	}
+	return sc
+}
 
 func (p *parser) nodes(m *yaml.Node, parent *Node) []*Node {
 	if m.Kind == yaml.ScalarNode && m.Tag == "!!null" {
@@ -368,6 +483,12 @@ func (p *parser) node(name string, v *yaml.Node, parent *Node) *Node {
 				p.errf(val, "%s.candidates must be a positive number", name)
 			}
 			n.Candidates = c
+		case "min":
+			c, err := strconv.Atoi(val.Value)
+			if err != nil || c < 0 {
+				p.errf(val, "%s.min must be a number of elements", name)
+			}
+			n.Min = c
 		case "where":
 			n.Where, n.WhereAny = p.where(val, name)
 		case "require":
@@ -537,7 +658,7 @@ func (p *parser) where(v *yaml.Node, name string) (all, anyOf []Clause) {
 				p.errf(m.Content[i+1], "%s.where: %v", name, err)
 				continue
 			}
-			out = append(out, Clause{Field: m.Content[i].Value, Test: x})
+			out = append(out, Clause{Field: m.Content[i].Value, Test: x, Note: noteOf(m.Content[i+1])})
 		}
 		return out
 	}
@@ -552,7 +673,7 @@ func (p *parser) where(v *yaml.Node, name string) (all, anyOf []Clause) {
 			p.errf(val, "%s.where: %v", name, err)
 			continue
 		}
-		all = append(all, Clause{Field: k.Value, Test: x})
+		all = append(all, Clause{Field: k.Value, Test: x, Note: noteOf(val)})
 	}
 	return all, anyOf
 }
@@ -567,14 +688,18 @@ func (p *parser) writes(v *yaml.Node, name string) map[string]*Write {
 	out := map[string]*Write{}
 	for i := 0; i+1 < len(v.Content); i += 2 {
 		k, val := v.Content[i], v.Content[i+1]
-		if !slices.Contains(writeKinds, k.Value) {
-			p.errf(k, "%s.write: unknown key %q (known: create, update, patch, delete)", name, k.Value)
+		if !nameForm(k.Value) {
+			p.errf(k, "%s.write: %q: create, update, patch, delete, or the name of an action (letters, digits, _ and -)", name, k.Value)
 			continue
 		}
 		w := &Write{Kind: k.Value, Line: k.Line, value: val}
 		out[k.Value] = w
 		where := name + ".write." + k.Value
 		if val.Kind == yaml.ScalarNode {
+			if val.Value == "none" && k.Value != WriteCreate {
+				p.errf(val, "%s: only create can be none; leave the write out, or set off: true", where)
+				continue
+			}
 			if val.Value == "none" {
 				w.None = true
 				continue
@@ -788,6 +913,11 @@ func (n *Node) Enabled() bool {
 		}
 	}
 	return true
+}
+
+// noteOf is the comment after a value, without "#".
+func noteOf(v *yaml.Node) string {
+	return strings.TrimSpace(strings.TrimPrefix(v.LineComment, "#"))
 }
 
 // gone reports whether the comment after a call marks it as gone.

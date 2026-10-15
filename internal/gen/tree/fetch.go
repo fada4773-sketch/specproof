@@ -29,6 +29,11 @@ type Options struct {
 	Headers map[string]string
 	Client  *http.Client
 	Timeout time.Duration
+	// Only fetches the node of that name and what hangs below it again;
+	// the other records come from Before (a fetch before, of the same
+	// tree), and the node runs under the records of its parent there.
+	Only   string
+	Before *Data
 }
 
 // Record is one record a fetch took: an element of a list answer, or a
@@ -136,10 +141,56 @@ func Fetch(ctx context.Context, s *spec.Spec, t *Tree, opt Options) (*Data, erro
 	if f.budget <= 0 {
 		f.budget = DefaultBudget
 	}
+	if opt.Only != "" {
+		return f.only(ctx, opt.Only, opt.Before)
+	}
 	for _, root := range t.Roots {
 		if err := f.node(ctx, root, nil); err != nil {
 			if errors.Is(err, errBudget) {
 				f.note("the budget of %d requests is used up; the rest of the tree was not fetched (raise budget or lower pick)", f.budget)
+				break
+			}
+			return f.data, err
+		}
+	}
+	return f.data, nil
+}
+
+// only fetches one node and its subtree again and keeps the other records
+// of the fetch before.
+func (f *fetcher) only(ctx context.Context, name string, before *Data) (*Data, error) {
+	n := f.t.Node(name)
+	if n == nil {
+		return nil, fmt.Errorf("-node %s: no node of that name in the tree", name)
+	}
+	if n.Parent != nil && before == nil {
+		return nil, fmt.Errorf("-node %s: fetch the whole tree once first; its records above %s are needed", name, name)
+	}
+	if before != nil {
+		f.data.Notes = append(f.data.Notes, fmt.Sprintf("only %s was fetched again; the other records are from the fetch before", name))
+		for _, r := range before.Records {
+			if r.Node != n && !inside(r.Node, n) {
+				f.data.Records = append(f.data.Records, r)
+			}
+		}
+	}
+	var parents []*Record
+	if n.Parent == nil {
+		parents = []*Record{nil}
+	} else {
+		for _, r := range f.data.Records {
+			if r.Node == n.Parent {
+				parents = append(parents, r)
+			}
+		}
+		if len(parents) == 0 {
+			f.note("%s: its parent %s has no records; fetch the whole tree", name, n.Parent.Name)
+		}
+	}
+	for _, p := range parents {
+		if err := f.node(ctx, n, p); err != nil {
+			if errors.Is(err, errBudget) {
+				f.note("the budget of %d requests is used up", f.budget)
 				break
 			}
 			return f.data, err
@@ -659,7 +710,24 @@ func (f *fetcher) required(ctx context.Context, n *Node, cand any, parent *Recor
 			if err != nil {
 				return false, err
 			}
-			if a.status/100 != 2 || !r.Holds(a.body) {
+			if a.status/100 != 2 {
+				return false, nil
+			}
+			// a list answer: its elements must hold where, and min of them
+			// be there; another answer must hold where itself
+			if list, isList := listOf(r, op, a.body); isList {
+				held := 0
+				for _, el := range list {
+					if r.Holds(el) {
+						held++
+					}
+				}
+				if held < max(r.Min, 1) && (r.Min > 0 || len(r.Where)+len(r.WhereAny) > 0) {
+					return false, nil
+				}
+				continue
+			}
+			if !r.Holds(a.body) {
 				return false, nil
 			}
 		}

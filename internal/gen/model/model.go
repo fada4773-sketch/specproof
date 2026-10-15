@@ -582,6 +582,9 @@ func (d *detector) ownKey(o *Op, param string, r *Resource) bool {
 // paramField is the field of r a path parameter holds: by its name, or as
 // "$model" maps it.
 func (d *detector) paramField(r *Resource, param string) string {
+	if f := d.readField(r, param); f != "" {
+		return f
+	}
 	if f := keyField(r, param); f != "" {
 		return f
 	}
@@ -589,6 +592,40 @@ func (d *detector) paramField(r *Resource, param string) string {
 		for p, field := range fix.Params {
 			if strings.EqualFold(p, param) {
 				return r.Field(field)
+			}
+		}
+	}
+	return ""
+}
+
+// readField is the field of r's read DTO a path parameter holds: the
+// parameter's name, or the resource's name and a field (planetCode →
+// Planet.code). It wins over a field of another DTO of the resource: a
+// detail DTO with gardenId does not make gardenId the key of Garden.
+func (d *detector) readField(r *Resource, param string) string {
+	if len(r.Schemas) == 0 {
+		return ""
+	}
+	ref := d.schemas()[r.Schemas[0]]
+	if ref == nil || ref.Value == nil {
+		return ""
+	}
+	props, _ := dict.Properties(ref.Value)
+	find := func(name string) string {
+		for k := range props {
+			if strings.EqualFold(k, name) {
+				return r.Field(k)
+			}
+		}
+		return ""
+	}
+	if f := find(param); f != "" {
+		return f
+	}
+	for _, name := range []string{r.Name, singular(r.Name)} {
+		if len(param) > len(name) && hasPrefixFold(param, name) {
+			if f := find(param[len(name):]); f != "" {
+				return f
 			}
 		}
 	}
