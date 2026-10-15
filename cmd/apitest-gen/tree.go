@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"flag"
@@ -47,14 +48,17 @@ Usage:
                tree-data_gen.yaml      the records (data of the instance)
                tree-scenario_gen.yaml  the steps that rebuild them in an
                                        empty instance (apitest.RunScenario)
-               tree-review_gen.md      the seed the instance must hold,
-                                       and every decision and gap
+               tree-review_gen.md      the review: a section per step
+                                       (tree, fetch, scenario, run,
+                                       update), the state of each and
+                                       the next command
              Without -base-url the scenario is built again from
              tree-data_gen.yaml, if it exists.
   run        runs the scenario against an empty instance and compares with
              tree-golden_gen.yaml if it exists; -update writes the golden
-             snapshot and the examples into the spec instead. Exit code 1 if
-             a step fails (for CI).
+             snapshot and the examples into the spec instead; both write
+             their section into tree-review_gen.md. Exit code 1 if a step
+             fails (for CI).
 
 Flags:
 `
@@ -205,9 +209,12 @@ func treeMain(o *treeOptions, out io.Writer) (int, error) {
 		version = s.Doc.Info.Version
 	}
 	add := tree.Scope{Tags: splitList(o.tags), ExcludeTags: splitList(o.excludeTags), ExcludeOps: splitList(o.excludeOps), Deps: o.deps}
+	review := o.review(version)
 	var t *tree.Tree
 	var changes []tree.Change
+	proposed := false
 	if _, statErr := os.Stat(o.file); errors.Is(statErr, os.ErrNotExist) {
+		proposed = true
 		proposal := tree.ProposeScope(s, add)
 		b, err := proposal.Encode()
 		if err != nil {
@@ -245,7 +252,26 @@ func treeMain(o *treeOptions, out io.Writer) (int, error) {
 			fmt.Fprintf(out, "%s: up to date with the spec\n", o.file)
 		}
 	}
-	if problems := tree.Check(s, t); len(problems) > 0 {
+	summary, body := tree.FileSection(t, changes, proposed)
+	problems := tree.Check(s, t)
+	if len(problems) > 0 {
+		summary = fmt.Sprintf("%d problems: fix tree.yaml", len(problems))
+		body += fmt.Sprintf("\n### Problems (%d)\n\nFix them in tree.yaml; nothing was fetched or built.\n\n", len(problems))
+		for _, p := range problems {
+			body += "- " + p + "\n"
+		}
+	}
+	review.Set(tree.ReviewTree, summary, body, len(problems) > 0)
+	switch {
+	case proposed:
+		review.Outdate(tree.ReviewTree, "tree.yaml was proposed anew; run the steps again")
+	case len(changes) > 0:
+		review.Outdate(tree.ReviewTree, fmt.Sprintf("tree.yaml got %d changes after this step (section 1); fetch again if nodes were added", len(changes)))
+	}
+	if len(problems) > 0 {
+		if err := o.writeReview(review, out); err != nil {
+			return 1, err
+		}
 		return 1, fmt.Errorf("%s:\n  %s", o.file, strings.Join(problems, "\n  "))
 	}
 	if unset := t.UnsetParams(); len(unset) > 0 {
@@ -285,10 +311,15 @@ func treeMain(o *treeOptions, out io.Writer) (int, error) {
 		for _, n := range data.Notes {
 			fmt.Fprintf(out, "  note: %s\n", n)
 		}
+		summary, body := tree.FetchSection(data, nil)
+		if o.only != "" {
+			body = "Only " + o.only + " and what hangs below it was fetched again; the other records are from before.\n\n" + body
+		}
+		review.Set(tree.ReviewFetch, summary, body, false)
 	default:
 		if _, err := os.Stat(dataPath); err != nil {
 			fmt.Fprintf(out, "no records yet: fetch them with -base-url <instance>\n")
-			return 0, nil
+			return 0, o.writeReview(review, out)
 		}
 		if data, stale, err = tree.LoadData(dataPath, t); err != nil {
 			return 1, err
@@ -296,6 +327,11 @@ func treeMain(o *treeOptions, out io.Writer) (int, error) {
 		fmt.Fprintf(out, "  %s: %d records (fetched before)\n", dataPath, len(data.Records))
 		if len(stale) > 0 {
 			fmt.Fprintf(out, "  %d records belong to nodes the tree no longer has; fetch again with -base-url\n", len(stale))
+			review.Mark(tree.ReviewFetch, fmt.Sprintf("%d records belong to nodes tree.yaml no longer has: %s; fetch again", len(stale), strings.Join(stale, ", ")))
+		}
+		if !review.Has(tree.ReviewFetch) {
+			summary, body := tree.FetchSection(data, stale)
+			review.Set(tree.ReviewFetch, summary, "From "+treeDataFile+", fetched before.\n\n"+body, false)
 		}
 	}
 	built, err := tree.Build(s, t, data)
@@ -306,16 +342,39 @@ func treeMain(o *treeOptions, out io.Writer) (int, error) {
 	if err != nil {
 		return 1, err
 	}
+	before, _ := os.ReadFile(o.next(treeScenarioFile))
 	if err := scenario.WriteFile(o.next(treeScenarioFile), text); err != nil {
 		return 1, err
 	}
 	fmt.Fprintf(out, "  %s: %d steps, %d records created, %d of the seed\n", o.next(treeScenarioFile), len(built.Scenario.Steps), len(built.Created), len(built.Seeds))
-	review := tree.Review(tree.ReviewInput{Spec: filepath.Base(o.spec), SpecVersion: version, Data: data, Built: built, Changes: changes, Stale: stale, Unset: t.UnsetParams()})
-	if err := scenario.WriteFile(o.next(treeReviewFile), []byte(review)); err != nil {
-		return 1, err
+	summary, body = tree.ScenarioSection(built)
+	review.Set(tree.ReviewScenario, summary, body, false)
+	if !bytes.Equal(before, text) {
+		review.Outdate(tree.ReviewScenario, "the scenario changed after this run; run it again")
 	}
-	fmt.Fprintf(out, "  %s: %d notes\n", o.next(treeReviewFile), len(built.Notes)+len(data.Notes))
-	return 0, nil
+	return 0, o.writeReview(review, out)
+}
+
+// review loads tree-review_gen.md of an earlier step.
+func (o *treeOptions) review(version string) *tree.ReviewDoc {
+	r := tree.LoadReview(o.next(treeReviewFile))
+	if o.spec != "" {
+		r.Spec = o.spec
+	}
+	if version != "" {
+		r.SpecVersion = version
+	}
+	r.File = o.file
+	return r
+}
+
+// writeReview writes tree-review_gen.md with the sections of this run.
+func (o *treeOptions) writeReview(r *tree.ReviewDoc, out io.Writer) error {
+	if err := scenario.WriteFile(o.next(treeReviewFile), []byte(r.Render())); err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "  %s: the review, with the next step\n", o.next(treeReviewFile))
+	return nil
 }
 
 // splitList reads a comma separated flag value.
@@ -385,14 +444,29 @@ func treeRun(o *treeOptions, out io.Writer) (int, error) {
 		}
 	}
 	summary(out, res)
+	review := o.review("")
+	if review.Spec == "" {
+		review.Spec = cfg.SpecPath
+	}
+	sum, body, failed := tree.RunSection(res, cfg.BaseURL, o.uniq)
+	if o.run != "" || o.skip != "" {
+		body = fmt.Sprintf("Only a part of the steps: -run %q -skip %q.\n\n", o.run, o.skip) + body
+	}
+	if cfg.Golden != "" && !o.update {
+		body += "\nCompared with the golden snapshot " + cfg.Golden + ".\n"
+	}
+	review.Set(tree.ReviewRun, sum, body, failed)
 	if res.Failed {
 		if o.update {
 			fmt.Fprintf(out, "golden snapshot and examples not written: steps failed\n")
+			review.Set(tree.ReviewUpdate, "not written: steps failed", "Golden snapshot and examples not written: steps failed (section 4).\n", true)
 		}
-		return 1, nil
+		return 1, o.writeReview(review, out)
 	}
 	if o.update {
 		fmt.Fprintf(out, "  written %s\n", o.golden)
+		body := fmt.Sprintf("Golden snapshot written: %s. Review it as a git diff; a later run without -update compares with it.\n", o.golden)
+		sum := "golden written"
 		if !o.noExamples {
 			specPath := o.spec
 			if specPath == "" {
@@ -403,9 +477,14 @@ func treeRun(o *treeOptions, out io.Writer) (int, error) {
 				return 1, err
 			}
 			fmt.Fprintf(out, "  %s: %s\n", specPath, msg)
+			body += fmt.Sprintf("\nExamples of the spec %s: %s.\n", specPath, msg)
+			sum += "; " + msg
+		} else {
+			body += "\nExamples not written (-no-examples).\n"
 		}
+		review.Set(tree.ReviewUpdate, sum, body, false)
 	}
-	return 0, nil
+	return 0, o.writeReview(review, out)
 }
 
 // writeTreeExamples writes the answers of a passed run into the spec, in

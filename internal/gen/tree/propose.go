@@ -69,6 +69,15 @@ func propose(full *spec.Spec, ops []*spec.Operation) *Tree {
 	if len(ops) < len(full.Ops) {
 		// the operationIds name resources of other tags too
 		p.all = model.Detect(full, nil)
+		// the keys of the whole spec: without the moons in scope, moonId
+		// of /moons/{moonId}/gardens is no key of a garden
+		for _, r := range p.m.Resources {
+			for _, a := range p.all.Resources {
+				if a.Name == r.Name && len(a.Keys) > 0 {
+					r.Keys = a.Keys
+				}
+			}
+		}
 	}
 	t := &Tree{Seed: 1, Budget: DefaultBudget, Params: map[string]any{}, ParamNotes: map[string]string{}}
 	p.t = t
@@ -705,8 +714,10 @@ func (p *proposer) addWrites() {
 	nodes := p.order()
 	// list nodes first: they hold the records of a resource; a list by the
 	// key of its parent before a list a filter of the operationId gives
-	// values to (the gardens of a moon before the gardens of a person)
-	for pass := range 3 {
+	// values to (the gardens of a moon before the gardens of a person),
+	// a list of one state last (getOpenGardens: the actions start from
+	// other states)
+	for pass := range 4 {
 		for _, n := range nodes {
 			r := p.res[n]
 			if r == nil || p.home[r] != nil || n.Off || len(n.Key) == 0 {
@@ -716,11 +727,14 @@ func (p *proposer) addWrites() {
 			if op == nil {
 				continue
 			}
-			tier := 2
+			tier := 3
 			if isList(op) {
 				tier = 0
 				if len(p.hints(op)) > 0 {
 					tier = 1
+				}
+				if _, vals := states(r, parseOpName(op.ID).subject); op.HasOperationID && len(vals) > 0 {
+					tier = 2
 				}
 			}
 			if tier != pass {

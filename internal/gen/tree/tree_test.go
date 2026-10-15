@@ -460,8 +460,16 @@ tree:
 	if res.Failed {
 		t.Fatalf("the scenario failed:\n%s\n%+v", log, b.Notes)
 	}
-	review := Review(ReviewInput{Spec: "starport", SpecVersion: "1.0", Data: d, Built: b, Changes: []Change{{"a", "b"}}, Stale: []string{"x1"}})
-	for _, want := range []string{"# Review: tree", "## Seed", "| planets1 | GET /planets | mars |", "## Changes", "no longer has"} {
+	path := filepath.Join(t.TempDir(), "tree-review_gen.md")
+	doc := LoadReview(path)
+	doc.Spec, doc.SpecVersion, doc.File = "starport.yaml", "1.0", "tree.yaml"
+	sum, body := FetchSection(d, []string{"x1"})
+	doc.Set(ReviewFetch, sum, body, false)
+	sum, body = ScenarioSection(b)
+	doc.Set(ReviewScenario, sum, body, false)
+	review := doc.Render()
+	for _, want := range []string{"# Review: tree", "### Seed", "| planets1 | GET /planets | mars |", "### Records per node", "no longer has",
+		"| 1. Tree (tree.yaml) | open |", "| 3. Scenario (tree-scenario_gen.yaml) | done |", "**Next:** propose the tree"} {
 		if !strings.Contains(review, want) {
 			t.Errorf("review lacks %q:\n%s", want, review)
 		}
@@ -1057,7 +1065,7 @@ tree:
 	if u := tr.UnsetParams(); len(u) != 1 || u[0] != "pid" {
 		t.Errorf("unset: %v", u)
 	}
-	if r := Review(ReviewInput{Data: d, Unset: tr.UnsetParams()}); !strings.Contains(r, "## Params without value (1)") {
+	if _, r := FileSection(tr, nil, false); !strings.Contains(r, "### Params without value (1)") || !strings.Contains(r, "set the params: pid") {
 		t.Errorf("review:\n%s", r)
 	}
 	if _, err := Build(s, tr, d); err != nil {
@@ -1101,5 +1109,63 @@ tree:
 	bad := parse(t, "tree:\n  pilot: GET /pilots/{pilotId} pilotId=$nope\n")
 	if problems := Check(s, bad); len(problems) != 1 || !strings.Contains(problems[0], "params has no entry nope") {
 		t.Errorf("check: %v", problems)
+	}
+}
+
+// TestReviewSteps: each step writes its section into tree-review_gen.md
+// and keeps the others; a step that changes what a later one used marks it
+// outdated, and the status names the next command.
+func TestReviewSteps(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tree-review_gen.md")
+	step := func(fn func(d *ReviewDoc)) string {
+		t.Helper()
+		d := LoadReview(path)
+		d.Spec, d.SpecVersion, d.File = "api.yaml", "2.0", "tree.yaml"
+		fn(d)
+		out := d.Render()
+		if err := os.WriteFile(path, []byte(out), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	want := func(out string, parts ...string) {
+		t.Helper()
+		for _, p := range parts {
+			if !strings.Contains(out, p) {
+				t.Errorf("lacks %q:\n%s", p, out)
+			}
+		}
+	}
+	out := step(func(d *ReviewDoc) { d.Set(ReviewTree, "proposed: 3 nodes", "the nodes", false) })
+	want(out, "| 1. Tree (tree.yaml) | done | proposed: 3 nodes |", "| 2. Fetch (tree-data_gen.yaml) | open |", "-base-url <stage>", "## 1. Tree (tree.yaml)\n\nthe nodes")
+	out = step(func(d *ReviewDoc) {
+		d.Set(ReviewFetch, "9 records", "the records", false)
+		d.Set(ReviewScenario, "40 steps", "the steps", false)
+	})
+	want(out, "## 1. Tree (tree.yaml)\n\nthe nodes", "the records", "| 3. Scenario (tree-scenario_gen.yaml) | done | 40 steps |", "apitest-gen tree run -spec api.yaml -file tree.yaml")
+	out = step(func(d *ReviewDoc) { d.Set(ReviewRun, "FAILED: 40 steps", "| gardens1.update | FAILED |", true) })
+	want(out, "| 4. Run (tree run) | failed |", "**Next:** fix the failed steps")
+	out = step(func(d *ReviewDoc) {
+		d.Set(ReviewRun, "PASSED: 40 steps", "all passed", false)
+		d.Set(ReviewUpdate, "golden written", "the golden", false)
+	})
+	want(out, "| 5. Update (tree run -update) | done | golden written |", "**Next:** done")
+	if strings.Contains(out, "gardens1.update | FAILED") {
+		t.Errorf("the run section is replaced:\n%s", out)
+	}
+	// a new scenario makes run and update outdated, once, and the mark goes
+	// when the run writes its section again
+	out = step(func(d *ReviewDoc) {
+		d.Set(ReviewScenario, "41 steps", "the steps", false)
+		d.Outdate(ReviewScenario, "the scenario changed")
+	})
+	want(out, "| 4. Run (tree run) | outdated |", "| 5. Update (tree run -update) | outdated |", "> **Outdated:** the scenario changed\n\nall passed", "-update\n```")
+	if strings.Count(out, "> **Outdated:**") != 2 {
+		t.Errorf("two marks:\n%s", out)
+	}
+	out = step(func(d *ReviewDoc) { d.Set(ReviewRun, "PASSED: 41 steps", "all passed", false) })
+	want(out, "| 4. Run (tree run) | done | PASSED: 41 steps |", "| 5. Update (tree run -update) | outdated |")
+	if strings.Count(out, "> **Outdated:**") != 1 || strings.Count(out, "## 4. Run") != 1 {
+		t.Errorf("one mark, one heading:\n%s", out)
 	}
 }

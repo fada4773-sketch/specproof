@@ -77,6 +77,17 @@ func TestTreeProposeFetchRun(t *testing.T) {
 	if code != 0 || !strings.Contains(out, "proposed from the spec") || !strings.Contains(out, "no records yet") {
 		t.Fatalf("propose: %d\n%s%s", code, out, errOut)
 	}
+	reviewPath := filepath.Join(dir, "tree-review_gen.md")
+	review := func(parts ...string) {
+		t.Helper()
+		b, _ := os.ReadFile(reviewPath)
+		for _, p := range parts {
+			if !strings.Contains(string(b), p) {
+				t.Errorf("tree-review_gen.md lacks %q:\n%s", p, b)
+			}
+		}
+	}
+	review("| 1. Tree (tree.yaml) | done | proposed from the spec", "| 2. Fetch (tree-data_gen.yaml) | open |", "### Nodes", "-base-url <stage>")
 	text, _ := os.ReadFile(file)
 	if !strings.Contains(string(text), "docks:") || !strings.Contains(string(text), "# listDocks") {
 		t.Fatalf("tree.yaml:\n%s", text)
@@ -108,10 +119,8 @@ func TestTreeProposeFetchRun(t *testing.T) {
 	if b, _ := os.ReadFile(filepath.Join(dir, "tree.yaml")); !strings.Contains(string(b), "pick: [mars, venus]") {
 		t.Error("the change of the user must stay")
 	}
-	review, _ := os.ReadFile(filepath.Join(dir, "tree-review_gen.md"))
-	if !strings.Contains(string(review), "## Seed") || !strings.Contains(string(review), "mars") {
-		t.Errorf("review:\n%s", review)
-	}
+	review("### Seed", "mars", "| 1. Tree (tree.yaml) | done | up to date with the spec", "| 2. Fetch (tree-data_gen.yaml) | done |",
+		"| 3. Scenario (tree-scenario_gen.yaml) | done |", "### Records per node", "tree run -spec")
 	// 3. build again without fetching
 	code, out, _ = cli("tree", "-spec", specPath, "-file", file)
 	if code != 0 || !strings.Contains(out, "fetched before") {
@@ -127,6 +136,7 @@ func TestTreeProposeFetchRun(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "tree-golden_gen.yaml")); err != nil {
 		t.Error("golden snapshot not written")
 	}
+	review("| 4. Run (tree run) | done | PASSED", "| 5. Update (tree run -update) | done | golden written", "examples", "### Seed", "**Next:** done")
 	if b, _ := os.ReadFile(specPath); !strings.Contains(string(b), "example") {
 		t.Error("the examples were not written into the spec")
 	}
@@ -147,6 +157,7 @@ func TestTreeProposeFetchRun(t *testing.T) {
 	if code != 1 || !strings.Contains(out, "FAIL") {
 		t.Errorf("a stage is no empty instance: %d\n%s", code, out)
 	}
+	review("| 4. Run (tree run) | failed | FAILED", "### Steps that did not pass", "| 5. Update (tree run -update) | done |", "**Next:** fix the failed steps")
 }
 
 func TestTreeUsage(t *testing.T) {

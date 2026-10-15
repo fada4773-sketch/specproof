@@ -79,8 +79,13 @@ contain breaking changes, which are listed here.
     saved values, bodies cut to the request schema, required fields
     generated, `ETag`/`If-Match`), reads and lists with checks, update and
     patch with a read after them, 401 steps and the deletes in reverse
-    order; `tree-review_gen.md` lists the seed the empty instance needs and
-    every decision. `apitest-gen tree run` runs the scenario against an
+    order. `tree-review_gen.md` grows with the workflow: every step
+    (`tree`, `tree -base-url`, `tree run`, `tree run -update`) writes its
+    own section (the tree with its nodes, params and what to check; the
+    records per node; the steps, the seed the empty instance needs and
+    every decision; the run with the steps that did not pass; the golden
+    snapshot and the examples) and keeps the others, with a status table,
+    the next command and sections marked outdated by a later change. `apitest-gen tree run` runs the scenario against an
     empty instance; `-update` writes the golden snapshot and the examples
     of the spec.
   - `apitest-gen regression init|pre|post|diff`: a check before and after a

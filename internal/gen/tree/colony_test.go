@@ -243,6 +243,32 @@ func TestColonyStepByStep(t *testing.T) {
 	}
 }
 
+// TestColonyGardenOnly proposes the Garden tag alone: the moons are out of
+// scope, yet moonId is no key of a garden, and the write block goes to the
+// gardens of a moon, not to the open gardens the actions cannot start from.
+func TestColonyGardenOnly(t *testing.T) {
+	s := loadColony(t)
+	b, err := ProposeScope(s, Scope{Tags: []string{"Garden"}}).Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(b)
+	tr := parse(t, out)
+	if problems := Check(s, tr); len(problems) > 0 {
+		t.Fatalf("check: %v\n%s", problems, out)
+	}
+	open, gardens := tr.Node("open-gardens"), tr.Node("gardens")
+	if open == nil || gardens == nil || len(open.Write) != 0 || gardens.Write["create"] == nil || gardens.Write["open"] == nil {
+		t.Fatalf("the write block belongs to gardens:\n%s", out)
+	}
+	if !slices.Equal(gardens.Key, []string{"/id", "/code", "/name"}) || !slices.Equal(open.Key, gardens.Key) {
+		t.Errorf("keys: %v, %v", gardens.Key, open.Key)
+	}
+	if _, ok := tr.Params["moonId"]; ok {
+		t.Errorf("moonId comes from the record:\n%s", out)
+	}
+}
+
 func TestOperationIDWords(t *testing.T) {
 	for id, want := range map[string]string{
 		"getGardensByPersonName":       "get|gardens|person name|",
