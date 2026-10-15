@@ -580,8 +580,17 @@ type provided struct {
 
 func (p *proposer) providesFresh(op *spec.Operation, param string, r *model.Resource) (string, int) {
 	if mo := p.m.Op(op); mo != nil {
-		if mp := mo.Param(param); mp != nil && mp.Resource == r && mp.Field != "" {
-			return mp.Field, 100
+		if mp := mo.Param(param); mp != nil && mp.Field != "" {
+			if mp.Resource == r {
+				return mp.Field, 100
+			}
+			// the same record listed below another parent (the docks of a
+			// planet and of a moon): the model maps the parameter to one
+			if sameRecord(mp.Resource, r) {
+				if f := r.Field(mp.Field); f != "" {
+					return f, 100
+				}
+			}
 		}
 	}
 	if h, ok := p.hints(op)[param]; ok && h.res.Name == r.Name {
@@ -623,7 +632,37 @@ func (p *proposer) providesFresh(op *spec.Operation, param string, r *model.Reso
 			best, score = k, 80
 		}
 	}
+	if score == 0 && generic(param) {
+		// /docks/{id}/permits: the word before a generic name names the
+		// record, and the record has a field of that name
+		if seg := model.SegmentBefore(op.Path, param); seg != "" && namesRecord(seg, r) {
+			if f := r.Field(param); f != "" {
+				best, score = f, 70
+			}
+		}
+	}
 	return best, score
+}
+
+// sameRecord reports whether two resources are one kind of record: the
+// same main schema, listed below different parents.
+func sameRecord(a, b *model.Resource) bool {
+	return a != nil && b != nil && len(a.Schemas) > 0 && len(b.Schemas) > 0 && a.Schemas[0] == b.Schemas[0]
+}
+
+// namesRecord reports whether a path word names the resource or its main
+// schema (docks, Dock).
+func namesRecord(seg string, r *model.Resource) bool {
+	names := []string{r.Name}
+	if len(r.Schemas) > 0 {
+		names = append(names, r.Schemas[0])
+	}
+	for _, n := range names {
+		if strings.EqualFold(seg, n) || strings.EqualFold(singular(seg), n) {
+			return true
+		}
+	}
+	return false
 }
 
 // relationKey is the key of r a path parameter of r's own path holds when
@@ -663,10 +702,21 @@ func (p *proposer) relationKey(op *spec.Operation, param string, r *model.Resour
 }
 
 // namesOther reports whether a path word names a resource other than r
-// (pilots in /pilots/{id}/license below the docks).
+// (pilots in /pilots/{id}/license below the docks), by its name or its
+// main schema (Dock for the docks of a moon).
 func (p *proposer) namesOther(seg string, r *model.Resource) bool {
-	for _, x := range p.all.Resources {
-		if x != r && (strings.EqualFold(seg, x.Name) || strings.EqualFold(singular(seg), x.Name)) && (r == nil || !strings.EqualFold(x.Name, r.Name)) {
+	if r != nil && namesRecord(seg, r) {
+		return false
+	}
+	m := p.all
+	if m == nil {
+		m = p.m
+	}
+	if m == nil {
+		return false
+	}
+	for _, x := range m.Resources {
+		if x != r && namesRecord(seg, x) {
 			return true
 		}
 	}

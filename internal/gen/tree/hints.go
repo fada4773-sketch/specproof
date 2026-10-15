@@ -198,7 +198,11 @@ func (p *proposer) hints(op *spec.Operation) map[string]hint {
 			if taken[name] {
 				continue
 			}
-			if lname == strings.ToLower(pascal(ws)) || lname == strings.ToLower(h.field) ||
+			// a generic name like id holds the field only below a word that
+			// names no other record: /Dock/{id}/pilot/{pilotCode} of
+			// GetSettingsByPilot is the id of a dock
+			field := lname == strings.ToLower(h.field) && (!generic(name) || !p.namesOther(model.SegmentBefore(op.Path, name), h.res))
+			if lname == strings.ToLower(pascal(ws)) || field ||
 				lname == strings.ToLower(h.res.Name+h.field) || lname == strings.ToLower(singular(h.res.Name)+h.field) {
 				match = name
 				break

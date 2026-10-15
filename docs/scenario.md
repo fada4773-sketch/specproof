@@ -238,7 +238,13 @@ for a value no record gives. A value of `params` may itself be a
 reference (`bookId: books.id`): it reads as if it stood in place of
 `$name`, so the node it names must be above or fetched before; the name is
 the node's name in the tree, not the resource name. A node whose `$name` is not set yet is left
-out of the fetch (noted once, and listed in the review). Every other value
+out of the fetch (noted once, and listed in the review). A text with
+`{{…}}` composes references, in a node, a write and in `params`:
+`berthKey: '{{planets.code}}-{{docks.number}}'` sends `mars-7` (quote it,
+YAML reads a value that starts with `{` as a mapping); in the scenario a
+part that is the key of a created record becomes its placeholder inside the
+text. A reference alone (`dockId: '{{.id}}'`) keeps its type. A `{{name}}`
+that is no reference stays as it is. Every other value
 is sent as it is. A list as a query value
 (`status: [OPEN, CLOSED]`) sends one request per value.
 
@@ -307,7 +313,35 @@ name. A prefer no fetched record holds is noted.
 | `body` | a body sent as it is (values may be references), or `from <node>`: build it from the record of that node (above or below, or the node itself) first; the fields it lacks come from the record and the reads about it. Without `body` the same holds for the record itself |
 | `change` | update and patch: `{field: value}`, or `auto` (default) for one changed field |
 | `expect` | the status; default the lowest documented 2xx |
+| `save` | values of the answer under a name, as in a node: `/pointer` or `header <Name>`. A `$name` of the tree with that name reads the saved value in the scenario (see below) |
+| `onSeed` | `true`: an update, patch or action also runs on a record of the seed (a node without create: the instance holds the record), on the first record of the fetch |
 | `off` | not used |
+
+**A value of a write, read later.** A value the instance gives only when it
+changes something (the receipt number an update answers with) is saved by that
+write, and read with `$name`:
+
+```yaml
+params:
+  receiptNo: R-1042           # a receipt number of the stage: the fetch reads it
+tree:
+  docks:
+    call: GET /planets/{code}/docks
+    path: {code: .code}
+    write:
+      create: none
+      update:
+        call: PUT /docks/{dockId}
+        path: {dockId: .id}
+        save: {receiptNo: header X-Receipt-No}
+        onSeed: true        # the docks are seed: change one of them
+  receipt: GET /receipts/{receiptNo} receiptNo=$receiptNo
+```
+
+The fetch sends no write: it reads the receipt with the value of `params`.
+The scenario sends `{{receiptNo}}` and runs the read right after the first
+step that saves it (the review says so). When no write that saves it runs,
+the value of `params` stands in.
 
 A node without a write block of its own creates like another node of the
 same resource (the pilot below a ship like the list of pilots), as long as
@@ -331,7 +365,12 @@ spec (the model apitest-gen uses for its examples):
 - every other read below the node that gives its path parameters, across
   tags and roots: `{pilotId}` is given by a node of pilots (the model maps
   it there, or it is the resource name and a key: `pilotId` = Pilot + `id`,
-  also `originPilotId`, or a field has its name: `{isbn}`). With values of
+  also `originPilotId`, or a field has its name: `{isbn}`; a generic name
+  like `{id}` when the word before it names the resource or its schema:
+  `/Dock/{id}/Settings`). One kind of record listed below several parents
+  (the docks of a planet and of a moon, one schema `Dock`) counts as one: a
+  read by its id hangs below the first of those nodes, even without a
+  `GET /Dock/{id}` of its own. With values of
   several nodes it hangs below the one fetched last and reads the others by
   name (`dockId=docks.id`). Repeated while new nodes give new values;
 - `key` from the model, `pick: 3`, `page` for a `page`/`offset` parameter;
@@ -387,7 +426,10 @@ spec (the model apitest-gen uses for its examples):
 after `By` (person name → `Person.name`; `For`, `Of`, `In` alike, `And`
 separates filters, `With` names what the answer must have). The parameter
 that takes the filter is the one named like it (`personName`, `name`), else
-the only free query parameter. So the read hangs below the persons
+the only free query parameter; a generic name (`id`) only when the word
+before it names no other record (`GetSettingsByPilot` at
+`/Dock/{id}/Settings/pilot/{pilotCode}` takes the pilot in `pilotCode`, the
+`id` is a dock's). So the read hangs below the persons
 (`query: {name: .name}`), even when the parameter is only called `name`;
 `getPersonsByGardenName` hangs below the gardens, the other way round. A
 filter of a resource outside the scope becomes `$name`.
@@ -505,7 +547,11 @@ the records in an empty instance:
   run with `-unique` sends the same new values. A write block at the read
   of one record below its list (`garden: GET /gardens/{gardenId}` below
   `gardens`) works on the records the list node creates: update and
-  delete take their values from that read.
+  delete take their values from that read. A record of the seed is
+  changed only with `onSeed: true` at the write.
+- **Saved values of writes.** A step that uses a value a write saves
+  (`$receiptNo`) runs right after the first step that saves it; without
+  such a step it takes the value of `params`.
 - **401.** Per reading operation that needs a token and documents 401, the
   first read again without a token.
 - **Deletes** of the created records in reverse order, each node's first

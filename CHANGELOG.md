@@ -121,6 +121,18 @@ contain breaking changes, which are listed here.
     `prefer` in the same form does not filter: a pick takes those records
     first and fills the rest with others, and the nodes above a preferred
     record (its planet and moon) are picked first too.
+    One kind of record listed below several parents (the docks of a planet
+    and of a moon, one schema) counts as one: a read by its generic `{id}`
+    (`/Dock/id/{id}/Settings`, `/Dock/{id}/Settings/pilot/{pilotCode}`)
+    hangs below those docks with `id=.id`, even without a read of one dock
+    by id, instead of becoming `$id`; an operationId filter
+    (`…ByPilot`) no longer takes such an `{id}` for the pilot's.
+    A text with `{{…}}` composes references (`berthKey:
+    '{{planets.code}}-{{docks.number}}'`), in nodes, writes and `params`.
+    A write's `save` (`receiptNo: header X-Receipt-No`) gives `$receiptNo` its
+    value in the scenario, and the step that reads it runs right after
+    that write; `onSeed: true` lets an update, patch or action change a
+    record of the seed.
   - `apitest-gen regression init|pre|post|diff`: a check before and after a
     deployment that only sends GET requests. `pre` draws real records of a
     stage by the rules of `regression-sample.yaml` (a new sample every

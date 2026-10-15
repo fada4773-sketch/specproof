@@ -2,6 +2,7 @@ package tree
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"net/http"
@@ -66,6 +67,11 @@ type builder struct {
 	sent     map[string]bool
 	steps    []*scenario.Step
 	scope    func(string) bool
+	// writeSaved are the names writes save ($receiptNo reads them in the
+	// scenario); stage holds the value of params for each, used when no
+	// write that saves it runs.
+	writeSaved map[string]bool
+	stage      map[string]any
 }
 
 // Build turns the records into the scenario that rebuilds them in an empty
@@ -81,17 +87,31 @@ func Build(s *spec.Spec, t *Tree, d *Data) (*Built, error) {
 		canon: map[*Record]*Record{}, created: map[*Record]bool{}, keyVar: map[*Record]map[string]string{},
 		byValue: map[string][]keyRef{}, etag: map[*Record]string{}, createID: map[*Record]string{},
 		readID: map[*Record]string{}, deps: map[*Record][]*Record{}, ids: map[string]int{}, sent: map[string]bool{},
-		scope: t.names(),
+		scope: t.names(), writeSaved: map[string]bool{}, stage: map[string]any{},
 	}
 	if s.Doc.Components != nil {
 		b.schemes = s.Doc.Components.SecuritySchemes
 	}
+	t.Walk(func(n *Node) {
+		if n.IsRequire || !n.Enabled() {
+			return
+		}
+		for _, w := range n.Write {
+			if w.None || w.Off || w.Gone {
+				continue
+			}
+			for name := range w.Save {
+				b.writeSaved[name] = true
+			}
+		}
+	})
 	b.entities()
 	order := b.creates()
 	b.reads()
 	b.updates()
 	b.unauthorized()
 	b.deletes(order)
+	b.afterSaves()
 	sc := &scenario.Scenario{Steps: b.steps}
 	for _, r := range order {
 		if !slices.Contains(sc.Order, r.Node.Name) {
@@ -406,22 +426,33 @@ func (b *builder) resolve(v any, at *Record, scope *Node, param, step string, ex
 		}
 		return out
 	}
+	if s, ok := v.(string); ok && len(ComposedRefs(s, b.scope)) > 0 {
+		// each part as text; a placeholder of a part is filled by the run
+		out, err := compose(s, b.scope, func(ref string) (any, error) {
+			if x := b.resolve(ref, at, scope, param, step, exclude); x != nil {
+				return x, nil
+			}
+			return nil, errNoValue
+		})
+		if err != nil {
+			return nil
+		}
+		return out
+	}
 	if name, ok := ParamRef(v); ok {
-		val, set := b.t.param(name)
-		if !set {
-			b.note(step, fmt.Sprintf("%s = $%s", param, name), "params has no value for it; set it at the top of tree.yaml")
-			return nil
+		if !b.writeSaved[name] {
+			return b.paramValue(name, at, scope, param, step, exclude)
 		}
-		if _, isRef := ParseRef(val, b.scope); isRef {
-			// a reference in params ("books.id") reads like one in place of $name
-			return b.resolve(val, at, scope, param, step, exclude)
+		// a write saves it: the scenario reads the saved value, the step
+		// runs after that write (afterSaves); the value of params stands in
+		// when no such write runs
+		if _, done := b.stage[name]; !done {
+			b.stage[name] = nil
+			if _, set := b.t.param(name); set {
+				b.stage[name] = b.paramValue(name, at, scope, param, step, exclude)
+			}
 		}
-		if _, nested := ParamRef(val); nested {
-			b.note(step, fmt.Sprintf("%s = $%s", param, name), "params."+name+" names another $name; give a value or a reference to a node")
-			return nil
-		}
-		// a value of the stage: the placeholder of the record created for it
-		return b.placeholderFor(val, []string{param, name}, exclude, step)
+		return "{{" + name + "}}"
 	}
 	ref, ok := ParseRef(v, b.scope)
 	if !ok {
@@ -468,6 +499,32 @@ func (b *builder) resolve(v any, at *Record, scope *Node, param, step string, ex
 	}
 	last := ref.Field[strings.LastIndex(ref.Field, ".")+1:]
 	return b.placeholderFor(val, []string{param, last}, exclude, step)
+}
+
+// errNoValue stops a composed value whose part has no value (noted).
+var errNoValue = errors.New("no value")
+
+// paramValue is the value of params a "$name" names, for the scenario.
+func (b *builder) paramValue(name string, at *Record, scope *Node, param, step string, exclude *Record) any {
+	val, set := b.t.param(name)
+	if !set {
+		b.note(step, fmt.Sprintf("%s = $%s", param, name), "params has no value for it; set it at the top of tree.yaml")
+		return nil
+	}
+	if len(ComposedRefs(val, b.scope)) > 0 {
+		// a composed value in params reads like it in place of $name
+		return b.resolve(val, at, scope, param, step, exclude)
+	}
+	if _, isRef := ParseRef(val, b.scope); isRef {
+		// a reference in params ("books.id") reads like one in place of $name
+		return b.resolve(val, at, scope, param, step, exclude)
+	}
+	if _, nested := ParamRef(val); nested {
+		b.note(step, fmt.Sprintf("%s = $%s", param, name), "params."+name+" names another $name; give a value or a reference to a node")
+		return nil
+	}
+	// a value of the stage: the placeholder of the record created for it
+	return b.placeholderFor(val, []string{param, name}, exclude, step)
 }
 
 // params fills path, query and header of a step from the values of the
@@ -546,6 +603,7 @@ func (b *builder) creates() []*Record {
 			st.Body, st.HasBody, st.Unique = body, true, unique
 		}
 		b.saves(st, r, op, expect)
+		addSaves(st, w)
 		b.createID[r] = st.ID
 		list = append(list, &pending{r: r, st: st, uses: st.Uses()})
 	}
@@ -627,6 +685,17 @@ func (b *builder) saves(st *scenario.Step, r *Record, op *spec.Operation, status
 	if len(st.Save) == 0 {
 		st.Save = nil
 	}
+}
+
+// addSaves adds to a step what its write saves (receiptNo: header X-Receipt-No).
+func addSaves(st *scenario.Step, w *Write) {
+	if len(w.Save) == 0 {
+		return
+	}
+	if st.Save == nil {
+		st.Save = map[string]string{}
+	}
+	maps.Copy(st.Save, w.Save)
 }
 
 func schemaOf(ref *openapi3.SchemaRef) *openapi3.Schema {
@@ -1098,8 +1167,17 @@ func (b *builder) updates() {
 					break
 				}
 			}
+			if recs := b.d.Of(n); r == nil && w.OnSeed && len(recs) > 0 {
+				// onSeed: the first record, which the instance holds
+				r = recs[0]
+				b.note("", n.Name+": "+kind+" runs on "+r.ID+" of the seed", "onSeed: the instance holds the record; the scenario changes it")
+			}
 			if r == nil {
-				b.note("", n.Name+": "+kind+" not run", "no record of "+n.Name+" is created by the scenario; it changes only records it created")
+				why := "no record of " + n.Name + " is created by the scenario; it changes only records it created (onSeed: true changes a record of the seed)"
+				if w.OnSeed {
+					why = "onSeed: the fetch took no record of " + n.Name
+				}
+				b.note("", n.Name+": "+kind+" not run", why)
 				continue
 			}
 			b.update(r, w, op, kind)
@@ -1154,6 +1232,7 @@ func (b *builder) update(r *Record, w *Write, op *spec.Operation, kind string) {
 	if documentsHeader(op, expect, "ETag") && b.etag[e] != "" {
 		st.Save = map[string]string{b.etag[e]: "header ETag"}
 	}
+	addSaves(st, w)
 	b.add(st)
 	if action {
 		// an action changes the record in its own way: no read that
@@ -1358,6 +1437,7 @@ func (b *builder) deletes(order []*Record) {
 			}
 			st.Header[p.Name] = "{{" + b.etag[r] + "}}"
 		}
+		addSaves(st, w)
 		b.add(st)
 		deleted[r] = true
 		turn[src.Node]++
@@ -1384,6 +1464,104 @@ func (b *builder) deletes(order []*Record) {
 		for _, kind := range kinds[min(turn[n], len(kinds)):] {
 			b.note("", n.Name+": "+kind+" not run", fmt.Sprintf("the scenario deletes %d records of %s, one per delete; pick more to run it", turn[n], n.Name))
 		}
+	}
+}
+
+// afterSaves orders the steps that use a value a write saves ($receiptNo):
+// a step no step before it gives the value runs right after the first
+// step that saves it (the read of a receipt after the update that answers
+// with it). Without such a step, the value of params stands in.
+func (b *builder) afterSaves() {
+	if len(b.stage) == 0 {
+		return
+	}
+	savers := map[string][]int{}
+	for i, st := range b.steps {
+		for name := range st.Save {
+			savers[name] = append(savers[name], i)
+		}
+	}
+	for _, name := range sortedKeys(b.stage) {
+		if len(savers[name]) > 0 {
+			continue
+		}
+		b.note("", "$"+name+" from params", "no write that saves "+name+" runs in the scenario; its steps take the value of params")
+		for _, st := range b.steps {
+			fillName(st, name, b.stage[name])
+		}
+	}
+	after := map[int][]*scenario.Step{}
+	moved := map[*scenario.Step]bool{}
+	for i, st := range b.steps {
+		target := -1
+		for _, name := range st.Uses() {
+			idx := savers[name]
+			if !b.writeSaved[name] || len(idx) == 0 || idx[0] < i {
+				continue
+			}
+			j := -1
+			for _, k := range idx {
+				if k > i {
+					j = k
+					break
+				}
+			}
+			if j < 0 {
+				// only the step itself saves it: the value of params
+				b.note(st.ID, "$"+name+" from params", "no step before it saves "+name)
+				fillName(st, name, b.stage[name])
+				continue
+			}
+			target = max(target, j)
+		}
+		if target >= 0 {
+			moved[st] = true
+			after[target] = append(after[target], st)
+			b.note(st.ID, "runs after "+b.steps[target].ID, "it uses what that step saves")
+		}
+	}
+	if len(moved) == 0 {
+		return
+	}
+	var out []*scenario.Step
+	for i, st := range b.steps {
+		if !moved[st] {
+			out = append(out, st)
+		}
+		out = append(out, after[i]...)
+	}
+	b.steps = out
+}
+
+// fillName puts a value in place of the placeholder of a name, in every
+// value of a step.
+func fillName(st *scenario.Step, name string, val any) {
+	ph := "{{" + name + "}}"
+	var fill func(v any) any
+	fill = func(v any) any {
+		switch x := v.(type) {
+		case string:
+			if x == ph {
+				return val
+			}
+			return strings.ReplaceAll(x, ph, text(val))
+		case map[string]any:
+			for k, c := range x {
+				x[k] = fill(c)
+			}
+		case []any:
+			for i, c := range x {
+				x[i] = fill(c)
+			}
+		}
+		return v
+	}
+	for _, m := range []map[string]any{st.Path, st.Query, st.Header} {
+		fill(m)
+	}
+	st.Body = fill(st.Body)
+	if st.Contains != nil {
+		st.Contains.Values, _ = fill(st.Contains.Values).([]any)
 	}
 }
 

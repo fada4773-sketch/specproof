@@ -27,7 +27,8 @@
 // A value of the form ".field" reads the record the node runs under (in a
 // write block: the record itself), "<node>.field" the record of that
 // ancestor node (or of a node fetched before), "$name" the value of params
-// at the top of the file; every other value is used as it is.
+// at the top of the file; a text with "{{…}}" composes them
+// ("{{planets.code}}-{{.number}}"); every other value is used as it is.
 package tree
 
 import (
@@ -238,6 +239,13 @@ type Write struct {
 	// for one changed field.
 	Change map[string]any
 	Expect int
+	// Save keeps values of the answer under a name, like a node's save: a
+	// "$name" of the tree reads the saved value in the scenario, after the
+	// write ran (the receipt number an update answers with).
+	Save map[string]string
+	// OnSeed runs an update, patch or action also on a record of the seed
+	// (the instance holds it) when the scenario creates none of the node.
+	OnSeed bool
 	Off    bool
 	// Gone marks a call the spec no longer has.
 	Gone bool
@@ -549,14 +557,7 @@ func (p *parser) node(name string, v *yaml.Node, parent *Node) *Node {
 				}
 			}
 		case "save":
-			n.Save = map[string]string{}
-			for j := 0; j+1 < len(val.Content); j += 2 {
-				src := val.Content[j+1].Value
-				if !strings.HasPrefix(src, "/") && !strings.HasPrefix(src, "header ") {
-					p.errf(val.Content[j+1], "%s.save.%s: a JSON pointer (/id) or \"header <Name>\"", name, val.Content[j].Value)
-				}
-				n.Save[val.Content[j].Value] = src
-			}
+			n.Save = p.save(val, name)
 		case "write":
 			n.Write = p.writes(val, name)
 		case "each":
@@ -569,6 +570,23 @@ func (p *parser) node(name string, v *yaml.Node, parent *Node) *Node {
 		p.errf(v, "%s: call is missing (\"GET /path\")", name)
 	}
 	return n
+}
+
+// save reads a save block: name → a JSON pointer or "header <Name>".
+func (p *parser) save(v *yaml.Node, where string) map[string]string {
+	if v.Kind != yaml.MappingNode {
+		p.errf(v, "%s.save must be a mapping of names to sources", where)
+		return nil
+	}
+	out := map[string]string{}
+	for j := 0; j+1 < len(v.Content); j += 2 {
+		name, src := v.Content[j].Value, v.Content[j+1].Value
+		if !strings.HasPrefix(src, "/") && !strings.HasPrefix(src, "header ") {
+			p.errf(v.Content[j+1], "%s.save.%s: a JSON pointer (/id) or \"header <Name>\"", where, name)
+		}
+		out[name] = src
+	}
+	return out
 }
 
 func merged(a, b map[string]any) map[string]any {
@@ -716,7 +734,7 @@ func (p *parser) where(v *yaml.Node, name string) (all, anyOf []Clause) {
 	return all, anyOf
 }
 
-var writeKeys = []string{"call", "path", "query", "header", "body", "change", "expect", "off"}
+var writeKeys = []string{"call", "path", "query", "header", "body", "change", "expect", "save", "onSeed", "off"}
 
 func (p *parser) writes(v *yaml.Node, name string) map[string]*Write {
 	if v.Kind != yaml.MappingNode {
@@ -802,6 +820,13 @@ func (p *parser) writes(v *yaml.Node, name string) map[string]*Write {
 					p.errf(wv, "%s.expect must be an HTTP status", where)
 				}
 				w.Expect = n
+			case "save":
+				w.Save = p.save(wv, where)
+			case "onSeed":
+				w.OnSeed = p.boolean(wv, where+".onSeed")
+				if base := KindBase(k.Value); w.OnSeed && (base == WriteCreate || base == WriteDelete) {
+					p.errf(wv, "%s.onSeed: only an update, a patch or an action runs on a record of the seed", where)
+				}
 			case "off":
 				w.Off = p.boolean(wv, where+".off")
 			default:

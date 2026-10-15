@@ -363,9 +363,15 @@ func unsetParams(t *Tree, n *Node) []string {
 	visit := func(x *Node) {
 		for _, v := range []any{anyMap(x.Path), anyMap(x.Query), anyMap(x.Header), x.Body} {
 			walkStrings(v, func(s string) {
-				if name, ok := ParamRef(s); ok {
-					if _, set := t.param(name); !set && !slices.Contains(out, name) {
-						out = append(out, name)
+				parts := []string{s}
+				if strings.Contains(s, "{{") {
+					parts = refsOf(s, t.names())
+				}
+				for _, part := range parts {
+					if name, ok := ParamRef(part); ok {
+						if _, set := t.param(name); !set && !slices.Contains(out, name) {
+							out = append(out, name)
+						}
 					}
 				}
 			})
@@ -658,6 +664,9 @@ func resolveFetch(v any, at *Record, t *Tree, scope func(string) bool, first fun
 			out[i] = r
 		}
 		return out, nil
+	}
+	if s, ok := v.(string); ok && len(ComposedRefs(s, scope)) > 0 {
+		return compose(s, scope, func(ref string) (any, error) { return resolveFetch(ref, at, t, scope, first) })
 	}
 	if name, ok := ParamRef(v); ok {
 		val, set := t.param(name)

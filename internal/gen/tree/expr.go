@@ -3,6 +3,7 @@ package tree
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -44,6 +45,71 @@ func ParamRef(v any) (string, bool) {
 		return "", false
 	}
 	return s[1:], true
+}
+
+// composedRe finds the parts of a composed value: "{{planets.code}}-{{.number}}".
+var composedRe = regexp.MustCompile(`\{\{\s*([^{}\s]+)\s*\}\}`)
+
+// treeRef reports whether s is a reference of the tree: ".field",
+// "<node>.field" or "$name".
+func treeRef(s string, scope func(string) bool) bool {
+	if _, ok := ParamRef(s); ok {
+		return true
+	}
+	_, ok := ParseRef(s, scope)
+	return ok
+}
+
+// ComposedRefs returns the references a text composes ("{{planets.code}}-
+// {{.number}}"), nil for a value that composes none. A "{{name}}" that is no
+// reference of the tree stays as it is: a value the scenario saved.
+func ComposedRefs(v any, scope func(string) bool) []string {
+	s, ok := v.(string)
+	if !ok || !strings.Contains(s, "{{") {
+		return nil
+	}
+	var out []string
+	for _, m := range composedRe.FindAllStringSubmatch(s, -1) {
+		if treeRef(m[1], scope) {
+			out = append(out, m[1])
+		}
+	}
+	return out
+}
+
+// compose fills the references of a composed text by fill, as text; a text
+// that is one reference alone keeps the type of its value.
+func compose(s string, scope func(string) bool, fill func(ref string) (any, error)) (any, error) {
+	ms := composedRe.FindAllStringSubmatchIndex(s, -1)
+	if len(ms) == 1 && ms[0][0] == 0 && ms[0][1] == len(s) && treeRef(s[ms[0][2]:ms[0][3]], scope) {
+		return fill(s[ms[0][2]:ms[0][3]])
+	}
+	var b strings.Builder
+	last := 0
+	for _, m := range ms {
+		ref := s[m[2]:m[3]]
+		if !treeRef(ref, scope) {
+			continue
+		}
+		v, err := fill(ref)
+		if err != nil {
+			return nil, err
+		}
+		b.WriteString(s[last:m[0]])
+		b.WriteString(text(v))
+		last = m[1]
+	}
+	b.WriteString(s[last:])
+	return b.String(), nil
+}
+
+// refsOf are the references a text of the tree holds: itself, or the parts
+// it composes.
+func refsOf(s string, scope func(string) bool) []string {
+	if parts := ComposedRefs(s, scope); len(parts) > 0 {
+		return parts
+	}
+	return []string{s}
 }
 
 // param is the value of params a "$name" names; ok is false while it is

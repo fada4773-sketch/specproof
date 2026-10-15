@@ -20,14 +20,18 @@ header, body (with read: true for a POST that only reads), items, page,
 pick (a number, all, {first: n} or a list of keys), candidates, where,
 require, key, save, write, each, off. ".field" reads the record the node
 runs under (in write: the record itself), "<node>.field" a node above it
-or fetched before it, "$name" a value of params.
+or fetched before it, "$name" a value of params; a text composes them:
+"{{planets.code}}-{{.number}}".
 "where" at the top holds for every record of a resource, at every node
 that reads one: "Garden.name: [Rose, Mint]" or "Garden: {code: [a, b]}";
 "prefer" in the same form: a pick takes those records first (and the
 records above them), the rest of the pick are others.
 "write" says how the integration test rebuilds a record in an empty
 instance: create (none: the instance holds it), update, patch, delete,
-their variants by another key (update-by-name), and actions by name.`
+their variants by another key (update-by-name), and actions by name. A
+write's save ("receiptNo: header X-Receipt-No") gives $receiptNo its value in
+the scenario, after the write; onSeed: true runs an update on a record of
+the seed.`
 
 // Encode writes a new tree file.
 func (t *Tree) Encode() ([]byte, error) {
@@ -358,7 +362,8 @@ func writeYAML(w *Write) *yaml.Node {
 		v.LineComment = comment(w.Note)
 		return v
 	}
-	if !w.Off && len(w.Query) == 0 && len(w.Header) == 0 && !w.HasBody && w.From == "" && w.Change == nil && w.Expect == 0 {
+	if !w.Off && len(w.Query) == 0 && len(w.Header) == 0 && !w.HasBody && w.From == "" && w.Change == nil && w.Expect == 0 &&
+		len(w.Save) == 0 && !w.OnSeed {
 		if s, ok := shortText(w.Call, w.Path); ok {
 			v := scalar(s)
 			v.LineComment = comment(w.Comment, w.Note)
@@ -393,6 +398,12 @@ func writeYAML(w *Write) *yaml.Node {
 	}
 	if w.Expect != 0 {
 		add("expect", scalar(strconv.Itoa(w.Expect)))
+	}
+	if len(w.Save) > 0 {
+		add("save", valueYAML(w.Save, true))
+	}
+	if w.OnSeed {
+		add("onSeed", scalar("true"))
 	}
 	if w.Off {
 		off := scalar("true")

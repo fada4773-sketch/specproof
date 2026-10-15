@@ -180,31 +180,34 @@ func Check(s *spec.Spec, t *Tree) []string {
 	// checkRefs: "<node>.field" must name a node of the tree; read by a node
 	// (write false), a node that is not above it must come before it
 	// "$name" counts as its value of params, where it is used
+	scope := func(name string) bool { return names[name] }
 	var checkRefs func(line int, where string, at *Node, write bool, values ...any)
 	checkRefs = func(line int, where string, at *Node, write bool, values ...any) {
 		for _, v := range values {
-			walkStrings(v, func(str string) {
-				if prm, isParam := ParamRef(str); isParam {
-					val, known := t.Params[prm]
-					if !known {
-						add(line, "%s: %q: params has no entry %s (add it at the top of tree.yaml)", where, str, prm)
-						return
+			walkStrings(v, func(whole string) {
+				for _, str := range refsOf(whole, scope) {
+					if prm, isParam := ParamRef(str); isParam {
+						val, known := t.Params[prm]
+						if !known {
+							add(line, "%s: %q: params has no entry %s (add it at the top of tree.yaml)", where, str, prm)
+							continue
+						}
+						if nestedParam(val, scope) {
+							add(line, "%s: params.%s is %v; a value of params is a value or a reference to a node (books.id), no other $name", where, prm, val)
+							continue
+						}
+						checkRefs(line, where+" ($"+prm+")", at, write, val)
+						continue
 					}
-					if _, nested := ParamRef(val); nested {
-						add(line, "%s: params.%s is %v; a value of params is a value or a reference to a node (books.id), no other $name", where, prm, val)
-						return
+					name, _, ok := strings.Cut(str, ".")
+					if !ok || !names[name] || at.Ancestor(name) != nil || write {
+						continue
 					}
-					checkRefs(line, where+" ($"+prm+")", at, write, val)
-					return
+					if p, known := pos[name]; known && p < pos[at.Name] {
+						continue
+					}
+					add(line, "%s: %q names node %s, which is neither above it nor fetched before it", where, str, name)
 				}
-				name, _, ok := strings.Cut(str, ".")
-				if !ok || !names[name] || at.Ancestor(name) != nil || write {
-					return
-				}
-				if p, known := pos[name]; known && p < pos[at.Name] {
-					return
-				}
-				add(line, "%s: %q names node %s, which is neither above it nor fetched before it", where, str, name)
 			})
 		}
 	}
@@ -249,6 +252,11 @@ func Check(s *spec.Spec, t *Tree) []string {
 					}
 				}
 				checkRefs(w.Line, n.Name+".write."+kind, n, true, anyMap(w.Path), anyMap(w.Query), anyMap(w.Header), w.Body)
+				for _, name := range sortedKeys(w.Save) {
+					if !savedName.MatchString(name) {
+						add(w.Line, "%s.write.%s.save: %q: a name of letters, digits, _, - and . (receiptNo)", n.Name, kind, name)
+					}
+				}
 				if w.From != "" && w.From != "." && t.Node(w.From) == nil {
 					add(w.Line, "%s.write.%s: body from %q: no node of that name", n.Name, kind, w.From)
 				}
@@ -260,6 +268,25 @@ func Check(s *spec.Spec, t *Tree) []string {
 	problems = append(problems, checkFilters(s, t)...)
 	sort.Strings(problems)
 	return problems
+}
+
+// savedName is the form of a name a write saves: a placeholder name of the
+// scenario.
+var savedName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_.-]*$`)
+
+// nestedParam reports whether a value of params names another $name, as a
+// whole or in a part it composes.
+func nestedParam(v any, scope func(string) bool) bool {
+	s, ok := v.(string)
+	if !ok {
+		return false
+	}
+	for _, part := range refsOf(s, scope) {
+		if _, isParam := ParamRef(part); isParam {
+			return true
+		}
+	}
+	return false
 }
 
 // reads reports whether a node's operation only reads: a GET, or a POST
