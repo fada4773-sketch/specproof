@@ -234,6 +234,13 @@ func FileSection(t *Tree, changes []Change, proposed bool) (string, string) {
 	if sc := scopeText(t.Scope); sc != "" {
 		fmt.Fprintf(&b, " Scope: %s.", sc)
 	}
+	if len(t.Where) > 0 {
+		var ws []string
+		for _, f := range t.Where {
+			ws = append(ws, f.Resource+"."+f.Clause.Field+" "+testText(f.Clause.Test))
+		}
+		fmt.Fprintf(&b, " Where for every node: %s.", strings.Join(ws, ", "))
+	}
 	fmt.Fprintf(&b, " %d nodes, %d writes.\n", nodes, writes)
 	if len(changes) > 0 {
 		fmt.Fprintf(&b, "\n### Changes of this run (%d)\n\n| Where | What |\n|---|---|\n", len(changes))

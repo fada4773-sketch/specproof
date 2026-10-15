@@ -247,6 +247,7 @@ func Check(s *spec.Spec, t *Tree) []string {
 		}
 	}
 	walk(t.Roots)
+	problems = append(problems, checkFilters(s, t)...)
 	sort.Strings(problems)
 	return problems
 }

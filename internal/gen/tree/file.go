@@ -148,6 +148,9 @@ type Tree struct {
 	// Scope limits what the generator proposes: tags and operations in,
 	// tags and operations out.
 	Scope Scope
+	// Where are the conditions of the whole file: every record of their
+	// resource must hold them, at every node.
+	Where []Filter
 
 	// legacy are the nodes of an "unplaced" section of an earlier version.
 	legacy []*Node
@@ -325,6 +328,8 @@ func fromDoc(doc *yamldoc.Doc) (*Tree, error) {
 			}
 		case "scope":
 			t.Scope = p.scope(v)
+		case "where":
+			t.Where = p.filters(v)
 		case "seed":
 			n, err := strconv.ParseUint(v.Value, 10, 64)
 			if err != nil {
@@ -352,7 +357,7 @@ func fromDoc(doc *yamldoc.Doc) (*Tree, error) {
 				t.Ignore = append(t.Ignore, strings.TrimSpace(c.Value))
 			}
 		default:
-			p.errf(k, "unknown key %q (known: scope, params, seed, budget, tree, ignore)", k.Value)
+			p.errf(k, "unknown key %q (known: scope, where, params, seed, budget, tree, ignore)", k.Value)
 		}
 	}
 	p.uniqueNames(t)

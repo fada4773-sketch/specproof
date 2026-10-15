@@ -242,6 +242,27 @@ out of the fetch (noted once, and listed in the review). Every other value
 is sent as it is. A list as a query value
 (`status: [OPEN, CLOSED]`) sends one request per value.
 
+**Where for the whole file.** A `where` at the top of `tree.yaml` (next
+to `scope` and `params`) holds for every record of a resource, at every
+node that reads one: the lists, the searches, the reads of one record and
+the `require` of other nodes (persons that require gardens count only the
+gardens that hold it). The key is `Resource.field`, or a mapping per
+resource; the tests are those of a node's `where`:
+
+```yaml
+where:
+  Garden.name: [Rose, Mint]   # only these gardens, wherever they are read
+  Garden:
+    code: [rose, mint]
+    size: ">=2"
+```
+
+A node's records are of a resource when its answer (the item of a list)
+is the main schema of that resource or the schema of that name; views of
+a record (`GET /gardens/{gardenId}/details`) are not. Resource and field
+are checked against the spec; a condition no node of the tree applies is
+noted after the fetch.
+
 | Key of a node | Meaning |
 |---|---|
 | `call` | `METHOD /path` or the operationId; a node only reads: GET, or POST with `read: true` |

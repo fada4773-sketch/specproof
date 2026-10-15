@@ -87,7 +87,10 @@ contain breaking changes, which are listed here.
     snapshot and the examples) and keeps the others, with a status table,
     the next command and sections marked outdated by a later change. `apitest-gen tree run` runs the scenario against an
     empty instance; `-update` writes the golden snapshot and the examples
-    of the spec.
+    of the spec. A `where` at the top of `tree.yaml`
+    (`Garden.name: [Rose, Mint]`, or `Garden: {code: [rose, mint]}`)
+    holds for every record of that resource at every node of the fetch,
+    `require` included; resource and field are checked against the spec.
   - `apitest-gen regression init|pre|post|diff`: a check before and after a
     deployment that only sends GET requests. `pre` draws real records of a
     stage by the rules of `regression-sample.yaml` (a new sample every

@@ -21,6 +21,8 @@ pick (a number, all, {first: n} or a list of keys), candidates, where,
 require, key, save, write, each, off. ".field" reads the record the node
 runs under (in write: the record itself), "<node>.field" a node above it
 or fetched before it, "$name" a value of params.
+"where" at the top holds for every record of a resource, at every node
+that reads one: "Garden.name: [Rose, Mint]" or "Garden: {code: [a, b]}".
 "write" says how the integration test rebuilds a record in an empty
 instance: create (none: the instance holds it), update, patch, delete,
 their variants by another key (update-by-name), and actions by name.`
@@ -34,6 +36,15 @@ func (t *Tree) Encode() ([]byte, error) {
 		k := scalar("scope")
 		k.HeadComment = scopeHead
 		root.Content = append(root.Content, k, sc)
+	}
+	if len(t.Where) > 0 {
+		m := &yaml.Node{Kind: yaml.MappingNode}
+		for _, f := range t.Where {
+			v := valueYAML(f.Clause.Test, true)
+			v.LineComment = comment(f.Clause.Note)
+			m.Content = append(m.Content, scalar(f.Resource+"."+f.Clause.Field), v)
+		}
+		add("where", m)
 	}
 	if len(t.ParamNames) > 0 {
 		root.Content = append(root.Content, paramsKey(), paramsYAML(t))

@@ -408,3 +408,93 @@ tree:
 		}
 	}
 }
+
+// TestColonyGlobalWhere: the where at the top of the file holds at every
+// node that reads gardens: the gardens of the moons, the open gardens, the
+// gardens a person search finds, and the require of the persons (Lin
+// tends Fern and Mint only, so she is left out).
+func TestColonyGlobalWhere(t *testing.T) {
+	s := loadColony(t)
+	st := testserver.NewColony(treeToken, 500)
+	st.Fill()
+	hs := httptest.NewServer(st)
+	t.Cleanup(hs.Close)
+	b, err := ProposeScope(s, Scope{ExcludeTags: []string{"Admin"}}).Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := string(b) + "where:\n  Garden.Name: [Rose, Sage, Iris, Thyme]\n  Garden:\n    code: [rose, sage] # both forms\n  Harvest.season: [summer]\n"
+	tr := parse(t, file)
+	if len(tr.Where) != 3 || tr.Where[1].Resource != "Garden" || tr.Where[1].Clause.Field != "code" || tr.Where[1].Clause.Note != "both forms" {
+		t.Fatalf("where: %+v", tr.Where)
+	}
+	d, err := Fetch(context.Background(), s, tr, Options{BaseURL: hs.URL + "/api", Token: treeToken})
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := func(node, field string) []string {
+		var out []string
+		for _, r := range d.Of(tr.Node(node)) {
+			if v := text(r.Value.(map[string]any)[field]); !slices.Contains(out, v) {
+				out = append(out, v)
+			}
+		}
+		slices.Sort(out)
+		return out
+	}
+	if g := names("gardens", "name"); !slices.Equal(g, []string{"Rose", "Sage"}) {
+		t.Errorf("gardens: %v", g)
+	}
+	if g := names("garden-search", "name"); !slices.Equal(g, []string{"Rose", "Sage"}) {
+		t.Errorf("garden-search: %v", g)
+	}
+	if g := names("open-gardens", "name"); len(g) != 0 {
+		t.Errorf("open gardens: Fern is out: %v", g)
+	}
+	if p := names("persons", "name"); !slices.Equal(p, []string{"Ada", "Grace"}) {
+		t.Errorf("persons with a garden of the where: %v", p)
+	}
+	if !slices.ContainsFunc(d.Notes, func(n string) bool {
+		return strings.Contains(n, "where Harvest: no node of the tree reads records of Harvest")
+	}) {
+		t.Errorf("notes: %v", d.Notes)
+	}
+	// two gardens: the third delete has no record left
+	built, err := Build(s, tr, d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(built.Notes, func(n Note) bool { return strings.Contains(n.What, "gardens: delete-by-name not run") }) {
+		t.Errorf("notes: %+v", built.Notes)
+	}
+	// written and read again, kept by a merge
+	enc, err := tr.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	again := parse(t, string(enc))
+	if len(again.Where) != 3 || !strings.Contains(string(enc), "where:\n  Garden.Name: [Rose, Sage, Iris, Thyme]\n  Garden.code: [rose, sage] # both forms") {
+		t.Errorf("encode:\n%s", enc)
+	}
+	Merge(s, tr, ProposeScope(s, tr.Scope), "2.0")
+	if merged, _ := tr.Bytes(); !strings.Contains(string(merged), "  Garden:\n    code: [rose, sage] # both forms") {
+		t.Errorf("merge keeps the where as written:\n%s", merged)
+	}
+	// a resource or field the spec does not have, a key without field
+	for bad, want := range map[string]string{
+		"where:\n  Gardn.name: [x]\n":    "Gardn is no resource or schema of the spec",
+		"where:\n  Garden.colour: [x]\n": "Garden has no field colour (fields: code, id, moonId, name, personId, size, status)",
+		"where:\n  Garden: [x]\n":        "Resource.field",
+	} {
+		other, err := Parse([]byte(string(b) + bad))
+		var problems []string
+		if err != nil {
+			problems = []string{err.Error()}
+		} else {
+			problems = Check(s, other)
+		}
+		if !slices.ContainsFunc(problems, func(p string) bool { return strings.Contains(p, want) }) {
+			t.Errorf("%q: %v", bad, problems)
+		}
+	}
+}

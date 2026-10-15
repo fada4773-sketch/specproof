@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/fada4773-sketch/specproof/internal/gen/model"
 	"github.com/fada4773-sketch/specproof/internal/scenario"
 	"github.com/fada4773-sketch/specproof/internal/spec"
 )
@@ -96,6 +97,12 @@ type fetcher struct {
 	scope      func(string) bool
 	// unset are the nodes left out for a "$name" without value, noted once.
 	unset map[*Node]bool
+	// model finds the resource of a node for the where of the file;
+	// global caches the clauses per node, filtered the resources a node
+	// of the tree reads.
+	model    *model.Model
+	global   map[*Node][]Clause
+	filtered map[string]bool
 }
 
 // first is the first record of a node fetched so far, nil without.
@@ -137,7 +144,8 @@ func Fetch(ctx context.Context, s *spec.Spec, t *Tree, opt Options) (*Data, erro
 	if problems := Check(s, t); len(problems) > 0 {
 		return nil, &FindingError{Problems: problems}
 	}
-	f := &fetcher{s: s, t: t, opt: opt, data: &Data{Source: opt.BaseURL}, cache: map[string]*answer{}, count: map[*Node]int{}, budget: t.Budget, scope: t.names(), unset: map[*Node]bool{}}
+	f := &fetcher{s: s, t: t, opt: opt, data: &Data{Source: opt.BaseURL}, cache: map[string]*answer{}, count: map[*Node]int{}, budget: t.Budget, scope: t.names(), unset: map[*Node]bool{},
+		global: map[*Node][]Clause{}, filtered: map[string]bool{}}
 	if f.budget <= 0 {
 		f.budget = DefaultBudget
 	}
@@ -153,7 +161,20 @@ func Fetch(ctx context.Context, s *spec.Spec, t *Tree, opt Options) (*Data, erro
 			return f.data, err
 		}
 	}
+	f.unusedFilters()
 	return f.data, nil
+}
+
+// unusedFilters notes the where of the file no node applied: no node
+// reads records of that resource.
+func (f *fetcher) unusedFilters() {
+	var done []string
+	for _, flt := range f.t.Where {
+		if !f.filtered[flt.Resource] && !slices.Contains(done, flt.Resource) {
+			done = append(done, flt.Resource)
+			f.note("where %s: no node of the tree reads records of %s; the condition did nothing", flt.Resource, flt.Resource)
+		}
+	}
 }
 
 // only fetches one node and its subtree again and keeps the other records
@@ -237,7 +258,7 @@ func (f *fetcher) node(ctx context.Context, n *Node, parent *Record) error {
 	total := len(candidates)
 	var kept []cand
 	for _, c := range candidates {
-		if n.Holds(c.value) {
+		if f.passes(n, c.value) {
 			kept = append(kept, c)
 		}
 	}
@@ -718,16 +739,16 @@ func (f *fetcher) required(ctx context.Context, n *Node, cand any, parent *Recor
 			if list, isList := listOf(r, op, a.body); isList {
 				held := 0
 				for _, el := range list {
-					if r.Holds(el) {
+					if f.passes(r, el) {
 						held++
 					}
 				}
-				if held < max(r.Min, 1) && (r.Min > 0 || len(r.Where)+len(r.WhereAny) > 0) {
+				if held < max(r.Min, 1) && (r.Min > 0 || len(r.Where)+len(r.WhereAny)+len(f.globals(r)) > 0) {
 					return false, nil
 				}
 				continue
 			}
-			if !r.Holds(a.body) {
+			if !f.passes(r, a.body) {
 				return false, nil
 			}
 		}
