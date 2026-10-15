@@ -22,7 +22,8 @@ require, key, save, write, each, off. ".field" reads the record the node
 runs under (in write: the record itself), "<node>.field" a node above it
 or fetched before it, "$name" a value of params.
 "write" says how the integration test rebuilds a record in an empty
-instance: create (none: the instance holds it), update, patch, delete.`
+instance: create (none: the instance holds it), update, patch, delete,
+their variants by another key (update-by-name), and actions by name.`
 
 // Encode writes a new tree file.
 func (t *Tree) Encode() ([]byte, error) {

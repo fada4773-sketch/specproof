@@ -208,7 +208,10 @@ func (m *merger) bodies() {
 		if e == nil {
 			continue
 		}
-		for _, kind := range []string{WriteCreate, WriteUpdate, WritePatch} {
+		for _, kind := range p.Kinds() {
+			if base := KindBase(kind); base != WriteCreate && base != WriteUpdate && base != WritePatch {
+				continue
+			}
 			pw, ew := p.Write[kind], e.Write[kind]
 			if pw == nil || ew == nil || pw.From == "" || ew.None || ew.Gone || ew.HasBody || ew.From != "" {
 				continue

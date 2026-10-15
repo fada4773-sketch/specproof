@@ -63,12 +63,32 @@ func terminal(kind string) bool {
 // IsAction reports whether a write kind is an action: any other name of a
 // write block (publish: POST /books/{bookId}/publish). The scenario runs it
 // once on a record it created, after update and patch.
-func IsAction(kind string) bool { return !slices.Contains(writeKinds, kind) }
+func IsAction(kind string) bool { return !slices.Contains(writeKinds, KindBase(kind)) }
+
+// KindBase is the write kind a kind is a variant of: update, patch and
+// delete by another key of the record ("update-by-name": PUT
+// /gardens/name/{name}) are updates, patches and deletes. Other kinds are
+// themselves.
+func KindBase(kind string) string {
+	for _, k := range []string{WriteUpdate, WritePatch, WriteDelete} {
+		if strings.HasPrefix(kind, k+"-by-") && len(kind) > len(k)+4 {
+			return k
+		}
+	}
+	return kind
+}
 
 // Kinds are the write kinds of a node in the order they run: create,
-// update, patch, delete, then the actions by name, those that end a record's
-// life (archive, cancel, close …) last: after them other actions fail.
+// update, patch, delete (each with its variants by other keys), then the
+// actions by name, those that end a record's life (archive, cancel, close …)
+// last: after them other actions fail.
 func (n *Node) Kinds() []string { return kindsOf(n.Write) }
+
+// KindsOf are the kinds of a node with base kind: "update" first, then its
+// variants by name.
+func (n *Node) KindsOf(base string) []string {
+	return slices.DeleteFunc(n.Kinds(), func(k string) bool { return KindBase(k) != base })
+}
 
 func kindsOf(ws map[string]*Write) []string {
 	var out, actions []string
@@ -76,6 +96,14 @@ func kindsOf(ws map[string]*Write) []string {
 		if ws[k] != nil {
 			out = append(out, k)
 		}
+		var variants []string
+		for v := range ws {
+			if v != k && KindBase(v) == k {
+				variants = append(variants, v)
+			}
+		}
+		slices.Sort(variants)
+		out = append(out, variants...)
 	}
 	for k := range ws {
 		if IsAction(k) {
@@ -689,7 +717,7 @@ func (p *parser) writes(v *yaml.Node, name string) map[string]*Write {
 	for i := 0; i+1 < len(v.Content); i += 2 {
 		k, val := v.Content[i], v.Content[i+1]
 		if !nameForm(k.Value) {
-			p.errf(k, "%s.write: %q: create, update, patch, delete, or the name of an action (letters, digits, _ and -)", name, k.Value)
+			p.errf(k, "%s.write: %q: create, update, patch, delete (also update-by-<key> …), or the name of an action (letters, digits, _ and -)", name, k.Value)
 			continue
 		}
 		w := &Write{Kind: k.Value, Line: k.Line, value: val}

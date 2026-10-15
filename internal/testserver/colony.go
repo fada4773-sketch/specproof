@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 )
 
@@ -48,10 +49,25 @@ func NewColony(token string, first int) *Colony {
 	h("GET /api/gardens/{id}", c.get(c.gardens))
 	h("PUT /api/gardens/{id}", c.updateGarden)
 	h("DELETE /api/gardens/{id}", c.remove(c.gardens))
-	h("GET /api/gardens/{id}/details", c.details)
+	// /gardens/name/{name} and /gardens/{id}/details overlap for the mux
+	h("GET /api/gardens/{id}/{sub}", func(w http.ResponseWriter, r *http.Request) {
+		switch id, sub := r.PathValue("id"), r.PathValue("sub"); {
+		case id == "name" || id == "code":
+			c.byField(id, sub, w, r)
+		case sub == "details":
+			c.details(w, r)
+		case sub == "beds":
+			c.listBeds(w, r)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+	for _, f := range []string{"name", "code"} {
+		h("PUT /api/gardens/"+f+"/{value}", func(w http.ResponseWriter, r *http.Request) { c.byField(f, r.PathValue("value"), w, r) })
+		h("DELETE /api/gardens/"+f+"/{value}", func(w http.ResponseWriter, r *http.Request) { c.byField(f, r.PathValue("value"), w, r) })
+	}
 	h("POST /api/gardens/{id}/open", c.action("OPEN", "DRAFT", "CLOSED"))
 	h("POST /api/gardens/{id}/archive", c.action("ARCHIVED", "DRAFT", "OPEN", "CLOSED"))
-	h("GET /api/gardens/{id}/beds", c.listBeds)
 	h("POST /api/gardens/{id}/beds", c.createBed)
 	h("GET /api/beds/{id}", c.get(c.beds))
 	h("PATCH /api/beds/{id}", c.patchBed)
@@ -164,9 +180,40 @@ func (c *Colony) listGardens(w http.ResponseWriter, r *http.Request) {
 	reply(w, http.StatusOK, all(c.gardens, func(g map[string]any) bool { return g["moonId"] == moon }))
 }
 
+// byField reads, updates or deletes the garden whose field (name, code) has
+// the value.
+func (c *Colony) byField(field, value string, w http.ResponseWriter, r *http.Request) {
+	id := 0
+	for _, k := range sortedIDs(c.gardens) {
+		if c.gardens[k][field] == value {
+			id = k
+			break
+		}
+	}
+	g := c.gardens[id]
+	if g == nil {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	switch r.Method {
+	case http.MethodDelete:
+		delete(c.gardens, id)
+		w.WriteHeader(http.StatusNoContent)
+	case http.MethodPut:
+		if !c.garden(g, readBody(r)) {
+			reply(w, http.StatusUnprocessableEntity, map[string]any{"error": "no such person"})
+			return
+		}
+		reply(w, http.StatusOK, g)
+	default:
+		reply(w, http.StatusOK, g)
+	}
+}
+
 // garden takes the fields of a write; a person must exist.
 func (c *Colony) garden(g, b map[string]any) bool {
 	g["name"] = b["name"]
+	g["code"] = b["code"]
 	if p, ok := num(b["personId"]); ok {
 		if c.persons[p] == nil {
 			return false
@@ -358,7 +405,7 @@ func (c *Colony) Fill() {
 	}
 	garden := func(moon int, name string, person int, status string, size, beds int) {
 		id := c.id()
-		g := map[string]any{"id": id, "moonId": moon, "name": name, "status": status}
+		g := map[string]any{"id": id, "moonId": moon, "code": strings.ToLower(name), "name": name, "status": status}
 		if person > 0 {
 			g["personId"] = person
 		}

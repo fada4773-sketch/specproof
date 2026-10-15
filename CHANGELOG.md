@@ -63,7 +63,16 @@ contain breaking changes, which are listed here.
     from lists of records below, from fields that name other records, from
     state words (`getOpenGardens`) and from actions; actions
     (`POST /gardens/{gardenId}/open`) are write kinds of their own name,
-    run once on a created record, those that end a record last. With
+    run once on a created record, those that end a record last. A record
+    updated or deleted by several keys (`PUT /gardens/{gardenId}`,
+    `/gardens/name/{name}`, `/gardens/code/{code}`) gets one write block
+    with `update` (by its id) and variants `update-by-name`,
+    `update-by-code` (also `patch-by-…`, `delete-by-…`); the reads by the
+    other keys are `gardenByName`, `gardenByCode`, the `key` starts with
+    the id. The scenario runs every update variant on the first created
+    record, each with its own change and read after it (with `-unique` the
+    updates send the new unique values of the create), and gives the
+    deletes to the created records in turn, each with a read for 404. With
     `-base-url` it fetches the records (GET only) into
     `tree-data_gen.yaml` and writes `tree-scenario_gen.yaml`: the creates
     in the order the references need (the ids of the stage replaced by

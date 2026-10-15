@@ -4,7 +4,8 @@ info:
   version: "2.0"
   description: |
     A chained test API of apitest-gen tree. Planets are seed data; a planet
-    has moons, a moon gardens, a garden beds. A garden names the person who
+    has moons, a moon gardens, a garden beds. A garden is read, updated and
+    deleted by id, by name and by code. A garden names the person who
     tends it and has a state (DRAFT, OPEN, CLOSED, ARCHIVED) with actions.
     Some reads name their filter only in the operationId
     (getGardensByPersonName takes "name"), a harvest needs a season no
@@ -111,7 +112,7 @@ paths:
     parameters:
       - {name: gardenId, in: path, required: true, schema: {type: integer}}
     get:
-      operationId: getGarden
+      operationId: getGardenById
       tags: [Garden]
       responses:
         '200':
@@ -121,7 +122,7 @@ paths:
               schema: {$ref: '#/components/schemas/Garden'}
         '404': {description: no such garden}
     put:
-      operationId: updateGarden
+      operationId: updateGardenById
       tags: [Garden]
       requestBody:
         required: true
@@ -135,7 +136,71 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/Garden'}
     delete:
-      operationId: deleteGarden
+      operationId: deleteGardenById
+      tags: [Garden]
+      responses:
+        '204': {description: deleted}
+  /gardens/name/{name}:
+    parameters:
+      - {name: name, in: path, required: true, schema: {type: string}}
+    get:
+      operationId: getGardenByName
+      tags: [Garden]
+      responses:
+        '200':
+          description: the garden of that name
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Garden'}
+        '404': {description: no such garden}
+    put:
+      operationId: updateGardenByName
+      tags: [Garden]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/GardenWrite'}
+      responses:
+        '200':
+          description: updated
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Garden'}
+    delete:
+      operationId: deleteGardenByName
+      tags: [Garden]
+      responses:
+        '204': {description: deleted}
+  /gardens/code/{code}:
+    parameters:
+      - {name: code, in: path, required: true, schema: {type: string}}
+    get:
+      operationId: getGardenByCode
+      tags: [Garden]
+      responses:
+        '200':
+          description: the garden of that code
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Garden'}
+        '404': {description: no such garden}
+    put:
+      operationId: updateGardenByCode
+      tags: [Garden]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/GardenWrite'}
+      responses:
+        '200':
+          description: updated
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Garden'}
+    delete:
+      operationId: deleteGardenByCode
       tags: [Garden]
       responses:
         '204': {description: deleted}
@@ -374,18 +439,20 @@ components:
         name: {type: string}
     Garden:
       type: object
-      required: [id, moonId, name, status]
+      required: [id, moonId, code, name, status]
       properties:
         id: {type: integer, readOnly: true}
         moonId: {type: integer, readOnly: true}
+        code: {type: string}
         name: {type: string}
         personId: {type: integer}
         size: {type: integer}
         status: {type: string, enum: [DRAFT, OPEN, CLOSED, ARCHIVED]}
     GardenWrite:
       type: object
-      required: [name]
+      required: [code, name]
       properties:
+        code: {type: string}
         name: {type: string}
         personId: {type: integer}
         size: {type: integer}

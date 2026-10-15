@@ -338,14 +338,19 @@ func (p *proposer) children(n *Node, r *model.Resource, here *chain) {
 	if here.depth() > maxDepth {
 		return
 	}
-	for _, mo := range r.OpsWith(model.RoleRead) {
+	reads := r.OpsWith(model.RoleRead)
+	slices.SortStableFunc(reads, func(a, b *model.Op) int { return keyRank(r, a) - keyRank(r, b) })
+	for _, mo := range reads {
 		if p.used[mo.Op] || !p.reachable(mo.Op, here) {
 			continue
 		}
 		p.used[mo.Op] = true
-		// the first read is the record itself, others are views (details)
+		// the first read is the record itself, a read by another key is
+		// named after it (gardenByName), others are views (details)
 		base := lowerFirst(r.Name)
-		if p.names[base] > 0 {
+		if by := p.byKeyName(mo.Op); by != "" {
+			base = by
+		} else if p.names[base] > 0 {
 			base = viewName(mo.Op)
 		}
 		c := &Node{Name: p.name(base, mo.Op), Call: callOf(mo.Op), Comment: mo.Op.ID, Parent: n}
@@ -642,7 +647,11 @@ func (p *proposer) placeOnce(withParams bool) bool {
 			parent = provider{}
 		}
 		p.used[op] = true
-		c := &Node{Name: p.name(p.viewName(op), op), Call: callOf(op), Comment: op.ID, Parent: parent.node}
+		base := p.byKeyName(op)
+		if base == "" {
+			base = p.viewName(op)
+		}
+		c := &Node{Name: p.name(base, op), Call: callOf(op), Comment: op.ID, Parent: parent.node}
 		for _, nd := range p.needs(op) {
 			pr, ok := provs[nd.name]
 			switch {
@@ -743,21 +752,75 @@ func (p *proposer) writes(r *model.Resource, n *Node) map[string]*Write {
 	} else {
 		add(WriteCreate, creates[0])
 	}
+	// a write by another key than the first (PUT /gardens/name/{name} next
+	// to PUT /gardens/{gardenId}) is a variant: update-by-name
+	variant := func(base string, ops []*model.Op) {
+		ops = slices.DeleteFunc(ops, func(mo *model.Op) bool { return actionName(p.s, mo.Op) != "" })
+		slices.SortStableFunc(ops, func(a, b *model.Op) int { return keyRank(r, a) - keyRank(r, b) })
+		for _, mo := range ops {
+			kind := base
+			if _, ok := out[base]; ok {
+				kind = base + "-by-" + kebab(byField(mo))
+			}
+			add(kind, mo)
+		}
+	}
+	var puts, patches []*model.Op
 	for _, mo := range r.OpsWith(model.RoleUpdate) {
-		if actionName(p.s, mo.Op) != "" {
-			continue
-		}
-		switch mo.Op.Method {
-		case http.MethodPatch:
-			add(WritePatch, mo)
-		default:
-			add(WriteUpdate, mo)
+		if mo.Op.Method == http.MethodPatch {
+			patches = append(patches, mo)
+		} else {
+			puts = append(puts, mo)
 		}
 	}
-	if d := r.OpsWith(model.RoleDelete); len(d) > 0 {
-		add(WriteDelete, d[0])
-	}
+	variant(WriteUpdate, puts)
+	variant(WritePatch, patches)
+	variant(WriteDelete, r.OpsWith(model.RoleDelete))
 	return out
+}
+
+// keyRank orders the operations of a resource by the key their path takes:
+// the first key of the record (keyPointers: its id) first.
+func keyRank(r *model.Resource, mo *model.Op) int {
+	f := byField(mo)
+	for i, k := range keyPointers(r) {
+		if strings.EqualFold(PointerField(k), f) {
+			return i
+		}
+	}
+	return len(r.Keys) + 1
+}
+
+// byField is the field of the record the last path parameter of an
+// operation takes ("name" of PUT /gardens/name/{name}).
+func byField(mo *model.Op) string {
+	if len(mo.Params) == 0 {
+		return ""
+	}
+	pm := mo.Params[len(mo.Params)-1]
+	if pm.Field != "" {
+		return pm.Field
+	}
+	return pm.Name
+}
+
+// kebab writes a camelCase name in lower case with dashes: personId →
+// person-id.
+func kebab(s string) string {
+	var b strings.Builder
+	for i, r := range s {
+		if unicode.IsUpper(r) {
+			if i > 0 {
+				b.WriteByte('-')
+			}
+			r = unicode.ToLower(r)
+		}
+		b.WriteRune(r)
+	}
+	if b.Len() == 0 {
+		return "key"
+	}
+	return b.String()
 }
 
 // write is the write of a record of node n (resource r, nil if unknown):
@@ -953,12 +1016,23 @@ func pageOf(op *spec.Operation) *Page {
 	return nil
 }
 
-// keyPointers are the key fields of a resource as JSON pointers.
+// keyPointers are the key fields of a resource as JSON pointers, its id
+// first: a resource read by id, name and code picks by id.
 func keyPointers(r *model.Resource) []string {
 	var out []string
 	for _, k := range r.Keys {
 		out = append(out, "/"+k)
 	}
+	idRank := func(ptr string) int {
+		switch f := strings.ToLower(PointerField(ptr)); {
+		case f == "id":
+			return 0
+		case strings.HasSuffix(f, "id"):
+			return 1
+		}
+		return 2
+	}
+	slices.SortStableFunc(out, func(a, b string) int { return idRank(a) - idRank(b) })
 	if len(out) == 0 {
 		if f := r.Field("id"); f != "" {
 			out = []string{"/" + f}
@@ -991,6 +1065,20 @@ func (p *proposer) viewName(op *spec.Operation) string {
 		}
 	}
 	return name
+}
+
+// byKeyName names the read of a record by a key other than its first
+// (GET /gardens/name/{name}: gardenByName); "" for any other operation.
+func (p *proposer) byKeyName(op *spec.Operation) string {
+	mo := p.m.Op(op)
+	if mo == nil || mo.Role != model.RoleRead || len(mo.Params) == 0 || keyRank(mo.Resource, mo) == 0 {
+		return ""
+	}
+	f := byField(mo)
+	if !slices.ContainsFunc(mo.Resource.Keys, func(k string) bool { return strings.EqualFold(k, f) }) {
+		return ""
+	}
+	return lowerFirst(mo.Resource.Name) + "By" + strings.ToUpper(f[:1]) + f[1:]
 }
 
 // viewName names a read after the last word of its path.

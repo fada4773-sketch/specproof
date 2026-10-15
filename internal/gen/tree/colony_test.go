@@ -83,8 +83,20 @@ func TestColonyProposal(t *testing.T) {
 	// and the create sends the state
 	where(gardens, "status", []any{"DRAFT", "CLOSED"})
 	where(tr.Node("open-gardens"), "status", "OPEN")
-	if k := gardens.Kinds(); !slices.Equal(k, []string{"create", "update", "delete", "open", "archive"}) {
+	// read, updated and deleted by id, code and name: one write block, the
+	// id first, the other keys as variants; the reads below the gardens
+	if k := gardens.Kinds(); !slices.Equal(k, []string{"create", "update", "update-by-code", "update-by-name",
+		"delete", "delete-by-code", "delete-by-name", "open", "archive"}) {
 		t.Errorf("kinds: %v", k)
+	}
+	if !slices.Equal(gardens.Key, []string{"/id", "/code", "/name"}) {
+		t.Errorf("key, id first: %v", gardens.Key)
+	}
+	for name, call := range map[string]string{"garden": "GET /gardens/{gardenId}", "gardenByCode": "GET /gardens/code/{code}",
+		"gardenByName": "GET /gardens/name/{name}"} {
+		if n := tr.Node(name); n == nil || n.Call != call || n.Parent != gardens || len(n.Write) != 0 {
+			t.Errorf("%s: %s below gardens, no writes:\n%s", name, call, out)
+		}
 	}
 	// the season of a harvest is in no record
 	if h := tr.Node("harvests"); h.Parent != persons || h.Query["personId"] != ".id" || h.Query["season"] != "$season" ||
@@ -147,18 +159,27 @@ func TestColonyRebuild(t *testing.T) {
 	if err := os.WriteFile(path, text, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	var log strings.Builder
-	res, err := apitest.RunScenarioStandalone(context.Background(), apitest.ScenarioConfig{
-		Config:   apitest.Config{SpecPath: colonySpec, Handler: testserver.NewColony(treeToken, 1), Token: apitest.StaticToken(treeToken)},
-		Scenario: path,
-	}, apitest.StandaloneOptions{Out: &log})
-	if err != nil {
-		t.Fatal(err)
+	// with Unique the updates send the new code and name of the create: the
+	// update by code after the update by id finds the garden
+	for _, unique := range []bool{false, true} {
+		var log strings.Builder
+		res, err := apitest.RunScenarioStandalone(context.Background(), apitest.ScenarioConfig{
+			Config:   apitest.Config{SpecPath: colonySpec, Handler: testserver.NewColony(treeToken, 1), Token: apitest.StaticToken(treeToken)},
+			Scenario: path, Unique: unique,
+		}, apitest.StandaloneOptions{Out: &log})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.Failed {
+			t.Fatalf("unique %v: the scenario failed on an empty instance:\n%s\n%s\nnotes: %+v", unique, log.String(), text, built.Notes)
+		}
 	}
-	if res.Failed {
-		t.Fatalf("the scenario failed on an empty instance:\n%s\n%s\nnotes: %+v", log.String(), text, built.Notes)
-	}
-	for _, step := range []string{"gardens1.open", "gardens1.archive"} {
+	// every update on the first garden, each delete on a garden of its own,
+	// each followed by a read
+	for _, step := range []string{"gardens1.open", "gardens1.archive", "gardens1.update", "gardens1.read.afterUpdate",
+		"gardens1.update-by-code", "gardens1.read.afterUpdateByCode", "gardens1.update-by-name", "gardens1.read.afterUpdateByName",
+		"gardens3.delete", "gardens3.read.afterDelete", "gardens2.delete-by-code", "gardens2.read.afterDeleteByCode",
+		"gardens1.delete-by-name", "gardens1.read.afterDeleteByName"} {
 		if !strings.Contains(string(text), "id: "+step) {
 			t.Errorf("step %s missing:\n%s", step, text)
 		}
@@ -331,6 +352,19 @@ tree:
 	}
 	if k := g.Kinds(); !slices.Equal(k, []string{"open", "publish-later", "archive"}) {
 		t.Errorf("kinds: %v", k)
+	}
+	// variants by another key are updates and deletes, not actions
+	for kind, base := range map[string]string{"update-by-name": "update", "delete-by-code": "delete", "patch-by-person-id": "patch",
+		"update-by-": "update-by-", "updated": "updated", "delete-items": "delete-items"} {
+		if KindBase(kind) != base || IsAction(kind) != (base != "update" && base != "delete" && base != "patch") {
+			t.Errorf("%s: base %s, action %v", kind, KindBase(kind), IsAction(kind))
+		}
+	}
+	v := parse(t, "tree:\n  gardens:\n    call: GET /moons/{moonId}/gardens\n    path: {moonId: 1}\n    write:\n"+
+		"      delete-by-name: DELETE /gardens/name/{name} name=.name\n      open: POST /gardens/{gardenId}/open gardenId=.id\n"+
+		"      update-by-code: PUT /gardens/code/{code} code=.code\n      update: PUT /gardens/{gardenId} gardenId=.id\n")
+	if k := v.Node("gardens").Kinds(); !slices.Equal(k, []string{"update", "update-by-code", "delete-by-name", "open"}) {
+		t.Errorf("kinds with variants: %v", k)
 	}
 	if b, _ := (&Tree{Scope: sc, Budget: 1}).Encode(); !strings.Contains(string(b), "exclude:\n    tags: [Admin*]\n    ops: [purgeAll, DELETE /x]\n  deps: true") {
 		t.Errorf("encode:\n%s", b)

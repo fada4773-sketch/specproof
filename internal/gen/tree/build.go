@@ -3,6 +3,7 @@ package tree
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"slices"
 	"strconv"
@@ -1042,7 +1043,8 @@ func (b *builder) add(st *scenario.Step) bool {
 }
 
 // updates adds per node the update and the patch of its first created
-// record, each followed by a read that must show the change.
+// record, each followed by a read that must show the change; the variants
+// by other keys (update-by-name) too, each with a change of its own.
 func (b *builder) updates() {
 	var nodes []*Node
 	b.t.Walk(func(n *Node) {
@@ -1052,7 +1054,7 @@ func (b *builder) updates() {
 	})
 	for _, n := range nodes {
 		for _, kind := range n.Kinds() {
-			if kind != WriteUpdate && kind != WritePatch && !IsAction(kind) {
+			if base := KindBase(kind); base != WriteUpdate && base != WritePatch && !IsAction(kind) {
 				continue
 			}
 			w, op := b.writeOf(n, kind)
@@ -1094,14 +1096,25 @@ func (b *builder) update(r *Record, w *Write, op *spec.Operation, kind string) {
 	changed := ""
 	action := IsAction(kind)
 	if ref := requestRef(op); ref != nil || w.HasBody {
-		body, _ := b.body(st.ID, r, w, ref)
+		// the unique values of the create again: a run with Unique sends the
+		// new ones, the keys the next update by code or name takes stay
+		body, unique := b.body(st.ID, r, w, ref)
+		st.Unique = unique
 		if !w.HasBody && !action {
-			full := kind == WriteUpdate
-			body, changed = b.change(body, schemaOf(ref), r, w.Change, full)
+			full := KindBase(kind) == WriteUpdate
+			// the n-th variant changes the field n times: each update sends
+			// a value the one before did not
+			for range slices.Index(r.Node.KindsOf(KindBase(kind)), kind) + 1 {
+				body, changed = b.change(body, schemaOf(ref), r, w.Change, full)
+			}
 		}
 		st.Body, st.HasBody = body, true
+		st.Unique = slices.DeleteFunc(st.Unique, func(ptr string) bool { return !hasField(body, strings.TrimPrefix(ptr, "/")) })
 	}
-	st.Why = kind + "s " + r.ID
+	st.Why = KindBase(kind) + "s " + r.ID
+	if by, ok := strings.CutPrefix(kind, KindBase(kind)+"-by-"); ok {
+		st.Why += " by " + by
+	}
 	if changed != "" {
 		st.Why += ", changes " + changed
 	}
@@ -1118,7 +1131,7 @@ func (b *builder) update(r *Record, w *Write, op *spec.Operation, kind string) {
 	if read := b.readID[r]; read != "" && st.HasBody {
 		if rs := b.stepByID(read); rs != nil {
 			again := cloneStep(rs)
-			again.ID = b.id(r.ID + ".read.after" + strings.ToUpper(kind[:1]) + kind[1:])
+			again.ID = b.id(r.ID + ".read.after" + camelKind(kind))
 			again.Equals = st.ID
 			again.Contains = nil
 			again.Why = "reads " + r.ID + " again, it holds what " + st.ID + " sent"
@@ -1252,14 +1265,23 @@ func (b *builder) unauthorized() {
 }
 
 // deletes deletes the created records in reverse order; a record stays
-// when a record that refers to it cannot be deleted. The first delete of a
-// node is followed by a read that must answer 404.
+// when a record that refers to it cannot be deleted. The records of a node
+// take its deletes in turn (delete, delete-by-code, delete-by-name, …). The
+// first use of each delete of a node is followed by a read that must answer
+// 404.
 func (b *builder) deletes(order []*Record) {
 	deleted := map[*Record]bool{}
-	afterRead := map[*Node]bool{}
+	afterRead := map[string]bool{}
+	turn := map[*Node]int{}
 	for i := len(order) - 1; i >= 0; i-- {
 		r := order[i]
-		w, op := b.writeOf(r.Node, WriteDelete)
+		var kind string
+		var w *Write
+		var op *spec.Operation
+		if kinds := b.deleteKinds(r.Node); len(kinds) > 0 {
+			kind = kinds[turn[r.Node]%len(kinds)]
+			w, op = b.writeOf(r.Node, kind)
+		}
 		if w == nil {
 			continue
 		}
@@ -1280,7 +1302,10 @@ func (b *builder) deletes(order []*Record) {
 		if expect == 0 {
 			expect = http.StatusNoContent
 		}
-		st := &scenario.Step{ID: b.id(r.ID + ".delete"), Call: callOf(op), Expect: expect, Why: "deletes " + r.ID}
+		st := &scenario.Step{ID: b.id(r.ID + "." + kind), Call: callOf(op), Expect: expect, Why: "deletes " + r.ID}
+		if by, ok := strings.CutPrefix(kind, WriteDelete+"-by-"); ok {
+			st.Why += " by " + by
+		}
 		b.params(st, op, w.Path, w.Query, w.Header, r, r.Node, nil)
 		if p := ifMatch(op); p != nil && b.etag[r] != "" {
 			if st.Header == nil {
@@ -1290,10 +1315,11 @@ func (b *builder) deletes(order []*Record) {
 		}
 		b.add(st)
 		deleted[r] = true
-		if afterRead[r.Node] {
+		turn[r.Node]++
+		if afterRead[r.Node.Name+"."+kind] {
 			continue
 		}
-		afterRead[r.Node] = true
+		afterRead[r.Node.Name+"."+kind] = true
 		rs := b.stepByID(b.readID[r])
 		if rs == nil {
 			continue
@@ -1302,12 +1328,35 @@ func (b *builder) deletes(order []*Record) {
 			continue
 		}
 		again := cloneStep(rs)
-		again.ID = b.id(r.ID + ".read.afterDelete")
+		again.ID = b.id(r.ID + ".read.after" + camelKind(kind))
 		again.Expect = http.StatusNotFound
 		again.Equals, again.Contains = "", nil
 		again.Why = "reads " + r.ID + " after the delete: 404"
 		b.steps = append(b.steps, again)
 	}
+	for _, n := range slices.SortedFunc(maps.Keys(turn), func(a, c *Node) int { return strings.Compare(a.Name, c.Name) }) {
+		kinds := b.deleteKinds(n)
+		for _, kind := range kinds[min(turn[n], len(kinds)):] {
+			b.note("", n.Name+": "+kind+" not run", fmt.Sprintf("the scenario deletes %d records of %s, one per delete; pick more to run it", turn[n], n.Name))
+		}
+	}
+}
+
+// deleteKinds are the deletes of a node the scenario can send: delete and
+// its variants by other keys.
+func (b *builder) deleteKinds(n *Node) []string {
+	return slices.DeleteFunc(n.KindsOf(WriteDelete), func(k string) bool { w, _ := b.writeOf(n, k); return w == nil })
+}
+
+// camelKind writes a kind for a step id: update-by-name → UpdateByName.
+func camelKind(kind string) string {
+	var sb strings.Builder
+	for part := range strings.SplitSeq(kind, "-") {
+		if part != "" {
+			sb.WriteString(strings.ToUpper(part[:1]) + part[1:])
+		}
+	}
+	return sb.String()
 }
 
 // paramExample is a value for a parameter from the spec: example, schema

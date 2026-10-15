@@ -238,7 +238,7 @@ is sent as it is. A list as a query value
 | `candidates` | how many candidates `require` checks at most |
 | `key` | JSON pointers that identify a record (default `/id`); records are matched by them |
 | `save` | values under a name: `/pointer`, or `header <Name>` |
-| `write` | `create` (or `none`), `update`, `patch`, `delete`, and actions under any other name (`open: POST /gardens/{gardenId}/open gardenId=.id`) |
+| `write` | `create` (or `none`), `update`, `patch`, `delete`, their variants by another key (`update-by-name: PUT /gardens/name/{name} name=.name`, `delete-by-code`, `patch-by-…`), and actions under any other name (`open: POST /gardens/{gardenId}/open gardenId=.id`) |
 | `each` | the child nodes |
 | `off` | the node and its children are not fetched |
 
@@ -282,8 +282,13 @@ spec (the model apitest-gen uses for its examples):
   each such value once, with the operations that use it. Set it and fetch;
 - one write block per resource, at its list node (else at the first node
   that reads its records): its create (`none` without), update (PUT), patch
-  (PATCH) and delete. Path parameters come from a node above that gives
-  them, else a field of the record itself (`authorId` of a book), else any
+  (PATCH) and delete. A record written by several keys (`PUT
+  /gardens/{gardenId}`, `PUT /gardens/name/{name}`, `PUT
+  /gardens/code/{code}`) gets `update` by its id and `update-by-name`,
+  `update-by-code` in the same block, deletes and patches alike; its reads
+  by the other keys are `gardenByName` and `gardenByCode`, and `key`
+  starts with the id (`[/id, /code, /name]`). Path parameters come from a
+  node above that gives them, else a field of the record itself (`authorId` of a book), else any
   node of the tree, else `$name`. Create, update and patch always get
   `body: from <read>`: the read of the record that covers most fields of
   the request (`from profile`), else the node itself;
@@ -413,11 +418,18 @@ the records in an empty instance:
   read with values of the stage alone); per other node one read per record,
   that must hold what its create sent (`check.equals`).
 - **Changes.** Per node the update and the patch of its first created
-  record, each followed by a read that must hold what was sent.
+  record, each followed by a read that must hold what was sent; the
+  variants by other keys too (`gardens1.update-by-code`), each with a
+  change of its own. Unique fields of the create are marked again, so a
+  run with `-unique` sends the same new values.
 - **401.** Per reading operation that needs a token and documents 401, the
   first read again without a token.
 - **Deletes** of the created records in reverse order, each node's first
-  followed by a read that expects 404 (if documented). A record stays when
+  followed by a read that expects 404 (if documented). With variants the
+  records of a node take them in turn (`gardens3.delete`,
+  `gardens2.delete-by-code`, `gardens1.delete-by-name`), each first use
+  with its read for 404; a variant without a record left is listed in the
+  review. A record stays when
   a record that refers to it is not deleted.
 
 ```yaml
