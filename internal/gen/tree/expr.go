@@ -221,9 +221,19 @@ func PointerField(ptr string) string {
 func text(v any) string { return scenario.Text(v) }
 
 // Holds reports whether a record passes the conditions of a node.
-func (n *Node) Holds(rec any) bool {
+func (n *Node) Holds(rec any) bool { return n.HoldsWith(rec, nil) }
+
+// HoldsWith is Holds with the tests that are references filled by fill:
+// "id: docks.pilotId" holds for the pilot a dock names.
+func (n *Node) HoldsWith(rec any, fill func(any) any) bool {
+	test := func(c Clause) bool {
+		if fill != nil {
+			c.Test = fill(c.Test)
+		}
+		return c.holds(rec)
+	}
 	for _, c := range n.Where {
-		if !c.holds(rec) {
+		if !test(c) {
 			return false
 		}
 	}
@@ -231,12 +241,15 @@ func (n *Node) Holds(rec any) bool {
 		return true
 	}
 	for _, c := range n.WhereAny {
-		if c.holds(rec) {
+		if test(c) {
 			return true
 		}
 	}
 	return false
 }
+
+// noValue is the test of a reference without value: no record holds it.
+type noValue struct{}
 
 // holds tests one clause: present, absent, a value, one of a list, or a
 // comparison (">=1950", "<10", "!=OPEN").
@@ -271,6 +284,8 @@ func (c Clause) holds(rec any) bool {
 		return false
 	case nil:
 		return !ok
+	case noValue:
+		return false
 	}
 	return ok && text(v) == text(c.Test)
 }

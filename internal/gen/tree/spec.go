@@ -231,6 +231,9 @@ func Check(s *spec.Spec, t *Tree) []string {
 				}
 			}
 			checkRefs(n.Line, n.Name, n, false, anyMap(n.Path), anyMap(n.Query), anyMap(n.Header), n.Body)
+			for _, c := range slices.Concat(n.Where, n.WhereAny) {
+				checkRefs(n.Line, n.Name+".where."+c.Field, n, false, c.Test)
+			}
 			for _, r := range n.Require {
 				if rop := lookupOp(s, r.Call); rop == nil || !reads(rop, r) {
 					add(r.Line, "%s: require %s: %q is no reading operation of the spec", n.Name, r.Name, r.Call)

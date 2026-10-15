@@ -133,6 +133,20 @@ contain breaking changes, which are listed here.
     value in the scenario, and the step that reads it runs right after
     that write; `onSeed: true` lets an update, patch or action change a
     record of the seed.
+    Dependencies: a list node whose records the API creates reads the
+    records they refer to below it, also when it is placed by its values
+    (before: only nodes built from the resource, and only by a read by
+    key): a resource with a list only by `where: {id: docks.pilotId}` (a
+    `where` value may now be a reference), a list of keys named after a
+    resource (`docks: [D-1]`, `pilotIds`) one read per key (a path
+    reference to a list sends one request per value); a body field the
+    tree reads a record by is its placeholder in the scenario, so the
+    creates run in the right order. The nodes of a level are ordered by
+    what they need (references by name, then the lists their records
+    refer to), no longer as the spec lists the resources. A search
+    (`read: true`) takes the body fields a node gives by name
+    (`pilotId`, `planet: .code`) and hangs below that node, instead of
+    `body: {}` at the top.
   - `apitest-gen regression init|pre|post|diff`: a check before and after a
     deployment that only sends GET requests. `pre` draws real records of a
     stage by the rules of `regression-sample.yaml` (a new sample every

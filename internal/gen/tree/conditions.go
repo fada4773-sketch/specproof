@@ -37,7 +37,7 @@ const requireCandidates = 20
 func (p *proposer) conditions() {
 	for _, n := range p.order() {
 		op := p.lookup(n.Call)
-		if n.Off || op == nil || !isList(op) && !n.Read {
+		if n.Off || op == nil || !isList(op) && !n.Read || p.referenced[n] {
 			continue
 		}
 		c := &cond{p: p, n: n}

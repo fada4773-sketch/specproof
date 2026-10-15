@@ -264,7 +264,7 @@ func (f *fetcher) reach(ctx context.Context, n *Node, rec any, parent *Record, d
 				els = []any{a.body}
 			}
 			for _, el := range els {
-				if !f.passes(c, el) {
+				if !f.passes(c, el, probe) {
 					continue
 				}
 				if f.preferred(c, el) {
@@ -308,9 +308,10 @@ func (f *fetcher) unusedPrefers() {
 }
 
 // passes reports whether a record holds the where of its node and the
-// where of the file.
-func (f *fetcher) passes(n *Node, rec any) bool {
-	if !n.Holds(rec) {
+// where of the file; a test that is a reference reads the record above
+// (parent).
+func (f *fetcher) passes(n *Node, rec any, parent *Record) bool {
+	if !n.HoldsWith(rec, f.whereValue(parent)) {
 		return false
 	}
 	for _, c := range f.globals(n) {
@@ -319,6 +320,34 @@ func (f *fetcher) passes(n *Node, rec any) bool {
 		}
 	}
 	return true
+}
+
+// whereValue fills a test of where that is a reference (".field",
+// "<node>.field", "$name", a composed text) with its value under parent; a
+// reference without value holds for no record. Other tests stay.
+func (f *fetcher) whereValue(parent *Record) func(any) any {
+	var fill func(any) any
+	fill = func(v any) any {
+		switch x := v.(type) {
+		case []any:
+			out := make([]any, len(x))
+			for i, c := range x {
+				out[i] = fill(c)
+			}
+			return out
+		case string:
+			if !treeRef(x, f.scope) && len(ComposedRefs(x, f.scope)) == 0 {
+				return x
+			}
+			val, err := resolveFetch(x, parent, f.t, f.scope, f.first)
+			if err != nil || val == nil {
+				return noValue{}
+			}
+			return val
+		}
+		return v
+	}
+	return fill
 }
 
 // itemDTO is the schema of one record of an answer: the item of a list.

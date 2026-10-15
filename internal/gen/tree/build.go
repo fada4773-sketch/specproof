@@ -349,6 +349,10 @@ func (b *builder) entities() {
 // relation scores how well a field name refers to the record: the length
 // of the record's name in it ("originDockId" and docks: 4), 0 for none.
 func (b *builder) relation(field string, r *Record) int {
+	if b.readBy(r.Node, field) {
+		// the tree reads the record by that field (docks: .docks)
+		return 1000
+	}
 	f := strings.ToLower(field)
 	best := 0
 	names := []string{r.Node.Name}
@@ -362,6 +366,38 @@ func (b *builder) relation(field string, r *Record) int {
 		}
 	}
 	return best
+}
+
+// readBy reports whether a node reads its records by a field of the record
+// above, the field names them: the read of one record by it (GET
+// /docks/{code} code=.docks), or a where on a key of the records
+// (id: docks.pilotId).
+func (b *builder) readBy(n *Node, field string) bool {
+	if n.Parent == nil {
+		return false
+	}
+	names := func(v any) bool {
+		s, ok := v.(string)
+		if !ok {
+			return false
+		}
+		name, f, ok := strings.Cut(s, ".")
+		return ok && strings.EqualFold(f, field) && (name == "" || n.Parent.Ancestor(name) != nil)
+	}
+	if op := lookupOp(b.s, n.Call); op != nil && !isList(op) && !n.HasItems {
+		for _, v := range n.Path {
+			if names(v) {
+				return true
+			}
+		}
+	}
+	for _, c := range n.Where {
+		key := slices.ContainsFunc(keyOf(n), func(k string) bool { return strings.EqualFold(PointerField(k), c.Field) })
+		if key && names(c.Test) {
+			return true
+		}
+	}
+	return false
 }
 
 // placeholderFor replaces a value of the stage by the saved key of the
@@ -1103,6 +1139,7 @@ func (b *builder) readStep(r *Record, op *spec.Operation) {
 		st.Expect = http.StatusOK
 	}
 	b.params(st, op, n.Path, singleValues(n.Query), n.Header, r.Parent, n.Parent, nil)
+	b.ownKeys(st, r, e)
 	if n.HasBody {
 		st.Body, st.HasBody = b.resolve(n.Body, r.Parent, n.Parent, "", st.ID, nil), true
 	}
@@ -1125,6 +1162,33 @@ func (b *builder) readStep(r *Record, op *spec.Operation) {
 	}
 	if b.add(st) && b.readID[e] == "" {
 		b.readID[e] = st.ID
+	}
+}
+
+// ownKeys sets a path value that is a list (the keys the record above
+// lists: dockCode=.docks) to the one of them the record has, as the
+// placeholder of its key when the scenario creates it.
+func (b *builder) ownKeys(st *scenario.Step, r, e *Record) {
+	for k, v := range st.Path {
+		l, ok := v.([]any)
+		if !ok {
+			continue
+		}
+		st.Path[k] = nil
+		for _, ptr := range keyOf(r.Node) {
+			own, found := Pointer(r.Value, ptr)
+			if !found || !slices.ContainsFunc(l, func(x any) bool { return text(x) == text(own) }) {
+				continue
+			}
+			st.Path[k] = own
+			if name := b.keyVar[e][PointerField(ptr)]; b.created[e] && name != "" {
+				st.Path[k] = "{{" + name + "}}"
+			}
+			break
+		}
+		if st.Path[k] == nil {
+			b.note(st.ID, k+" from a list", r.ID+" has none of its values as key; set key at "+r.Node.Name)
+		}
 	}
 }
 

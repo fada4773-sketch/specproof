@@ -2,6 +2,7 @@ package tree
 
 import (
 	"fmt"
+	"maps"
 	"net/http"
 	"slices"
 	"strings"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/fada4773-sketch/specproof/internal/gen/dict"
 	"github.com/fada4773-sketch/specproof/internal/gen/model"
+	"github.com/fada4773-sketch/specproof/internal/gen/value"
 	"github.com/fada4773-sketch/specproof/internal/spec"
 )
 
@@ -64,7 +66,7 @@ func propose(full *spec.Spec, ops []*spec.Operation) *Tree {
 	fs.Ops = ops
 	s := &fs
 	p := &proposer{s: s, m: model.Detect(s, nil), used: map[*spec.Operation]bool{}, names: map[string]int{},
-		res: map[*Node]*model.Resource{}, written: map[*spec.Operation]bool{}, placedBy: map[*Node]hint{}}
+		res: map[*Node]*model.Resource{}, written: map[*spec.Operation]bool{}, placedBy: map[*Node]hint{}, referenced: map[*Node]bool{}}
 	p.all = p.m
 	if len(ops) < len(full.Ops) {
 		// the operationIds name resources of other tags too
@@ -105,6 +107,7 @@ func propose(full *spec.Spec, ops []*spec.Operation) *Tree {
 	p.addWrites()
 	p.attachWrites()
 	p.conditions()
+	p.t.Roots = p.sortSiblings(p.t.Roots, p.t.names())
 	for name, ops := range p.paramOps {
 		t.ParamNotes[name] = usedBy(ops)
 		if vals := p.enums[name]; len(vals) > 0 {
@@ -198,6 +201,9 @@ type proposer struct {
 	// placedBy are the nodes placed below a node for a filter their
 	// operationId names (GetGardensByPersonName below the persons).
 	placedBy map[*Node]hint
+	// referenced are the nodes that read the records a record refers to
+	// (by a where on their key): no conditions of their own
+	referenced map[*Node]bool
 }
 
 func (p *proposer) resourceOf(op *spec.Operation) *model.Resource {
@@ -431,7 +437,11 @@ func (p *proposer) children(n *Node, r *model.Resource, here *chain) {
 			c.Pick = Pick{N: DefaultPick}
 		}
 		p.res[c] = p.resourceOf(op)
+		if res := p.res[c]; res != nil && len(res.Keys) > 0 && isList(op) {
+			c.Key = keyPointers(res)
+		}
 		n.Each = append(n.Each, c)
+		p.createdReferences(c, op)
 	}
 	for _, child := range p.m.Resources {
 		if child.Parent != r || here.has(child) {
@@ -448,44 +458,394 @@ func (p *proposer) children(n *Node, r *model.Resource, here *chain) {
 			}
 		}
 	}
-	for _, field := range r.Relations {
-		t, key := r.Ref(field)
-		if t == nil || here.has(t) {
+	p.references(n, r, here, false)
+}
+
+// reference is a field of a record that names records of another resource
+// by a key: one (personId), or a list of them (docks: [D-1, D-2]).
+type reference struct {
+	field string
+	to    *model.Resource
+	key   string
+	many  bool
+}
+
+// referencesOf are the references of r: its relations, and lists of keys
+// named after a resource (docks, dockCodes, pilotIds).
+func (p *proposer) referencesOf(r *model.Resource) []reference {
+	var out []reference
+	for _, f := range r.Relations {
+		if t, key := r.Ref(f); t != nil {
+			out = append(out, reference{field: f, to: t, key: key})
+		}
+	}
+	for _, f := range r.FieldNames() {
+		s := r.Schema(f)
+		if s == nil || s.Value == nil || value.Type(s.Value) != "array" || s.Value.Items == nil || s.Value.Items.Value == nil {
 			continue
 		}
-		// the read by the key the field holds: personId by id, not by the
-		// first read of the spec (GET /persons/name/{name})
+		typ := value.Type(s.Value.Items.Value)
+		if typ != "string" && typ != "integer" {
+			continue
+		}
+		if t, key := p.listedKeys(f, typ); t != nil && t != r {
+			out = append(out, reference{field: f, to: t, key: key, many: true})
+		}
+	}
+	return out
+}
+
+// listedKeys reads the name of a list of keys: docks or dockCodes are
+// keys of Dock, the key of the item type (a text: its code, a number:
+// its id).
+func (p *proposer) listedKeys(field, typ string) (*model.Resource, string) {
+	name := singular(field)
+	var key string
+	for _, suffix := range []string{"Ids", "Codes", "Numbers", "Keys", "Names"} {
+		if base, ok := strings.CutSuffix(field, suffix); ok && base != "" {
+			name, key = base, singular(suffix)
+			break
+		}
+	}
+	t := p.m.Resource(name)
+	if t == nil {
+		return nil, ""
+	}
+	if key != "" {
+		for _, k := range append(slices.Clone(t.Keys), t.FieldNames()...) {
+			if strings.EqualFold(k, key) || strings.EqualFold(k, t.Name+key) {
+				return t, k
+			}
+		}
+	}
+	// a plain plural (docks) holds keys named after the resource
+	// (dockCode); events of an installation are names, no ids of events
+	for _, k := range t.Keys {
+		if s := t.Schema(k); s != nil && s.Value != nil && value.Type(s.Value) == typ &&
+			!generic(k) && strings.Contains(strings.ToLower(k), strings.ToLower(t.Name)) {
+			return t, k
+		}
+	}
+	return nil, ""
+}
+
+// references adds below a node of r the records its fields refer to, read
+// by the key the field holds: the read by that key (personId by id, not by
+// the first read of the spec), else a list of the resource with a where on
+// the key (the pilot of a dock from the pilots). A scenario creates these
+// records before the record that refers to them. lean: below such a record
+// only its own references, not every read about it.
+func (p *proposer) references(n *Node, r *model.Resource, here *chain, lean bool) {
+	if here.depth() > maxDepth {
+		return
+	}
+	if p.referenced == nil {
+		p.referenced = map[*Node]bool{}
+	}
+	for _, ref := range p.referencesOf(r) {
+		t := p.creatable(ref.to, ref.key)
+		if here.has(t) || p.readsBelow(n, ref.field) {
+			continue
+		}
 		var op *spec.Operation
 		for _, mo := range t.OpsWith(model.RoleRead) {
 			if len(pathParams(mo.Op)) != 1 {
 				continue
 			}
-			if exact := key != "" && strings.EqualFold(byField(mo), key); op == nil || exact {
+			if exact := ref.key != "" && strings.EqualFold(byField(mo), ref.key); op == nil || exact {
 				op = mo.Op
 				if exact {
 					break
 				}
 			}
 		}
-		if op == nil {
-			continue
-		}
-		params := pathParams(op)
-		p.used[op] = true
 		// the record the field names; it creates like the node of its
 		// resource (no write block of its own)
 		name := lowerFirst(t.Name)
 		if p.names[name] > 0 {
 			name = lowerFirst(singular(r.Name)) + t.Name
 		}
-		c := &Node{Name: p.name(name, nil), Call: callOf(op), Comment: op.ID, Parent: n,
-			Path: map[string]any{params[0]: "." + field}}
+		var c *Node
+		switch {
+		case op != nil:
+			p.used[op] = true
+			c = &Node{Name: p.name(name, nil), Call: callOf(op), Comment: op.ID, Parent: n,
+				Path: map[string]any{pathParams(op)[0]: "." + ref.field}}
+		case ref.key != "":
+			list := p.listOf(t, here)
+			if list == nil {
+				continue
+			}
+			key := t.Field(ref.key)
+			if key == "" {
+				key = ref.key
+			}
+			c = &Node{Name: p.name(name, nil), Call: callOf(list), Comment: list.ID, Parent: n,
+				Where: []Clause{{Field: key, Test: n.Name + "." + ref.field, Note: "the " + lowerFirst(t.Name) + " " + n.Name + " refers to"}}}
+			p.fill(c, list, here)
+			if pg := pageOf(list); pg != nil {
+				c.Page = pg
+			}
+			p.referenced[c] = true
+		default:
+			continue
+		}
+		if ref.many {
+			c.Pick = Pick{All: true}
+		}
 		c.Key = keyPointers(t)
 		p.res[c] = t
 		next := &chain{res: t, node: c, up: here}
-		p.children(c, t, next)
+		if lean {
+			p.referenced[c] = true
+			p.references(c, t, next, true)
+		} else {
+			p.children(c, t, next)
+		}
 		n.Each = append(n.Each, c)
 	}
+}
+
+// creatable is the resource a reference names, or, when the API cannot
+// create its records, a resource it can create with the same key named
+// after it (dockCode of a dock list and of the dock the create
+// answers: one kind of record). A generic key (code, id) names no kind.
+func (p *proposer) creatable(t *model.Resource, key string) *model.Resource {
+	if len(t.OpsWith(model.RoleCreate)) > 0 || key == "" || generic(key) ||
+		!strings.Contains(strings.ToLower(key), strings.ToLower(singular(t.Name))) {
+		return t
+	}
+	for _, x := range p.m.Resources {
+		if x != t && len(x.OpsWith(model.RoleCreate)) > 0 && slices.ContainsFunc(x.Keys, func(k string) bool { return strings.EqualFold(k, key) }) {
+			return x
+		}
+	}
+	return t
+}
+
+// createdReferences adds the references below a list node that was not
+// built from its resource (placed by the values it needs): its records the
+// scenario may create need the records they refer to.
+func (p *proposer) createdReferences(c *Node, op *spec.Operation) {
+	res := p.res[c]
+	if res == nil || !isList(op) || len(res.OpsWith(model.RoleCreate)) == 0 {
+		return
+	}
+	p.references(c, res, p.chainOf(c), true)
+}
+
+// bodyFilters are the fields of a search's body that a node of the tree
+// gives, like a parameter: {planet: planets.code} for a field named
+// after a resource, {pilotId: pilots.id}. Fields of the records the search
+// answers with (filters on themselves) and paging fields are left out.
+func (p *proposer) bodyFilters(op *spec.Operation, res *model.Resource) map[string]provider {
+	props, _ := properties(schemaOf(requestRef(op)))
+	out := map[string]provider{}
+	nodes := p.order()
+	for _, name := range sortedKeys(props) {
+		s := props[name]
+		if s == nil || s.Value == nil || slices.Contains(pagingNames, strings.ToLower(name)) || res != nil && res.Field(name) != "" {
+			continue
+		}
+		var best provider
+		for i, n := range nodes {
+			r := p.res[n]
+			if n.Off || r == nil || r == res || p.referenced[n] {
+				continue
+			}
+			// the name names the record: pilotId, planet; a field of
+			// another record with that name filters nothing of it
+			f, score := nameAndKey(name, r)
+			if score == 0 {
+				f, score = namedKey(name, s.Value, r)
+			}
+			if score > best.score {
+				best = provider{node: n, field: f, score: score, at: i}
+			}
+		}
+		if best.node != nil {
+			out[name] = best
+		}
+	}
+	return out
+}
+
+// namedKey is the key of r a field named after r holds: a text its code, a
+// number its id (planet: Planet.planetCode).
+func namedKey(name string, s *openapi3.Schema, r *model.Resource) (string, int) {
+	if !strings.EqualFold(name, r.Name) && !strings.EqualFold(singular(name), r.Name) {
+		return "", 0
+	}
+	keys := slices.Clone(r.Keys)
+	for _, g := range []string{"id", "code", "key"} {
+		// a record without known keys: the usual names of a key
+		if f := r.Field(g); f != "" && !slices.Contains(keys, f) {
+			keys = append(keys, f)
+		}
+	}
+	typ := value.Type(s)
+	for _, k := range keys {
+		if ks := r.Schema(k); ks != nil && ks.Value != nil && value.Type(ks.Value) == typ {
+			return k, 75
+		}
+	}
+	return "", 0
+}
+
+// sortSiblings orders nodes of one level (and below them, each level) by
+// what they need: a node whose subtree reads "<node>.field" of another's
+// subtree after it (the fetch needs it before), and a node whose records
+// refer to the records another node lists after it (the pilots before the
+// docks that name them, the docks before the bookings that list
+// them). Without such a need the order stays; when the needs go round,
+// only the reads by name count.
+func (p *proposer) sortSiblings(list []*Node, scope func(string) bool) []*Node {
+	for _, n := range list {
+		n.Each = p.sortSiblings(n.Each, scope)
+	}
+	if len(list) < 2 {
+		return list
+	}
+	type info struct {
+		names, reads map[string]bool
+		refers       []*model.Resource
+	}
+	infos := make([]info, len(list))
+	for i, n := range list {
+		in := info{names: map[string]bool{}, reads: map[string]bool{}}
+		var walk func(x *Node)
+		walk = func(x *Node) {
+			in.names[x.Name] = true
+			values := []any{anyMap(x.Path), anyMap(x.Query), anyMap(x.Header), x.Body}
+			for _, c := range slices.Concat(x.Where, x.WhereAny) {
+				values = append(values, c.Test)
+			}
+			for _, r := range x.Require {
+				values = append(values, anyMap(r.Path), anyMap(r.Query))
+			}
+			for _, v := range values {
+				walkStrings(v, func(s string) {
+					for _, part := range refsOf(s, scope) {
+						if name, _, ok := strings.Cut(part, "."); ok && name != "" {
+							in.reads[name] = true
+						}
+					}
+				})
+			}
+			if r := p.res[x]; r != nil {
+				for _, ref := range p.referencesOf(r) {
+					in.refers = append(in.refers, p.creatable(ref.to, ref.key))
+				}
+			}
+			for _, c := range x.Each {
+				walk(c)
+			}
+		}
+		walk(n)
+		infos[i] = in
+	}
+	needs := func(soft bool) [][]int {
+		out := make([][]int, len(list))
+		for b := range list {
+			for a := range list {
+				if a == b {
+					continue
+				}
+				hard := false
+				for name := range infos[b].reads {
+					if infos[a].names[name] && !infos[b].names[name] {
+						hard = true
+						break
+					}
+				}
+				refers := false
+				if ra := p.res[list[a]]; soft && ra != nil {
+					refers = slices.ContainsFunc(infos[b].refers, func(t *model.Resource) bool { return t == ra || sameRecord(t, ra) })
+				}
+				if hard || refers {
+					out[b] = append(out[b], a)
+				}
+			}
+		}
+		return out
+	}
+	for _, soft := range []bool{true, false} {
+		if order, ok := stableTopo(needs(soft)); ok {
+			out := make([]*Node, len(list))
+			for i, j := range order {
+				out[i] = list[j]
+			}
+			return out
+		}
+	}
+	return list
+}
+
+// stableTopo orders 0..n-1 so that each comes after what it needs, else
+// in its own order; ok is false when the needs go round.
+func stableTopo(needs [][]int) ([]int, bool) {
+	done := make([]bool, len(needs))
+	var out []int
+	for len(out) < len(needs) {
+		next := -1
+		for i := range needs {
+			if done[i] {
+				continue
+			}
+			if !slices.ContainsFunc(needs[i], func(j int) bool { return !done[j] }) {
+				next = i
+				break
+			}
+		}
+		if next < 0 {
+			return nil, false
+		}
+		done[next] = true
+		out = append(out, next)
+	}
+	return out, true
+}
+
+// listOf is a list of t whose values the chain gives, nil without.
+func (p *proposer) listOf(t *model.Resource, here *chain) *spec.Operation {
+	for _, mo := range t.OpsWith(model.RoleList) {
+		if p.reachable(mo.Op, here) {
+			return mo.Op
+		}
+	}
+	return nil
+}
+
+// readsBelow reports whether a node below n reads a record by the field
+// (".field").
+func (p *proposer) readsBelow(n *Node, field string) bool {
+	for _, c := range n.Each {
+		for _, v := range c.Path {
+			if v == "."+field {
+				return true
+			}
+		}
+		for _, w := range c.Where {
+			if w.Test == n.Name+"."+field {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// chainOf is the chain of a node placed below others: the resources of
+// its ancestors.
+func (p *proposer) chainOf(n *Node) *chain {
+	var nodes []*Node
+	for x := n; x != nil; x = x.Parent {
+		nodes = append([]*Node{x}, nodes...)
+	}
+	var c *chain
+	for _, x := range nodes {
+		c = &chain{res: p.res[x], node: x, up: c}
+	}
+	return c
 }
 
 // refers reports whether a field of r refers to t.
@@ -597,25 +957,13 @@ func (p *proposer) providesFresh(op *spec.Operation, param string, r *model.Reso
 		// the operationId names it: GetGardensByPersonName → Person.name
 		return h.field, 85
 	}
-	lp := strings.ToLower(param)
 	keys := r.Keys
 	if len(keys) == 0 {
 		if f := r.Field("id"); f != "" {
 			keys = []string{f}
 		}
 	}
-	best, score := "", 0
-	for _, name := range []string{r.Name, singular(r.Name)} {
-		for _, k := range keys {
-			whole := strings.ToLower(name + k)
-			switch {
-			case lp == whole && score < 90:
-				best, score = k, 90
-			case strings.HasSuffix(lp, whole) && score < 60:
-				best, score = k, 60
-			}
-		}
-	}
+	best, score := nameAndKey(param, r)
 	if score == 0 && !generic(param) {
 		if f := r.Field(param); f != "" {
 			best, score = f, 50
@@ -638,6 +986,31 @@ func (p *proposer) providesFresh(op *spec.Operation, param string, r *model.Reso
 		if seg := model.SegmentBefore(op.Path, param); seg != "" && namesRecord(seg, r) {
 			if f := r.Field(param); f != "" {
 				best, score = f, 70
+			}
+		}
+	}
+	return best, score
+}
+
+// nameAndKey is the key a name made of the resource's name and a key holds:
+// bookId (90), originBookId (60); 0 for none.
+func nameAndKey(param string, r *model.Resource) (string, int) {
+	lp := strings.ToLower(param)
+	keys := r.Keys
+	if len(keys) == 0 {
+		if f := r.Field("id"); f != "" {
+			keys = []string{f}
+		}
+	}
+	best, score := "", 0
+	for _, name := range []string{r.Name, singular(r.Name)} {
+		for _, k := range keys {
+			whole := strings.ToLower(name + k)
+			switch {
+			case lp == whole && score < 90:
+				best, score = k, 90
+			case strings.HasSuffix(lp, whole) && score < 60:
+				best, score = k, 60
 			}
 		}
 	}
@@ -891,6 +1264,7 @@ func (p *proposer) placeOnce(withParams bool) bool {
 				}
 			}
 		}
+		p.createdReferences(c, op)
 		placed = true
 		if withParams {
 			return true
@@ -928,7 +1302,9 @@ func (p *proposer) addWrites() {
 				continue
 			}
 			tier := 3
-			if isList(op) {
+			// a node that reads the records another refers to is home
+			// only when no other node holds the resource
+			if isList(op) && !p.referenced[n] {
 				tier = 0
 				if len(p.hints(op)) > 0 {
 					tier = 1
@@ -1611,27 +1987,36 @@ func propertyFoldIn(props openapi3.Schemas, name string) (*openapi3.SchemaRef, b
 // below the nodes that give its path values, else at the top.
 func (p *proposer) search(op *spec.Operation) {
 	p.used[op] = true
+	res := p.resourceOf(op)
 	provs, _ := p.providers(op)
+	filters := p.bodyFilters(op, res)
 	var parent provider
-	for _, pr := range provs {
+	for _, pr := range slices.Concat(slices.Collect(maps.Values(provs)), slices.Collect(maps.Values(filters))) {
 		if parent.node == nil || pr.at > parent.at {
 			parent = pr
 		}
 	}
+	ref := func(pr provider) string {
+		if pr.node == parent.node {
+			return "." + pr.field
+		}
+		return pr.node.Name + "." + pr.field
+	}
+	body := map[string]any{}
+	for name, pr := range filters {
+		body[name] = ref(pr)
+	}
 	c := &Node{Name: p.name(p.viewName(op), op), Call: callOf(op), Comment: op.ID, Parent: parent.node, Read: true,
-		Body: map[string]any{}, HasBody: true, Pick: Pick{N: DefaultPick}}
+		Body: body, HasBody: true, Pick: Pick{N: DefaultPick}}
 	for _, nd := range p.needs(op) {
 		pr, ok := provs[nd.name]
 		switch {
 		case !ok:
 			c.set(nd, p.param(nd.name, op))
-		case pr.node == parent.node:
-			c.set(nd, "."+pr.field)
 		default:
-			c.set(nd, pr.node.Name+"."+pr.field)
+			c.set(nd, ref(pr))
 		}
 	}
-	res := p.resourceOf(op)
 	p.res[c] = res
 	if res != nil {
 		c.Key = keyPointers(res)

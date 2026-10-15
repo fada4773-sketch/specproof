@@ -298,7 +298,7 @@ name. A prefer no fetched record holds is noted.
 | `page` | `param` (page number or offset), `size: {name: n}`, `max` pages (default 1), `start`, `step`, `next` (JSON pointer of a cursor in the answer), `in: body` (with `param` a JSON pointer into the body) |
 | `pick` | a number (at random, seeded), `{first: n}`, `all`, or a list of keys (by the first key) |
 | `min` | in `require`: the answer must list at least this many elements (that hold its `where`) |
-| `where` | conditions on fields, all must hold: `present`, `absent`, a value, a list (one of), `>=`, `<=`, `>`, `<`, `!=` (numbers, else text: ISO dates compare); `any:` holds alternatives |
+| `where` | conditions on fields, all must hold: `present`, `absent`, a value, a list (one of), `>=`, `<=`, `>`, `<`, `!=` (numbers, else text: ISO dates compare); `any:` holds alternatives. A value may be a reference: `id: docks.pilotId` (or `.pilotId`) holds for the record the dock names, a reference to a list for one of its values |
 | `require` | named requests per candidate (`.field` is the candidate); each must answer 2xx and pass its own `where` |
 | `candidates` | how many candidates `require` checks at most |
 | `key` | JSON pointers that identify a record (default `/id`); records are matched by them |
@@ -392,7 +392,17 @@ spec (the model apitest-gen uses for its examples):
   path parameter no field names (`/docks/{dockNumber}`) holds the key the
   references to the resource name (`Ship.DockId` → `Dock.Id`);
 - a reference (`personId`) is read by the key it holds: the read by id,
-  not the first read of the spec;
+  not the first read of the spec. So the scenario can create a record
+  after the records it refers to, every list node whose records the API
+  creates reads them below it, also one placed by its values: a resource
+  with a list only gets `GET /pilots` with `where: {id: docks.pilotId}`;
+  a list of keys named after a resource (`docks: [D-1, D-2]`, `pilotIds`,
+  `dockCodes`) reads one record per key (`dockCode=.docks`, `pick: all`).
+  When the resource a field names cannot be created, the resource with
+  the same key named after it that can is read (`dockCode` of a list
+  of docks and of the dock its create answers). These nodes get no
+  `where` or `require` of their own, and their records create like the
+  list of their resource;
 - one write block per resource, at its list node (else at the first node
   that reads its records): its create (`none` without), update (PUT), patch
   (PATCH) and delete; the create at the path of the list (`POST
@@ -418,8 +428,18 @@ spec (the model apitest-gen uses for its examples):
   its resource, the node that reads its path (`PUT /docks/{dockId}` to
   `GET /docks/{dockId}`), a node whose key its path takes, or whose records
   cover its body. A POST that answers with a list and creates nothing is a
-  search: a node with `read: true`. A write without such a node goes to
-  `ignore` with the reason.
+  search: a node with `read: true`. Its body takes the fields a node gives
+  by their name, like parameters: `pilotId` from the pilots, a field named
+  after a resource its key of the same type (`planet: .code`); it hangs
+  below the node fetched last of those. Fields of the records it answers
+  with and paging fields are left out. A write without such a node goes to
+  `ignore` with the reason;
+- the order of the nodes of a level: a node after the nodes whose records
+  its subtree reads by name (`<node>.field`, as the fetch needs it), and
+  after the list of a resource its records refer to (the pilots before
+  the planets whose docks name them, the docks before the bookings that
+  list them); else as found. When these needs go round, only the reads by
+  name count.
 
 **The operationIds.** An operationId is read as words:
 `getGardensByPersonName` is the verb, the subject (gardens) and the filter
@@ -497,7 +517,8 @@ sent. Per node and record above it:
    (at most `candidates`);
 5. run the child nodes for each record taken.
 
-The same request is sent once. A request that fails is noted, and its
+A path value that is a reference to a list (`dockCode=.docks`) sends one
+request per value. The same request is sent once. A request that fails is noted, and its
 branch is left out; the fetch goes on. When `budget` is used up, the rest
 is not fetched. A node without records, candidates `where` or `require`
 left out, keys `pick` names that are not there, and every failed request
@@ -523,7 +544,9 @@ the records in an empty instance:
   every value that is the key of a record the scenario creates becomes its
   saved value (`{{pilots2.id}}`). A reference in the tree (`.id`,
   `docks.id`) names the record; a body field counts when its name names
-  the record (`pilotId`, `originDockId`). A value that fits several records
+  the record (`pilotId`, `originDockId`), or when the tree reads the record
+  by that field (`docks: [D-1]` with `dockCode=.docks` below, also each
+  value of a list). A value that fits several records
   stays, and the review says so.
 - **Bodies.** The record `from` names first, then the record itself, then
   its reads below it (the same resource, and every read that takes its key:

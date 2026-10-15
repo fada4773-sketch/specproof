@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"io"
+	"maps"
 	"math/rand/v2"
 	"net/http"
 	"net/url"
@@ -270,7 +271,7 @@ func (f *fetcher) node(ctx context.Context, n *Node, parent *Record) error {
 	}
 	var kept []cand
 	for _, c := range candidates {
-		if f.passes(n, c.value) {
+		if f.passes(n, c.value, parent) {
 			kept = append(kept, c)
 		}
 	}
@@ -587,6 +588,30 @@ func (f *fetcher) requests(n *Node, op *spec.Operation, parent *Record) ([]reque
 			body = m
 		}
 	}
+	// a path value that is a list (the keys a record lists: .docks)
+	// reads one record per value
+	var pathList string
+	for _, k := range sortedKeys(path) {
+		if _, ok := path[k].([]any); ok {
+			if pathList != "" {
+				return nil, fmt.Errorf("path parameters %s and %s both hold a list; give only one a list", pathList, k)
+			}
+			pathList = k
+		}
+	}
+	if pathList != "" {
+		var out []request
+		for _, v := range path[pathList].([]any) {
+			p := maps.Clone(path)
+			p[pathList] = v
+			target, err := fillPath(op.Path, p)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, request{path: target, query: query, header: header, body: body, hasBody: n.HasBody})
+		}
+		return out, nil
+	}
 	target, err := fillPath(op.Path, path)
 	if err != nil {
 		return nil, err
@@ -767,7 +792,7 @@ func (f *fetcher) required(ctx context.Context, n *Node, cand any, parent *Recor
 			if list, isList := listOf(r, op, a.body); isList {
 				held := 0
 				for _, el := range list {
-					if f.passes(r, el) {
+					if f.passes(r, el, probe) {
 						held++
 					}
 				}
@@ -776,7 +801,7 @@ func (f *fetcher) required(ctx context.Context, n *Node, cand any, parent *Recor
 				}
 				continue
 			}
-			if !f.passes(r, a.body) {
+			if !f.passes(r, a.body, probe) {
 				return false, nil
 			}
 		}
