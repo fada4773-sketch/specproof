@@ -107,6 +107,9 @@ func propose(full *spec.Spec, ops []*spec.Operation) *Tree {
 	p.conditions()
 	for name, ops := range p.paramOps {
 		t.ParamNotes[name] = usedBy(ops)
+		if vals := p.enums[name]; len(vals) > 0 {
+			t.ParamNotes[name] += " · one of " + strings.Join(vals, ", ")
+		}
 	}
 	return t
 }
@@ -116,6 +119,14 @@ func propose(full *spec.Spec, ops []*spec.Operation) *Tree {
 func (p *proposer) hinted(op *spec.Operation, name string) bool {
 	_, ok := p.hints(op)[name]
 	return ok
+}
+
+// paramEnum notes the values a param of an enum can take.
+func (p *proposer) paramEnum(name string, vals []string) {
+	if p.enums == nil {
+		p.enums = map[string][]string{}
+	}
+	p.enums[name] = vals
 }
 
 // usedBy names the operations that use a value of params.
@@ -130,7 +141,24 @@ func usedBy(ops []string) string {
 // adds the entry.
 func (p *proposer) param(name string, op *spec.Operation) string {
 	if _, ok := p.t.Params[name]; !ok {
+		// the example, default or first enum value of the spec; a value of
+		// the stage is still yours to set
 		p.t.Params[name] = nil
+		for _, prm := range op.Params {
+			if prm.Name != name {
+				continue
+			}
+			if v, ok := documentedValue(prm); ok {
+				p.t.Params[name] = v
+				if prm.Schema != nil && prm.Schema.Value != nil && len(prm.Schema.Value.Enum) > 1 {
+					var vals []string
+					for _, e := range prm.Schema.Value.Enum {
+						vals = append(vals, text(e))
+					}
+					p.paramEnum(name, vals)
+				}
+			}
+		}
 		p.t.ParamNames = append(p.t.ParamNames, name)
 	}
 	if p.paramOps == nil {
@@ -161,6 +189,12 @@ type proposer struct {
 	all *model.Model
 	// hintCache holds what the operationIds say about parameters.
 	hintCache map[*spec.Operation]map[string]hint
+	// enums are the values of params from an enum of the spec.
+	enums map[string][]string
+	// provided caches provides, refKeys the keys references agree on.
+	provided map[provideKey]provided
+	refKeys  map[*model.Resource]string
+	ops      map[string]*spec.Operation
 	// placedBy are the nodes placed below a node for a filter their
 	// operationId names (GetGardensByPersonName below the persons).
 	placedBy map[*Node]hint
@@ -235,9 +269,17 @@ func (p *proposer) name(base string, op *spec.Operation) string {
 		return base
 	}
 	if op != nil && op.HasOperationID {
-		if id := clean(lowerFirst(op.ID)); p.names[id] == 0 {
-			p.names[id]++
-			return id
+		// the operationId without its verb (getMechanics: mechanics,
+		// listBedsByGardenCode: bedsByGardenCode), else as it is
+		ids := []string{clean(lowerFirst(op.ID))}
+		if v := parseOpName(op.ID).verb; v != "" && len(op.ID) > len(v) && strings.EqualFold(op.ID[:len(v)], v) {
+			ids = append([]string{clean(lowerFirst(op.ID[len(v):]))}, ids...)
+		}
+		for _, id := range ids {
+			if p.names[id] == 0 {
+				p.names[id]++
+				return id
+			}
 		}
 	}
 	p.names[base]++
@@ -328,7 +370,7 @@ func (c *chain) has(r *model.Resource) bool {
 // listNode is the node of a resource read through a list.
 func (p *proposer) listNode(r *model.Resource, list *spec.Operation, parent *Node, up *chain) *Node {
 	p.used[list] = true
-	n := &Node{Name: p.name(listName(list, r), list), Call: callOf(list), Comment: list.ID, Pick: Pick{N: DefaultPick}, Parent: parent}
+	n := &Node{Name: p.name(p.listName(list, r), list), Call: callOf(list), Comment: list.ID, Pick: Pick{N: DefaultPick}, Parent: parent}
 	p.res[n] = r
 	p.fill(n, list, up)
 	if pg := pageOf(list); pg != nil {
@@ -407,19 +449,28 @@ func (p *proposer) children(n *Node, r *model.Resource, here *chain) {
 		}
 	}
 	for _, field := range r.Relations {
-		t, _ := r.Ref(field)
+		t, key := r.Ref(field)
 		if t == nil || here.has(t) {
 			continue
 		}
-		reads := t.OpsWith(model.RoleRead)
-		if len(reads) == 0 {
+		// the read by the key the field holds: personId by id, not by the
+		// first read of the spec (GET /persons/name/{name})
+		var op *spec.Operation
+		for _, mo := range t.OpsWith(model.RoleRead) {
+			if len(pathParams(mo.Op)) != 1 {
+				continue
+			}
+			if exact := key != "" && strings.EqualFold(byField(mo), key); op == nil || exact {
+				op = mo.Op
+				if exact {
+					break
+				}
+			}
+		}
+		if op == nil {
 			continue
 		}
-		op := reads[0].Op
 		params := pathParams(op)
-		if len(params) != 1 {
-			continue
-		}
 		p.used[op] = true
 		// the record the field names; it creates like the node of its
 		// resource (no write block of its own)
@@ -488,6 +539,46 @@ func (p *proposer) provides(op *spec.Operation, param string, r *model.Resource)
 	if r == nil {
 		return "", 0
 	}
+	// the answer depends on the spec and the model alone: a large spec
+	// asks it millions of times
+	k := provideKey{op, param, r}
+	if v, ok := p.provided[k]; ok {
+		return v.field, v.score
+	}
+	f, s := p.providesFresh(op, param, r)
+	if p.provided == nil {
+		p.provided = map[provideKey]provided{}
+	}
+	p.provided[k] = provided{f, s}
+	return f, s
+}
+
+// lookup is lookupOp for the spec of the proposal, by an index: a large
+// spec looks up its calls millions of times.
+func (p *proposer) lookup(call string) *spec.Operation {
+	if op, ok := p.ops[call]; ok {
+		return op
+	}
+	op := lookupOp(p.s, call)
+	if p.ops == nil {
+		p.ops = map[string]*spec.Operation{}
+	}
+	p.ops[call] = op
+	return op
+}
+
+type provideKey struct {
+	op    *spec.Operation
+	param string
+	r     *model.Resource
+}
+
+type provided struct {
+	field string
+	score int
+}
+
+func (p *proposer) providesFresh(op *spec.Operation, param string, r *model.Resource) (string, int) {
 	if mo := p.m.Op(op); mo != nil {
 		if mp := mo.Param(param); mp != nil && mp.Resource == r && mp.Field != "" {
 			return mp.Field, 100
@@ -519,9 +610,67 @@ func (p *proposer) provides(op *spec.Operation, param string, r *model.Resource)
 	if score == 0 && !generic(param) {
 		if f := r.Field(param); f != "" {
 			best, score = f, 50
+			// named exactly like a key of the record (repairNo of a repair state)
+			if slices.ContainsFunc(keys, func(k string) bool { return strings.EqualFold(k, f) }) {
+				score = 90
+			}
+		}
+	}
+	if score == 0 {
+		// GET /docks/{dockNumber} read with Ship.DockId, which refers to
+		// Dock.Id: dockNumber holds the Id
+		if k := p.relationKey(op, param, r); k != "" {
+			best, score = k, 80
 		}
 	}
 	return best, score
+}
+
+// relationKey is the key of r a path parameter of r's own path holds when
+// a field of another resource refers to r by that key: the parameter is
+// the last of the path, the word before it names r, and the references to
+// r agree on one key.
+func (p *proposer) relationKey(op *spec.Operation, param string, r *model.Resource) string {
+	params := pathParams(op)
+	if len(params) == 0 || params[len(params)-1] != param {
+		return ""
+	}
+	seg := model.SegmentBefore(op.Path, param)
+	if !strings.EqualFold(seg, r.Name) && !strings.EqualFold(singular(seg), r.Name) {
+		return ""
+	}
+	if p.refKeys == nil {
+		// per resource the key the references to it agree on, "" when
+		// they disagree
+		p.refKeys = map[*model.Resource]string{}
+		mixed := map[*model.Resource]bool{}
+		for _, x := range p.m.Resources {
+			for _, f := range x.Relations {
+				to, k := x.Ref(f)
+				if to == nil || k == "" || mixed[to] {
+					continue
+				}
+				if old, ok := p.refKeys[to]; ok && !strings.EqualFold(old, k) {
+					mixed[to] = true
+					p.refKeys[to] = ""
+					continue
+				}
+				p.refKeys[to] = k
+			}
+		}
+	}
+	return p.refKeys[r]
+}
+
+// namesOther reports whether a path word names a resource other than r
+// (pilots in /pilots/{id}/license below the docks).
+func (p *proposer) namesOther(seg string, r *model.Resource) bool {
+	for _, x := range p.all.Resources {
+		if x != r && (strings.EqualFold(seg, x.Name) || strings.EqualFold(singular(seg), x.Name)) && (r == nil || !strings.EqualFold(x.Name, r.Name)) {
+			return true
+		}
+	}
+	return false
 }
 
 func generic(name string) bool {
@@ -552,7 +701,8 @@ func (p *proposer) paramValues(op *spec.Operation, here *chain) (map[string]any,
 			out[name] = "." + field
 		case best != nil:
 			out[name] = best.node.Name + "." + field
-		case nd.in == openapi3.ParameterInPath && here != nil && here.res != nil && here.res.Field(name) != "" && !p.hinted(op, name):
+		case nd.in == openapi3.ParameterInPath && here != nil && here.res != nil && here.res.Field(name) != "" && !p.hinted(op, name) &&
+			!p.namesOther(model.SegmentBefore(op.Path, name), here.res):
 			// a field of the record above with the parameter's name
 			out[name] = "." + here.res.Field(name)
 		default:
@@ -723,7 +873,7 @@ func (p *proposer) addWrites() {
 			if r == nil || p.home[r] != nil || n.Off || len(n.Key) == 0 {
 				continue
 			}
-			op := lookupOp(p.s, n.Call)
+			op := p.lookup(n.Call)
 			if op == nil {
 				continue
 			}
@@ -764,7 +914,16 @@ func (p *proposer) writes(r *model.Resource, n *Node) map[string]*Write {
 	if len(creates) == 0 {
 		out[WriteCreate] = &Write{Kind: WriteCreate, None: true, Note: "no create of " + r.Name + " in the spec: the instance must hold these records"}
 	} else {
-		add(WriteCreate, creates[0])
+		// the create at the path the node reads (POST /gardens/{gardenId}/beds
+		// for GET /gardens/{gardenId}/beds), else the first; the others go
+		// to the nodes that read their paths
+		first := creates[0]
+		if read := p.lookup(n.Call); read != nil {
+			if i := slices.IndexFunc(creates, func(mo *model.Op) bool { return mo.Op.Path == read.Path }); i >= 0 {
+				first = creates[i]
+			}
+		}
+		add(WriteCreate, first)
 	}
 	// a write by another key than the first (PUT /gardens/name/{name} next
 	// to PUT /gardens/{gardenId}) is a variant: update-by-name
@@ -774,7 +933,7 @@ func (p *proposer) writes(r *model.Resource, n *Node) map[string]*Write {
 		for _, mo := range ops {
 			kind := base
 			if _, ok := out[base]; ok {
-				kind = base + "-by-" + kebab(byField(mo))
+				kind = variantName(base, mo, out)
 			}
 			add(kind, mo)
 		}
@@ -791,6 +950,30 @@ func (p *proposer) writes(r *model.Resource, n *Node) map[string]*Write {
 	variant(WritePatch, patches)
 	variant(WriteDelete, r.OpsWith(model.RoleDelete))
 	return out
+}
+
+// variantName names a write by another key: by the field its path takes
+// (update-by-name), when that is taken by the filter of its operationId
+// (UpdateGardenByMoon: update-by-moon), else numbered.
+func variantName(base string, mo *model.Op, taken map[string]*Write) string {
+	kind := base + "-by-" + kebab(byField(mo))
+	if taken[kind] == nil {
+		return kind
+	}
+	if by := parseOpName(mo.Op.ID).by; mo.Op.HasOperationID && len(by) > 0 {
+		var parts []string
+		for _, p := range by {
+			parts = append(parts, strings.Join(p, "-"))
+		}
+		if k := base + "-by-" + strings.Join(parts, "-and-"); taken[k] == nil {
+			return k
+		}
+	}
+	for i := 2; ; i++ {
+		if k := fmt.Sprintf("%s-%d", kind, i); taken[k] == nil {
+			return k
+		}
+	}
 }
 
 // keyRank orders the operations of a resource by the key their path takes:
@@ -819,12 +1002,17 @@ func byField(mo *model.Op) string {
 }
 
 // kebab writes a camelCase name in lower case with dashes: personId →
-// person-id.
+// person-id; an abbreviation stays one word: URL → url, HTTPPort →
+// http-port.
 func kebab(s string) string {
 	var b strings.Builder
-	for i, r := range s {
+	rs := []rune(s)
+	for i, r := range rs {
 		if unicode.IsUpper(r) {
-			if i > 0 {
+			prevLower := i > 0 && !unicode.IsUpper(rs[i-1])
+			// the last capital of an abbreviation starts the next word
+			endsAbbr := i > 0 && unicode.IsUpper(rs[i-1]) && i+1 < len(rs) && unicode.IsLower(rs[i+1])
+			if i > 0 && (prevLower || endsAbbr) {
 				b.WriteByte('-')
 			}
 			r = unicode.ToLower(r)
@@ -885,7 +1073,10 @@ func (p *proposer) writeParams(op *spec.Operation, r *model.Resource, n *Node, c
 		prm := nd.name
 		// the record itself: a field that names the value
 		self, selfScore := p.provides(op, prm, r)
-		if selfScore > 0 && create && isKey(self) {
+		// a create takes no key of the record (the API gives it), unless the
+		// model maps the parameter to it: a key the client chooses
+		// (POST /bookings/{berth}/{slot})
+		if selfScore > 0 && selfScore < 100 && create && isKey(self) {
 			self, selfScore = "", 0
 		}
 		if selfScore == 0 {
@@ -905,7 +1096,15 @@ func (p *proposer) writeParams(op *spec.Operation, r *model.Resource, n *Node, c
 			out[prm] = "." + self
 			continue
 		}
-		if best == nil {
+		// any node of the tree, but not for the parameter that names the
+		// record an update or delete writes: a record of another node is a
+		// guess (the pilot of a sibling node for a dock); $name says so
+		own := false
+		if ps := pathParams(op); len(ps) > 0 && ps[len(ps)-1] == prm && r != nil {
+			seg := model.SegmentBefore(op.Path, prm)
+			own = strings.EqualFold(seg, r.Name) || strings.EqualFold(singular(seg), r.Name)
+		}
+		if best == nil && (create || !own) {
 			provs, _ := p.providers(op)
 			if pr, ok := provs[prm]; ok && pr.node != n {
 				best, bestField = pr.node, pr.field
@@ -959,12 +1158,12 @@ func (p *proposer) bodySource(n *Node, op *spec.Operation) string {
 		return n
 	}
 	own := 0
-	if o := lookupOp(p.s, n.Call); o != nil {
+	if o := p.lookup(n.Call); o != nil {
 		own = cover(o, true)
 	}
 	best, score := n.Name, own
 	for _, c := range n.Each {
-		o := lookupOp(p.s, c.Call)
+		o := p.lookup(c.Call)
 		if o == nil || isList(o) || !p.aboutRecord(c, n) {
 			continue
 		}
@@ -1057,11 +1256,31 @@ func keyPointers(r *model.Resource) []string {
 
 // listName names a list node after the last word of its path ("docks"),
 // else after the resource.
-func listName(op *spec.Operation, r *model.Resource) string {
-	if seg := lastLiteral(op.Path); seg != "" && !slices.Contains([]string{"list", "all", "search"}, strings.ToLower(seg)) {
+func (p *proposer) listName(op *spec.Operation, r *model.Resource) string {
+	seg := lastLiteral(op.Path)
+	switch {
+	case seg == "" || slices.Contains([]string{"list", "all", "search"}, strings.ToLower(seg)):
+	case strings.EqualFold(seg, r.Name):
+		// GET /Planet lists planets: the singular names the read of one
+	case p.namesOther(seg, r):
+		// GET /mechanics/dock/{dockNumber} lists mechanics, not docks
+	default:
 		return lowerFirst(seg)
 	}
-	return lowerFirst(r.Name) + "s"
+	return lowerFirst(pluralOf(r.Name))
+}
+
+// pluralOf is the plural of an English word: dock → docks, entry →
+// entries, box → boxes.
+func pluralOf(w string) string {
+	lw := strings.ToLower(w)
+	switch {
+	case strings.HasSuffix(lw, "y") && len(lw) > 1 && !strings.ContainsRune("aeiou", rune(lw[len(lw)-2])):
+		return w[:len(w)-1] + "ies"
+	case strings.HasSuffix(lw, "s"), strings.HasSuffix(lw, "x"), strings.HasSuffix(lw, "ch"), strings.HasSuffix(lw, "sh"):
+		return w + "es"
+	}
+	return w + "s"
 }
 
 // viewName names a read after the last word of its path, or after its
@@ -1147,9 +1366,19 @@ func (p *proposer) attachWrites() {
 		}
 		var best *Node
 		score := 0
+		action := IsAction(kind)
 		for _, n := range p.order() {
-			if n.Off || n.Write[kind] != nil {
+			// an action goes to its node even when the name is taken there:
+			// both get names of their own below
+			if n.Off || n.Write[kind] != nil && !action {
 				continue
+			}
+			// a create never goes to the read of one record below a node of
+			// the same resource: the scenario creates the records of that node
+			if kind == WriteCreate && n.Parent != nil && p.res[n] != nil && p.res[n.Parent] == p.res[n] {
+				if o := p.lookup(n.Call); o != nil && !isList(o) {
+					continue
+				}
 			}
 			if s := p.writesTo(op, mo, n); s > score {
 				best, score = n, s
@@ -1169,8 +1398,58 @@ func (p *proposer) attachWrites() {
 		if r := p.res[best]; r != nil && len(best.Key) == 0 {
 			best.Key = keyPointers(r)
 		}
+		if old := best.Write[kind]; action && old != nil {
+			// two actions of one name at a node (link to a person, link to a
+			// moon): each named by its operationId
+			if oop := p.lookup(old.Call); oop != nil {
+				delete(best.Write, kind)
+				old.Kind = actionLabel(oop, p.res[best], kind, best.Write)
+				best.Write[old.Kind] = old
+			}
+			kind = actionLabel(op, p.res[best], kind, best.Write)
+		}
 		best.Write[kind] = p.write(kind, op, p.res[best], best)
 	}
+}
+
+// actionLabel names an action by its operationId without the words of its
+// resource (linkGardenToPerson of a garden: link-to-person); a name taken
+// gets a number.
+func actionLabel(op *spec.Operation, r *model.Resource, kind string, taken map[string]*Write) string {
+	label := ""
+	if op.HasOperationID {
+		ws := words(op.ID)
+		if r != nil {
+			for _, w := range words(r.Name) {
+				for _, x := range []string{w, w + "s"} {
+					if i := slices.Index(ws[1:], x); i >= 0 {
+						ws = slices.Delete(ws, i+1, i+2)
+						break
+					}
+				}
+			}
+		}
+		label = strings.Join(ws, "-")
+	}
+	if label == "" || label == kind {
+		label = kind + "-" + kebab(lastParam(op))
+	}
+	if taken[label] == nil {
+		return label
+	}
+	for i := 2; ; i++ {
+		if k := fmt.Sprintf("%s-%d", label, i); taken[k] == nil {
+			return k
+		}
+	}
+}
+
+// lastParam is the last path parameter of an operation, "" without.
+func lastParam(op *spec.Operation) string {
+	if ps := pathParams(op); len(ps) > 0 {
+		return ps[len(ps)-1]
+	}
+	return ""
 }
 
 func writeKind(method string) string {
@@ -1188,10 +1467,12 @@ func writeKind(method string) string {
 }
 
 // writesTo scores how surely op writes the records of node n: n is of its
-// resource (100), reads the path op writes (90), gives a key its path takes
-// (60), lies on its path (50), or its records cover the body (40). 0: not.
+// resource (100, +10 when it reads the path op writes), reads the path op
+// writes (90), gives the key of the first path parameter (70) or of
+// another (60), lies on its path (50), or its records cover the body (40).
+// 0: not.
 func (p *proposer) writesTo(op *spec.Operation, mo *model.Op, n *Node) int {
-	read := lookupOp(p.s, n.Call)
+	read := p.lookup(n.Call)
 	if read == nil {
 		return 0
 	}
@@ -1201,10 +1482,21 @@ func (p *proposer) writesTo(op *spec.Operation, mo *model.Op, n *Node) int {
 		score = 100
 	}
 	if read.Path == op.Path {
+		// a node of the resource that reads the path the write writes beats
+		// the other nodes of the resource (the beds of a garden by code for
+		// POST /gardens/code/{code}/beds)
+		if score >= 100 {
+			score += 10
+		}
 		score = max(score, 90)
 	}
-	for _, prm := range pathParams(op) {
+	for i, prm := range pathParams(op) {
 		if f, s := p.provides(op, prm, r); s >= 90 && r != nil && slices.ContainsFunc(r.Keys, func(k string) bool { return strings.EqualFold(k, f) }) {
+			// the first parameter names the record the write is about
+			// (/gardens/{gardenId}/persons/{personId}/link: the garden)
+			if i == 0 {
+				score = max(score, 70)
+			}
 			score = max(score, 60)
 		}
 	}

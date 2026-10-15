@@ -66,6 +66,21 @@ func NewColony(token string, first int) *Colony {
 		h("PUT /api/gardens/"+f+"/{value}", func(w http.ResponseWriter, r *http.Request) { c.byField(f, r.PathValue("value"), w, r) })
 		h("DELETE /api/gardens/"+f+"/{value}", func(w http.ResponseWriter, r *http.Request) { c.byField(f, r.PathValue("value"), w, r) })
 	}
+	// the beds of a garden by its code
+	h("GET /api/gardens/code/{code}/beds", func(w http.ResponseWriter, r *http.Request) {
+		if g := c.gardenOf("code", r.PathValue("code")); g != nil {
+			r.SetPathValue("id", strconv.Itoa(g["id"].(int)))
+		}
+		c.listBeds(w, r)
+	})
+	h("POST /api/gardens/code/{code}/beds", func(w http.ResponseWriter, r *http.Request) {
+		if g := c.gardenOf("code", r.PathValue("code")); g != nil {
+			r.SetPathValue("id", strconv.Itoa(g["id"].(int)))
+		}
+		c.createBed(w, r)
+	})
+	h("POST /api/gardens/{id}/persons/{person}/link", c.link("personId", "person", c.persons))
+	h("POST /api/gardens/{id}/moons/{moon}/link", c.link("moonId", "moon", c.moons))
 	h("POST /api/gardens/{id}/open", c.action("OPEN", "DRAFT", "CLOSED"))
 	h("POST /api/gardens/{id}/archive", c.action("ARCHIVED", "DRAFT", "OPEN", "CLOSED"))
 	h("POST /api/gardens/{id}/beds", c.createBed)
@@ -75,6 +90,23 @@ func NewColony(token string, first int) *Colony {
 	h("GET /api/persons", func(w http.ResponseWriter, _ *http.Request) { reply(w, http.StatusOK, all(c.persons, nil)) })
 	h("POST /api/persons", c.createPerson)
 	h("GET /api/persons/{id}", c.get(c.persons))
+	h("GET /api/persons/name/{name}", func(w http.ResponseWriter, r *http.Request) {
+		for _, id := range sortedIDs(c.persons) {
+			if c.persons[id]["name"] == r.PathValue("name") {
+				reply(w, http.StatusOK, c.persons[id])
+				return
+			}
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+	h("PUT /api/moons/{moon}/gardens/name/{name}", func(w http.ResponseWriter, r *http.Request) {
+		moon, _ := strconv.Atoi(r.PathValue("moon"))
+		if g := c.gardenOf("name", r.PathValue("name")); g == nil || g["moonId"] != moon {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		c.byField("name", r.PathValue("name"), w, r)
+	})
 	h("DELETE /api/persons/{id}", c.remove(c.persons))
 	h("GET /api/garden-search", c.search)
 	h("GET /api/person-search", c.personSearch)
@@ -180,24 +212,28 @@ func (c *Colony) listGardens(w http.ResponseWriter, r *http.Request) {
 	reply(w, http.StatusOK, all(c.gardens, func(g map[string]any) bool { return g["moonId"] == moon }))
 }
 
+// gardenOf is the garden whose field (name, code) has the value, nil
+// without.
+func (c *Colony) gardenOf(field, value string) map[string]any {
+	for _, k := range sortedIDs(c.gardens) {
+		if c.gardens[k][field] == value {
+			return c.gardens[k]
+		}
+	}
+	return nil
+}
+
 // byField reads, updates or deletes the garden whose field (name, code) has
 // the value.
 func (c *Colony) byField(field, value string, w http.ResponseWriter, r *http.Request) {
-	id := 0
-	for _, k := range sortedIDs(c.gardens) {
-		if c.gardens[k][field] == value {
-			id = k
-			break
-		}
-	}
-	g := c.gardens[id]
+	g := c.gardenOf(field, value)
 	if g == nil {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
 	switch r.Method {
 	case http.MethodDelete:
-		delete(c.gardens, id)
+		delete(c.gardens, g["id"].(int))
 		w.WriteHeader(http.StatusNoContent)
 	case http.MethodPut:
 		if !c.garden(g, readBody(r)) {
@@ -269,6 +305,20 @@ func (c *Colony) details(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reply(w, http.StatusOK, map[string]any{"gardenId": g["id"], "soil": "loam", "climate": "dry"})
+}
+
+// link sets a field of a garden to a record that must exist.
+func (c *Colony) link(field, param string, records map[int]map[string]any) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		g := c.gardens[pathID(r)]
+		id, err := strconv.Atoi(r.PathValue(param))
+		if g == nil || err != nil || records[id] == nil {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		g[field] = id
+		reply(w, http.StatusOK, g)
+	}
 }
 
 // action moves a garden to a state, from the states it allows.

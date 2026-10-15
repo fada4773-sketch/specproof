@@ -961,6 +961,9 @@ func (d *detector) refers(r *Resource, field string, above []*Resource) (*Resour
 			continue
 		}
 		up := slices.Index(above, x)
+		// a resource with a list and a create of its own is no view of the
+		// record above it: its Id is its own
+		view := len(r.Keys) == 0 && (len(r.OpsWith(RoleList)) == 0 || len(r.OpsWith(RoleCreate)) == 0)
 		keys := slices.Clone(x.Keys)
 		if id := x.Field("Id"); id != "" && !slices.Contains(keys, id) {
 			keys = append(keys, id)
@@ -968,7 +971,7 @@ func (d *detector) refers(r *Resource, field string, above []*Resource) (*Resour
 		for _, k := range keys {
 			isKey := slices.Contains(x.Keys, k)
 			ok := strings.EqualFold(field, x.Name+k) ||
-				isKey && strings.EqualFold(field, k) && (hasPrefixFold(k, x.Name) || up >= 0 && (len(r.Keys) == 0 || !generic(k)))
+				isKey && strings.EqualFold(field, k) && (hasPrefixFold(k, x.Name) || up >= 0 && (view || !generic(k)))
 			if !ok {
 				continue
 			}

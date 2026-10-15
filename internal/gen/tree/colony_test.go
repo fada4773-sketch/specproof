@@ -77,7 +77,26 @@ func TestColonyProposal(t *testing.T) {
 			t.Errorf("%s where %s %v:\n%s", n.Name, field, test, out)
 		}
 	}
-	where(persons, "name", "present")
+	// name is a key of a person (GET /persons/name/{name}): no where present
+	if !slices.Contains(persons.Key, "/name") || slices.ContainsFunc(persons.Where, func(c Clause) bool { return c.Field == "name" }) {
+		t.Errorf("persons: key %v, where %v", persons.Key, persons.Where)
+	}
+	// the person a garden names is read by the key the field holds: by id,
+	// not by the first read of the spec (by name)
+	if gp := tr.Node("gardenPerson"); gp == nil || gp.Call != "GET /persons/{personId}" || gp.Path["personId"] != ".personId" {
+		t.Errorf("gardenPerson:\n%s", out)
+	}
+	// the beds of a garden by id and by code: each create at the list of its
+	// path, none at the read of one bed
+	if c := tr.Node("beds").Write["create"]; c == nil || c.Call != "POST /gardens/{gardenId}/beds" {
+		t.Errorf("beds create:\n%s", out)
+	}
+	if c := tr.Node("bedsByGardenCode").Write["create"]; c == nil || c.Call != "POST /gardens/code/{code}/beds" {
+		t.Errorf("beds by code create:\n%s", out)
+	}
+	if len(tr.Node("bed").Write) != 0 {
+		t.Errorf("no write at the read of one bed:\n%s", out)
+	}
 	where(gardens, "personId", "present")
 	// open starts from DRAFT or CLOSED, archive from anything but ARCHIVED,
 	// and the create sends the state
@@ -85,9 +104,16 @@ func TestColonyProposal(t *testing.T) {
 	where(tr.Node("open-gardens"), "status", "OPEN")
 	// read, updated and deleted by id, code and name: one write block, the
 	// id first, the other keys as variants; the reads below the gardens
-	if k := gardens.Kinds(); !slices.Equal(k, []string{"create", "update", "update-by-code", "update-by-name",
-		"delete", "delete-by-code", "delete-by-name", "open", "archive"}) {
+	// two updates by name (alone, and with the moon): the second is named
+	// by its operationId
+	// two actions named link (to a person, to a moon) stay at the gardens,
+	// each named by its operationId
+	if k := gardens.Kinds(); !slices.Equal(k, []string{"create", "update", "update-by-code", "update-by-moon-and-name", "update-by-name",
+		"delete", "delete-by-code", "delete-by-name", "link-to-moon", "link-to-person", "open", "archive"}) {
 		t.Errorf("kinds: %v", k)
+	}
+	if w := gardens.Write["link-to-person"]; w == nil || w.Path["gardenId"] != ".id" || w.Path["personId"] != ".personId" {
+		t.Errorf("link to a person:\n%s", out)
 	}
 	if !slices.Equal(gardens.Key, []string{"/id", "/code", "/name"}) {
 		t.Errorf("key, id first: %v", gardens.Key)
@@ -98,9 +124,11 @@ func TestColonyProposal(t *testing.T) {
 			t.Errorf("%s: %s below gardens, no writes:\n%s", name, call, out)
 		}
 	}
-	// the season of a harvest is in no record
+	// the season of a harvest is in no record: a value of params, the first
+	// of its enum, the others in the note
 	if h := tr.Node("harvests"); h.Parent != persons || h.Query["personId"] != ".id" || h.Query["season"] != "$season" ||
-		len(tr.ParamNames) != 1 || tr.ParamNames[0] != "season" {
+		len(tr.ParamNames) != 1 || tr.ParamNames[0] != "season" || tr.Params["season"] != "spring" ||
+		!strings.Contains(out, "season: spring # getHarvestsByPersonAndSeason · one of spring, summer, autumn, winter") {
 		t.Errorf("harvests:\n%s", out)
 	}
 	if len(tr.Ignore) != 0 {
@@ -144,8 +172,8 @@ func TestColonyRebuild(t *testing.T) {
 	if slices.Contains(planets, "venus") {
 		t.Errorf("venus has no moons: %v", planets)
 	}
-	if !slices.ContainsFunc(d.Notes, func(n string) bool { return strings.Contains(n, "harvests: left out, $season has no value") }) {
-		t.Errorf("notes: %v", d.Notes)
+	if len(d.Of(tr.Node("harvests"))) == 0 {
+		t.Errorf("harvests of the season of params: %v", d.Notes)
 	}
 	built, err := Build(s, tr, d)
 	if err != nil {
@@ -182,6 +210,12 @@ func TestColonyRebuild(t *testing.T) {
 		"gardens1.delete-by-name", "gardens1.read.afterDeleteByName"} {
 		if !strings.Contains(string(text), "id: "+step) {
 			t.Errorf("step %s missing:\n%s", step, text)
+		}
+	}
+	// the beds of a garden by id and by code take turns: both creates run
+	for _, call := range []string{"call: POST /gardens/{gardenId}/beds", "call: POST /gardens/code/{code}/beds"} {
+		if !strings.Contains(string(text), call) {
+			t.Errorf("%s missing:\n%s", call, text)
 		}
 	}
 	if strings.Index(string(text), "id: gardens1.open") > strings.Index(string(text), "id: gardens1.archive") {
@@ -423,7 +457,7 @@ func TestColonyGlobalWhere(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	file := string(b) + "where:\n  Garden.Name: [Rose, Sage, Iris, Thyme]\n  Garden:\n    code: [rose, sage] # both forms\n  Harvest.season: [summer]\n"
+	file := string(b) + "where:\n  Garden.Name: [Rose, Sage, Iris, Thyme]\n  Garden:\n    code: [rose, sage] # both forms\n  BedPatch.rows: [1]\n"
 	tr := parse(t, file)
 	if len(tr.Where) != 3 || tr.Where[1].Resource != "Garden" || tr.Where[1].Clause.Field != "code" || tr.Where[1].Clause.Note != "both forms" {
 		t.Fatalf("where: %+v", tr.Where)
@@ -455,7 +489,7 @@ func TestColonyGlobalWhere(t *testing.T) {
 		t.Errorf("persons with a garden of the where: %v", p)
 	}
 	if !slices.ContainsFunc(d.Notes, func(n string) bool {
-		return strings.Contains(n, "where Harvest: no node of the tree reads records of Harvest")
+		return strings.Contains(n, "where BedPatch: no node of the tree reads records of BedPatch")
 	}) {
 		t.Errorf("notes: %v", d.Notes)
 	}
@@ -623,7 +657,7 @@ func TestColonyPrefer(t *testing.T) {
 	if plain[0] == "Mint" {
 		target = "Rose"
 	}
-	tr, d = fetch("prefer:\n  Garden.name: [" + target + "] # the garden of the test\n  Harvest.season: summer\n")
+	tr, d = fetch("prefer:\n  Garden.name: [" + target + "] # the garden of the test\n  BedPatch.rows: 1\n")
 	if g := names(tr, d, "gardens"); !slices.Equal(g, []string{target}) {
 		t.Errorf("gardens: %v, want %s (notes %v)", g, target, d.Notes)
 	}
@@ -642,7 +676,7 @@ func TestColonyPrefer(t *testing.T) {
 		t.Errorf("persons: %s and one more: %v (without prefer %v)", person, p, plainPersons)
 	}
 	if !slices.ContainsFunc(d.Notes, func(n string) bool {
-		return strings.Contains(n, "prefer Harvest: no node of the tree reads records of Harvest")
+		return strings.Contains(n, "prefer BedPatch: no node of the tree reads records of BedPatch")
 	}) {
 		t.Errorf("notes: %v", d.Notes)
 	}
@@ -660,7 +694,7 @@ func TestColonyPrefer(t *testing.T) {
 	if p := Check(s, parse(t, file+"prefer:\n  Garden.colour: red\n")); !slices.ContainsFunc(p, func(x string) bool { return strings.Contains(x, "prefer Garden.colour: Garden has no field colour") }) {
 		t.Errorf("check: %v", p)
 	}
-	if enc, _ := tr.Encode(); !strings.Contains(string(enc), "prefer:\n  Garden.name: ["+target+"] # the garden of the test\n  Harvest.season: summer") {
+	if enc, _ := tr.Encode(); !strings.Contains(string(enc), "prefer:\n  Garden.name: ["+target+"] # the garden of the test\n  BedPatch.rows: 1") {
 		t.Errorf("encode:\n%s", enc)
 	}
 }

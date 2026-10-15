@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/fada4773-sketch/specproof/internal/gen/model"
 	"github.com/fada4773-sketch/specproof/internal/scenario"
 	"github.com/fada4773-sketch/specproof/internal/spec"
 )
@@ -1167,5 +1168,257 @@ func TestReviewSteps(t *testing.T) {
 	want(out, "| 4. Run (tree run) | done | PASSED: 41 steps |", "| 5. Update (tree run -update) | outdated |")
 	if strings.Count(out, "> **Outdated:**") != 1 || strings.Count(out, "## 4. Run") != 1 {
 		t.Errorf("one mark, one heading:\n%s", out)
+	}
+}
+
+// dockyardSpec: docks read and written by a number the record does not
+// name (ships refer to a dock by its id), pilots without id, and bookings
+// whose keys the client chooses in the path of the create.
+const dockyardSpec = `openapi: 3.0.3
+info: {title: Dockyard, version: "1"}
+paths:
+  /planets:
+    get:
+      operationId: listPlanets
+      responses:
+        '200': {description: ok, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/Planet'}}}}}
+  /planets/id/{id}:
+    get:
+      operationId: getPlanetById
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      responses:
+        '200': {description: ok, content: {application/json: {schema: {$ref: '#/components/schemas/Planet'}}}}
+  /planets/{planetCode}/docks:
+    parameters: [{name: planetCode, in: path, required: true, schema: {type: string}}]
+    get:
+      operationId: listDocks
+      responses:
+        '200': {description: ok, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/Dock'}}}}}
+    post:
+      operationId: createDock
+      requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/Dock'}}}}
+      responses:
+        '201': {description: ok, content: {application/json: {schema: {$ref: '#/components/schemas/Dock'}}}}
+  /docks/{dockNumber}:
+    parameters: [{name: dockNumber, in: path, required: true, schema: {type: integer}}]
+    get:
+      operationId: getDock
+      responses:
+        '200': {description: ok, content: {application/json: {schema: {$ref: '#/components/schemas/Dock'}}}}
+    put:
+      operationId: updateDock
+      requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/Dock'}}}}
+      responses:
+        '200': {description: ok, content: {application/json: {schema: {$ref: '#/components/schemas/Dock'}}}}
+    delete:
+      operationId: deleteDock
+      responses: {'204': {description: ok}}
+  /planets/{planetCode}/hangars:
+    parameters: [{name: planetCode, in: path, required: true, schema: {type: string}}]
+    get:
+      operationId: listHangars
+      responses:
+        '200': {description: ok, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/Hangar'}}}}}
+    post:
+      operationId: createHangar
+      requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/Hangar'}}}}
+      responses:
+        '201': {description: ok, content: {application/json: {schema: {$ref: '#/components/schemas/Hangar'}}}}
+  /hangars/{shipId}:
+    parameters: [{name: shipId, in: path, required: true, schema: {type: integer}}]
+    put:
+      operationId: updateHangar
+      requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/Hangar'}}}}
+      responses:
+        '200': {description: ok, content: {application/json: {schema: {$ref: '#/components/schemas/Hangar'}}}}
+  /ships:
+    get:
+      operationId: listShips
+      responses:
+        '200': {description: ok, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/Ship'}}}}}
+  /pilots:
+    get:
+      operationId: listPilots
+      responses:
+        '200': {description: ok, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/Pilot'}}}}}
+  /pilots/{id}/docks/{dockNumber}/permit:
+    get:
+      operationId: getPilotPermit
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: integer}}
+        - {name: dockNumber, in: path, required: true, schema: {type: integer}}
+      responses:
+        '200': {description: ok, content: {application/json: {schema: {type: object, properties: {valid: {type: boolean}}}}}}
+  /Mechanic:
+    get:
+      operationId: getMechanics
+      responses:
+        '200': {description: ok, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/Mechanic'}}}}}
+  /Mechanic/{badge}:
+    get:
+      operationId: getMechanic
+      parameters: [{name: badge, in: path, required: true, schema: {type: string}}]
+      responses:
+        '200': {description: ok, content: {application/json: {schema: {$ref: '#/components/schemas/Mechanic'}}}}
+  /mechanics/dock/{dockNumber}:
+    get:
+      operationId: getMechanicsOfDock
+      parameters: [{name: dockNumber, in: path, required: true, schema: {type: integer}}]
+      responses:
+        '200': {description: ok, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/Mechanic'}}}}}
+  /repairs/overview:
+    get:
+      operationId: listRepairs
+      responses:
+        '200': {description: ok, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/RepairState'}}}}}
+  /repairs/state/{repairNo}:
+    get:
+      operationId: getRepairStatus
+      parameters: [{name: repairNo, in: path, required: true, schema: {type: string}}]
+      responses:
+        '200': {description: ok, content: {application/json: {schema: {$ref: '#/components/schemas/RepairState'}}}}
+  /repairs/cancel/{repairNo}:
+    delete:
+      operationId: cancelRepair
+      parameters: [{name: repairNo, in: path, required: true, schema: {type: string}}]
+      responses: {'204': {description: ok}}
+  /bookings:
+    get:
+      operationId: listBookings
+      responses:
+        '200': {description: ok, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/Booking'}}}}}
+  /bookings/{berth}/{slot}:
+    parameters:
+      - {name: berth, in: path, required: true, schema: {type: string}}
+      - {name: slot, in: path, required: true, schema: {type: string}}
+    post:
+      operationId: createBooking
+      requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/BookingWrite'}}}}
+      responses:
+        '201': {description: ok, content: {application/json: {schema: {$ref: '#/components/schemas/Booking'}}}}
+    get:
+      operationId: getBooking
+      responses:
+        '200': {description: ok, content: {application/json: {schema: {$ref: '#/components/schemas/Booking'}}}}
+    delete:
+      operationId: deleteBooking
+      responses: {'204': {description: ok}}
+components:
+  schemas:
+    Planet:
+      type: object
+      properties: {Id: {type: integer}, code: {type: string}, name: {type: string}}
+    Dock:
+      type: object
+      properties: {Id: {type: integer}, Name: {type: string}}
+    RepairState:
+      type: object
+      properties: {repairNo: {type: string}, state: {type: string}}
+    Mechanic:
+      type: object
+      properties: {badge: {type: string}, name: {type: string}}
+    Hangar:
+      type: object
+      properties: {name: {type: string}, size: {type: integer}}
+    Ship:
+      type: object
+      properties: {id: {type: integer}, name: {type: string}, DockId: {type: integer}}
+    Pilot:
+      type: object
+      properties: {badge: {type: string}, name: {type: string}}
+    Booking:
+      type: object
+      properties: {Berth: {type: string}, Slot: {type: string}, note: {type: string}}
+    BookingWrite:
+      type: object
+      properties: {note: {type: string}}
+`
+
+// TestProposeKeysAndValues: a key read from a reference (updateDock by
+// the id ships refer to), an id of another resource left to params
+// (the permit of a pilot for a dock hangs below the docks, but {id} of
+// /pilots/{id} is no dock id), and the keys a
+// create of a booking takes from the record itself. The ship a hangar is
+// updated by is no field of the hangar: $shipId, not the first ship.
+func TestProposeKeysAndValues(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "dockyard.yaml")
+	if err := os.WriteFile(path, []byte(dockyardSpec), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s, err := spec.Load(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// a dock has a list and a create of its own: its Id is its own, no
+	// reference to the planet above it
+	for _, r := range model.Detect(s, nil).Resources {
+		if to, _ := r.Ref("Id"); r.Name == "Dock" && to != nil {
+			t.Errorf("Dock.Id refers to %s", to.Name)
+		}
+	}
+	b, err := Propose(s).Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(b)
+	tr := parse(t, out)
+	docks := tr.Node("docks")
+	if docks == nil || docks.Write["update"] == nil || docks.Write["update"].Path["dockNumber"] != ".Id" || docks.Write["delete"].Path["dockNumber"] != ".Id" {
+		t.Errorf("dockNumber holds the Id ships refer to:\n%s", out)
+	}
+	// a list at a singular path is named in the plural, its read of one in
+	// the singular; a list below the name of another resource (dock) by its
+	// operationId without the verb
+	if m := tr.Node("mechanics"); m == nil || m.Call != "GET /Mechanic" || len(m.Each) == 0 || m.Each[0].Name != "mechanic" {
+		t.Errorf("mechanics:\n%s", out)
+	}
+	if m := tr.Node("mechanicsOfDock"); m == nil || m.Call != "GET /mechanics/dock/{dockNumber}" {
+		t.Errorf("mechanics of a dock:\n%s", out)
+	}
+	// a parameter named like a key of the record (repairNo of a repair
+	// state, read at /repairs/state/{repairNo}): the cancel belongs to the
+	// repair states, not to ignore
+	cancel := false
+	tr.Walk(func(n *Node) {
+		for _, w := range n.Write {
+			if w.Call == "DELETE /repairs/cancel/{repairNo}" && w.Path["repairNo"] == ".repairNo" {
+				cancel = true
+			}
+		}
+	})
+	if !cancel || len(tr.Ignore) != 0 {
+		t.Errorf("cancel of a repair (ignore %v):\n%s", tr.Ignore, out)
+	}
+	permit := false
+	tr.Walk(func(n *Node) {
+		if n.Call == "GET /pilots/{id}/docks/{dockNumber}/permit" {
+			permit = true
+			if n.Path["id"] != "$id" || n.Parent == nil || n.Parent.Name != "docks" {
+				t.Errorf("the id of a pilot is no field of a dock: %v\n%s", n.Path, out)
+			}
+		}
+	})
+	if !permit {
+		t.Errorf("no permit:\n%s", out)
+	}
+	if h := tr.Node("hangars"); h == nil || h.Write["update"] == nil || h.Write["update"].Path["shipId"] != "$shipId" {
+		t.Errorf("the ship of a hangar is not guessed from the ships:\n%s", out)
+	}
+	var create *Write
+	tr.Walk(func(n *Node) {
+		if w := n.Write["create"]; w != nil && w.Call == "POST /bookings/{berth}/{slot}" {
+			create = w
+		}
+	})
+	if create == nil || create.Path["berth"] != ".Berth" || create.Path["slot"] != ".Slot" {
+		t.Errorf("the client chooses the keys of a booking:\n%s", out)
+	}
+}
+
+func TestKebab(t *testing.T) {
+	for in, want := range map[string]string{"personId": "person-id", "URL": "url", "HTTPPort": "http-port", "PlanetCode": "planet-code", "name": "name", "": "key"} {
+		if got := kebab(in); got != want {
+			t.Errorf("%q: %q, want %q", in, got, want)
+		}
 	}
 }

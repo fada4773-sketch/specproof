@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/getkin/kin-openapi/openapi3"
 
@@ -35,12 +37,20 @@ func callOf(op *spec.Operation) string { return op.Method + " " + op.Path }
 // pathParams are the names of the path parameters of an operation, in the
 // order of the path.
 func pathParams(op *spec.Operation) []string {
+	if v, ok := pathParamCache.Load(op.Path); ok {
+		return slices.Clone(v.([]string))
+	}
 	var out []string
 	for _, m := range placeholderRe.FindAllString(op.Path, -1) {
 		out = append(out, m[1:len(m)-1])
 	}
+	pathParamCache.Store(op.Path, slices.Clone(out))
 	return out
 }
+
+// pathParamCache holds the parameters of a path: proposing for a large
+// spec asks for them millions of times.
+var pathParamCache sync.Map
 
 // lowestSuccess is the lowest documented 2xx status, 0 without.
 func lowestSuccess(op *spec.Operation) int {

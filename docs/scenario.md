@@ -335,13 +335,30 @@ spec (the model apitest-gen uses for its examples):
   several nodes it hangs below the one fetched last and reads the others by
   name (`dockId=docks.id`). Repeated while new nodes give new values;
 - `key` from the model, `pick: 3`, `page` for a `page`/`offset` parameter;
+  a list node is named after the last word of its path, in the plural of
+  its resource when that word is the singular (`GET /Mechanic`:
+  `mechanics`, its read of one `mechanic`) or names another resource; a
+  name already taken falls back to the operationId without its verb
+  (`bedsByGardenCode`);
 - a read with a value no node gives (`{reportNo}`, a required query
   parameter without example) is in the tree as well: below the nodes that
   give its other values, else at the top, with `$reportNo`; `params` lists
-  each such value once, with the operations that use it. Set it and fetch;
+  each such value once, with the operations that use it, and the example
+  or first enum value of the spec (`season: spring # … one of spring,
+  summer, autumn, winter`). Set it and fetch. A value of `{id}` after the
+  name of another resource (`/pilots/{id}/…` below the docks) never comes
+  from the record above; the key of an update or delete never from an
+  unrelated node, it stays `$name`. A key the client chooses in the path
+  of a create (`POST /bookings/{berth}/{slot}`) comes from the record. A
+  path parameter no field names (`/docks/{dockNumber}`) holds the key the
+  references to the resource name (`Ship.DockId` → `Dock.Id`);
+- a reference (`personId`) is read by the key it holds: the read by id,
+  not the first read of the spec;
 - one write block per resource, at its list node (else at the first node
   that reads its records): its create (`none` without), update (PUT), patch
-  (PATCH) and delete. A record written by several keys (`PUT
+  (PATCH) and delete; the create at the path of the list (`POST
+  /gardens/{gardenId}/beds` at the beds, `POST /gardens/code/{code}/beds`
+  at the beds by code), never at the read of one record. A record written by several keys (`PUT
   /gardens/{gardenId}`, `PUT /gardens/name/{name}`, `PUT
   /gardens/code/{code}`) gets `update` by its id and `update-by-name`,
   `update-by-code` in the same block, deletes and patches alike; its reads
@@ -353,7 +370,9 @@ spec (the model apitest-gen uses for its examples):
   the request (`from profile`), else the node itself;
 - an action (a POST, PUT or PATCH whose path ends in a word after a
   parameter, `POST /gardens/{gardenId}/open`) goes into the write block
-  under its own name. The scenario runs it once on a record it created,
+  of the record of its first path parameter, under its own name; two
+  actions of one name there are named by their operationIds
+  (`link-to-person`, `link-to-moon`). The scenario runs it once on a record it created,
   after update and patch; actions that end what a record can do
   (`archive`, `cancel`, `close`, …) run last;
 - every other write goes to the node whose records it writes: a node of
@@ -452,6 +471,9 @@ the records in an empty instance:
   the same resource below a record (`dock` below `docks`) is the same
   record. Records of nodes without a create are **seed**: the instance must
   hold them; the review lists them with their keys.
+- **Several creates.** When nodes with a create of their own hold the
+  same records (the beds of a garden by id and by code), the records take
+  turns, so each create runs; one that never runs is listed in the review.
 - **Order of the creates.** A record comes after the records its create
   refers to, else in the order of the fetch: the pilot of a ship is created
   before the ship, though it hangs below it.

@@ -258,19 +258,47 @@ func (b *builder) entities() {
 		}
 		groups[k] = append(groups[k], r)
 	}
+	// several nodes with a create of their own hold the same records (the
+	// beds of a garden by id and by code): they take turns, so every
+	// create runs; else a node that borrows a create, else the first
+	uses := map[*Node]int{}
+	own := func(n *Node) bool { w, _ := b.writeOf(n, WriteCreate); return w != nil }
 	for _, k := range order {
 		g := groups[k]
 		head := g[0]
+		var owners []*Record
 		for _, r := range g {
-			if w, _ := b.createOf(r.Node); w != nil {
-				head = r
-				break
+			if own(r.Node) && !slices.ContainsFunc(owners, func(o *Record) bool { return o.Node == r.Node }) {
+				owners = append(owners, r)
+			}
+		}
+		if len(owners) > 0 {
+			head = owners[0]
+			for _, r := range owners[1:] {
+				if uses[r.Node] < uses[head.Node] {
+					head = r
+				}
+			}
+			uses[head.Node]++
+		} else {
+			for _, r := range g {
+				if w, _ := b.createOf(r.Node); w != nil {
+					head = r
+					break
+				}
 			}
 		}
 		for _, r := range g {
 			if r != head {
 				b.canon[r] = head
 			}
+		}
+	}
+	noted := map[*Node]bool{}
+	for _, r := range b.d.Records {
+		if n := r.Node; own(n) && uses[n] == 0 && !noted[n] && b.canon[r] != nil {
+			noted[n] = true
+			b.note("", n.Name+": create not run", "its records are created by "+b.canon[r].Node.Name+" (the same keys); pick records only "+n.Name+" lists to run it")
 		}
 	}
 	for _, r := range b.d.Records {

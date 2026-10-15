@@ -5,7 +5,9 @@ info:
   description: |
     A chained test API of apitest-gen tree. Planets are seed data; a planet
     has moons, a moon gardens, a garden beds. A garden is read, updated and
-    deleted by id, by name and by code. A garden names the person who
+    deleted by id, by name and by code; its beds are listed and created by
+    its id and by its code. A garden is linked to a person and to a moon
+    (two actions of one name). A garden names the person who
     tends it and has a state (DRAFT, OPEN, CLOSED, ARCHIVED) with actions.
     Some reads name their filter only in the operationId
     (getGardensByPersonName takes "name"), a harvest needs a season no
@@ -241,6 +243,32 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Garden'}
+  /gardens/{gardenId}/persons/{personId}/link:
+    post:
+      operationId: linkGardenToPerson
+      tags: [Garden]
+      parameters:
+        - {name: gardenId, in: path, required: true, schema: {type: integer}}
+        - {name: personId, in: path, required: true, schema: {type: integer}}
+      responses:
+        '200':
+          description: the person tends the garden now
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Garden'}
+  /gardens/{gardenId}/moons/{moonId}/link:
+    post:
+      operationId: linkGardenToMoon
+      tags: [Garden]
+      parameters:
+        - {name: gardenId, in: path, required: true, schema: {type: integer}}
+        - {name: moonId, in: path, required: true, schema: {type: integer}}
+      responses:
+        '200':
+          description: the garden lies on the moon now
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Garden'}
   /gardens/{gardenId}/beds:
     parameters:
       - {name: gardenId, in: path, required: true, schema: {type: integer}}
@@ -255,6 +283,32 @@ paths:
               schema: {type: array, items: {$ref: '#/components/schemas/Bed'}}
     post:
       operationId: createBed
+      tags: [Bed]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/BedWrite'}
+      responses:
+        '201':
+          description: created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Bed'}
+  /gardens/code/{code}/beds:
+    parameters:
+      - {name: code, in: path, required: true, schema: {type: string}}
+    get:
+      operationId: listBedsByGardenCode
+      tags: [Bed]
+      responses:
+        '200':
+          description: the beds of the garden of that code
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/Bed'}}
+    post:
+      operationId: createBedByGardenCode
       tags: [Bed]
       requestBody:
         required: true
@@ -322,6 +376,36 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Person'}
+  /persons/name/{name}:
+    get:
+      operationId: getPersonByName
+      tags: [Person]
+      parameters:
+        - {name: name, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: the person of that name
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Person'}
+  /moons/{moonId}/gardens/name/{name}:
+    put:
+      operationId: updateGardenByMoonAndName
+      tags: [Garden]
+      parameters:
+        - {name: moonId, in: path, required: true, schema: {type: integer}}
+        - {name: name, in: path, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/GardenWrite'}
+      responses:
+        '200':
+          description: updated
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Garden'}
   /persons/{personId}:
     parameters:
       - {name: personId, in: path, required: true, schema: {type: integer}}
@@ -380,7 +464,7 @@ paths:
       tags: [Harvest]
       parameters:
         - {name: personId, in: query, required: true, schema: {type: integer}}
-        - {name: season, in: query, required: true, schema: {type: string}}
+        - {name: season, in: query, required: true, schema: {type: string, enum: [spring, summer, autumn, winter]}}
       responses:
         '200':
           description: what a person harvested in a season

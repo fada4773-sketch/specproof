@@ -91,6 +91,33 @@ contain breaking changes, which are listed here.
     (`Garden.name: [Rose, Mint]`, or `Garden: {code: [rose, mint]}`)
     holds for every record of that resource at every node of the fetch,
     `require` included; resource and field are checked against the spec.
+    The proposal reads a reference by the key the field holds
+    (`personId` by id, though the spec lists the read by name first),
+    puts a create at the list of its path (`POST /gardens/code/{code}/beds`
+    at the beds by code, never at the read of one record), names a second
+    variant by the same key after its operationId
+    (`update-by-moon-and-name`), keeps abbreviations whole
+    (`update-by-url`), takes a key the client chooses in the path of a
+    create from the record (`POST /bookings/{berth}/{slot}`), reads the key
+    of a write from the references to it (`/docks/{dockNumber}` holds the
+    Id ships refer to), never takes `{id}` of another resource from the
+    record above (`/pilots/{id}/…` below the docks), never guesses the key
+    of an update or delete from an unrelated node, and gives a value of
+    `params` the example or first enum value of the spec (the others in
+    the comment). A resource with a list and a create of its own is no view
+    of the record above it: its `Id` is its own. Two actions of one name
+    at a node (`link` to a person and to a moon) stay together, named by
+    their operationIds (`link-to-person`, `link-to-moon`); an action goes
+    to the record of its first path parameter. A list at a singular path
+    or below the name of another resource is named in the plural of its
+    resource (`mechanics`), a taken name falls back to the operationId
+    without its verb (`bedsByGardenCode`). Several nodes with a create of
+    their own for the same records (beds by garden id and by code) take
+    turns in the scenario, so every create runs; one that never runs is
+    listed in the review. A path parameter named like a key field of the
+    record (`repairNo`) counts as its key, also where path and schema have
+    different names. Proposing for a large spec is about eight times
+    faster.
     `prefer` in the same form does not filter: a pick takes those records
     first and fills the rest with others, and the nodes above a preferred
     record (its planet and moon) are picked first too.

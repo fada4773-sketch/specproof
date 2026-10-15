@@ -36,7 +36,7 @@ const requireCandidates = 20
 //     the states the action starts from (status: [DRAFT, CLOSED]).
 func (p *proposer) conditions() {
 	for _, n := range p.order() {
-		op := lookupOp(p.s, n.Call)
+		op := p.lookup(n.Call)
 		if n.Off || op == nil || !isList(op) && !n.Read {
 			continue
 		}
@@ -99,8 +99,18 @@ func (c *cond) children() {
 	p, n, r := c.p, c.n, c.p.res[c.n]
 	listed := false
 	for _, ch := range n.Each {
-		op := lookupOp(p.s, ch.Call)
+		op := p.lookup(ch.Call)
 		if op == nil || ch.Off {
+			continue
+		}
+		// a filter that is a key of the node itself (listBedsByGardenCode
+		// below the gardens) is the list below it by another key: one
+		// require for the lists below
+		if h, ok := p.placedBy[ch]; ok && r != nil && h.res.Name == r.Name && isKeyOf(n, h.field) && p.res[ch] != nil && p.res[ch].Parent == r {
+			if isList(op) && !listed {
+				listed = true
+				c.require(ch, 1, fmt.Sprintf("only %s with %s", n.Name, ch.Name))
+			}
 			continue
 		}
 		if h, ok := p.placedBy[ch]; ok {
@@ -136,7 +146,7 @@ func isKeyOf(n *Node, field string) bool {
 // itself (GET /gardens/{gardenId}), not with a DTO of its own about it
 // (details), even if the model counts that DTO to the resource.
 func (p *proposer) view(n *Node, r *model.Resource) bool {
-	op := lookupOp(p.s, n.Call)
+	op := p.lookup(n.Call)
 	if op == nil || r == nil || p.res[n] != r {
 		return false
 	}
@@ -193,7 +203,7 @@ func (c *cond) actions() {
 	if f == "" || create == nil || create.None {
 		return
 	}
-	cop := lookupOp(p.s, create.Call)
+	cop := p.lookup(create.Call)
 	if cop == nil || requestRef(cop) == nil {
 		return
 	}
