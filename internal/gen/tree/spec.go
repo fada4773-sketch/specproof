@@ -5,12 +5,12 @@ import (
 	"net/http"
 	"regexp"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/getkin/kin-openapi/openapi3"
+	"gopkg.in/yaml.v3"
 
 	"github.com/fada4773-sketch/specproof/internal/cases"
 	"github.com/fada4773-sketch/specproof/internal/gen/dict"
@@ -160,8 +160,15 @@ func isList(op *spec.Operation) bool {
 // and every "$name" an entry of params. Nodes that are off are not
 // checked.
 func Check(s *spec.Spec, t *Tree) []string {
+	problems, _ := check(s, t)
+	return problems
+}
+
+// check finds the problems of a file and the fixes for those that have one.
+func check(s *spec.Spec, t *Tree) ([]string, []Fix) {
 	t.Complete(s)
 	var problems []string
+	var fixes []Fix
 	names := map[string]bool{}
 	t.Walk(func(n *Node) { names[n.Name] = true })
 	// fetch order: a node may read a node that is not above it only if that
@@ -178,26 +185,50 @@ func Check(s *spec.Spec, t *Tree) []string {
 	add := func(line int, format string, args ...any) {
 		problems = append(problems, fmt.Sprintf("line %d: %s", line, fmt.Sprintf(format, args...)))
 	}
+	// fix adds a problem with the change that solves it
+	fix := func(f Fix, format string, args ...any) {
+		problems = append(problems, fmt.Sprintf("line %d: %s", f.Line, fmt.Sprintf(format, args...))+f.change())
+		if f.apply != nil {
+			fixes = append(fixes, f)
+		}
+	}
 	// checkRefs: "<node>.field" must name a node of the tree; read by a node
 	// (write false), a node that is not above it must come before it
-	// "$name" counts as its value of params, where it is used
+	// "$name" counts as its value of params, where it is used; target is
+	// the YAML the values stand in, for a fix (nil: none)
 	scope := func(name string) bool { return names[name] }
-	var checkRefs func(line int, where string, at *Node, write bool, values ...any)
-	checkRefs = func(line int, where string, at *Node, write bool, values ...any) {
+	var checkRefs func(line int, where string, at *Node, write bool, target *yaml.Node, values ...any)
+	checkRefs = func(line int, where string, at *Node, write bool, target *yaml.Node, values ...any) {
 		for _, v := range values {
 			walkStrings(v, func(whole string) {
 				for _, str := range refsOf(whole, scope) {
 					if prm, isParam := ParamRef(str); isParam {
 						val, known := t.Params[prm]
 						if !known {
-							add(line, "%s: %q: params has no entry %s (add it at the top of tree.yaml)", where, str, prm)
+							fix(Fix{Line: line, Change: fmt.Sprintf("add %s: <value> under params at the top", prm)},
+								"%s: %q: params has no entry %s", where, str, prm)
 							continue
 						}
 						if nestedParam(val, scope) {
 							add(line, "%s: params.%s is %v; a value of params is a value or a reference to a node (books.id), no other $name", where, prm, val)
 							continue
 						}
-						checkRefs(line, where+" ($"+prm+")", at, write, val)
+						var pt *yaml.Node
+						if t.doc != nil {
+							pt = valueOf(valueOf(t.doc.Root, "params"), prm)
+						}
+						pline := line
+						if pt != nil {
+							pline = pt.Line
+						}
+						checkRefs(pline, where+" ($"+prm+")", at, write, pt, val)
+						continue
+					}
+					if ref, ok := ParseRef(str, scope); ok && ref.Node == "" && target != nil {
+						if f, ok := leadingDot(s, at, write, ref, line, target, scope); ok {
+							fix(f, "%s: %q reads the field %q of %s, but %s is a node",
+								where, str, strings.SplitN(ref.Field, ".", 2)[0], dotRecord(at, write), strings.SplitN(ref.Field, ".", 2)[0])
+						}
 						continue
 					}
 					name, _, ok := strings.Cut(str, ".")
@@ -207,7 +238,8 @@ func Check(s *spec.Spec, t *Tree) []string {
 					if p, known := pos[name]; known && p < pos[at.Name] {
 						continue
 					}
-					add(line, "%s: %q names node %s, which is neither above it nor fetched before it", where, str, name)
+					fix(Fix{Line: line, Change: fmt.Sprintf("move the node %s above %s in the tree (or earlier), or give the value in params", name, at.Name)},
+						"%s: %q names node %s, which is neither above it nor fetched before it", where, str, name)
 				}
 			})
 		}
@@ -231,9 +263,9 @@ func Check(s *spec.Spec, t *Tree) []string {
 					}
 				}
 			}
-			checkRefs(n.Line, n.Name, n, false, anyMap(n.Path), anyMap(n.Query), anyMap(n.Header), n.Body)
+			checkRefs(n.Line, n.Name, n, false, n.value, anyMap(n.Path), anyMap(n.Query), anyMap(n.Header), n.Body)
 			for _, c := range slices.Concat(n.Where, n.WhereAny) {
-				checkRefs(n.Line, n.Name+".where."+c.Field, n, false, c.Test)
+				checkRefs(n.Line, n.Name+".where."+c.Field, n, false, nil, c.Test)
 			}
 			for _, r := range n.Require {
 				if rop := lookupOp(s, r.Call); rop == nil || !reads(rop, r) {
@@ -255,7 +287,7 @@ func Check(s *spec.Spec, t *Tree) []string {
 						add(w.Line, "%s.write.%s: no value for the path parameter {%s}", n.Name, kind, p)
 					}
 				}
-				checkRefs(w.Line, n.Name+".write."+kind, n, true, anyMap(w.Path), anyMap(w.Query), anyMap(w.Header), w.Body)
+				checkRefs(w.Line, n.Name+".write."+kind, n, true, w.value, anyMap(w.Path), anyMap(w.Query), anyMap(w.Header), w.Body)
 				for _, name := range sortedKeys(w.Save) {
 					if !savedName.MatchString(name) {
 						add(w.Line, "%s.write.%s.save: %q: a name of letters, digits, _, - and . (receiptNo)", n.Name, kind, name)
@@ -270,9 +302,54 @@ func Check(s *spec.Spec, t *Tree) []string {
 	}
 	walk(t.Roots)
 	problems = append(problems, checkFilters(s, t)...)
-	problems = append(problems, checkOrder(s, t)...)
-	sort.Strings(problems)
-	return problems
+	op, of := checkOrder(s, t)
+	problems = append(problems, op...)
+	fixes = append(fixes, of...)
+	sortProblems(problems)
+	slices.SortStableFunc(fixes, func(a, b Fix) int { return a.Line - b.Line })
+	return problems, fixes
+}
+
+// dotRecord names the record ".field" reads at a node: in a write the
+// record itself, else the record above.
+func dotRecord(at *Node, write bool) string {
+	if write || at.Parent == nil {
+		return "the record of " + at.Name
+	}
+	return "the record of " + at.Parent.Name + " above"
+}
+
+// leadingDot finds ".<node>.field" where "<node>.field" is meant: the first
+// part is a node of the tree and no field of the record "." reads. The fix
+// changes it in target, the YAML the value stands in (a fix runs on the
+// tree it was found in).
+func leadingDot(s *spec.Spec, at *Node, write bool, ref Ref, line int, target *yaml.Node, scope func(string) bool) (Fix, bool) {
+	first, rest, nested := strings.Cut(ref.Field, ".")
+	if !nested || rest == "" || !scope(first) {
+		return Fix{}, false
+	}
+	rec := at
+	if !write {
+		rec = at.Parent
+	}
+	if rec == nil {
+		return Fix{}, false
+	}
+	op := lookupOp(s, rec.Call)
+	if op == nil {
+		return Fix{}, false
+	}
+	props, _ := properties((&proposer{}).recordSchema(op))
+	if len(props) == 0 {
+		return Fix{}, false
+	}
+	if _, has := propertyFoldIn(props, first); has {
+		return Fix{}, false
+	}
+	from, to := "."+ref.Field, ref.Field
+	return Fix{Line: line, Change: from + " → " + to, apply: func(*Tree) bool {
+		return replaceRef(target, from, to)
+	}}, true
 }
 
 // savedName is the form of a name a write saves: a placeholder name of the

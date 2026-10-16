@@ -78,7 +78,8 @@ type builder struct {
 	problems []string
 	// gaps are the sources of order without a record, per line and field:
 	// one problem names all records that lack one
-	gaps map[string]*sourceGap
+	gaps  map[string]*sourceGap
+	fixes []Fix
 	// slot is the line of order the steps being added belong to (ships,
 	// ships.read, ships.update); slotOf keeps it per step. changes are the
 	// writes that change a record, reader the reads that check one.
@@ -100,8 +101,8 @@ func (b *builder) problem(format string, args ...any) {
 // lists with checks, an update and a patch per node, the 401 steps, and the
 // deletes in reverse order.
 func Build(s *spec.Spec, t *Tree, d *Data) (*Built, error) {
-	if problems := Check(s, t); len(problems) > 0 {
-		return nil, &FindingError{Problems: problems}
+	if problems, fixes := check(s, t); len(problems) > 0 {
+		return nil, &FindingError{Problems: problems, Fixes: fixes}
 	}
 	b := &builder{
 		s: s, t: t, d: d, m: model.Detect(s, nil), out: &Built{},
@@ -136,7 +137,7 @@ func Build(s *spec.Spec, t *Tree, d *Data) (*Built, error) {
 	b.deletes(order)
 	b.afterSaves()
 	if len(b.problems) > 0 {
-		return nil, &FindingError{Problems: b.problems}
+		return nil, &FindingError{Problems: b.problems, Fixes: b.fixes}
 	}
 	sc := &scenario.Scenario{Steps: b.steps}
 	for _, r := range order {
@@ -282,12 +283,9 @@ func (b *builder) sourceOf(r *Record, e *OrderEntry, field string) ([]any, bool)
 	for _, c := range from {
 		v, found := c.Get(ref.Field)
 		if !found {
-			msg := fmt.Sprintf("line %d: order: %s: {%s: %s}: the record %s has no field %s, so %s of the body of %s has no value",
-				e.Line, e.Node, field, ref, c.ID, ref.Field, field, r.ID)
-			if names := fieldNames(c); len(names) > 0 {
-				msg += " (its fields: " + strings.Join(names, ", ") + ")"
-			}
-			b.problem("%s\n  fix: name a field of %s in this line of order (%s: %s.<field>)", msg, ref.Node, field, ref.Node)
+			msg := fmt.Sprintf("line %d: order: %s: {%s: %s}: %s has no field %s", e.Line, e.Node, field, ref, c.ID, ref.Field)
+			f := Fix{Line: e.Line, Change: fmt.Sprintf("%s: %s → %s: %s.<one of %s>", field, ref, field, ref.Node, strings.Join(fieldNames(c), ", "))}
+			b.problem("%s", msg+f.change())
 			continue
 		}
 		ce := b.entity(c)
@@ -299,11 +297,11 @@ func (b *builder) sourceOf(r *Record, e *OrderEntry, field string) ([]any, bool)
 	return vals, len(vals) > 0
 }
 
-// sourceGap is a source of order that records lack: the problem it is and
-// the records.
+// sourceGap is a source of order that records lack: the problem it is,
+// its fix and the records.
 type sourceGap struct {
-	at  int
-	ids []string
+	at, fix int
+	ids     []string
 }
 
 // noSource notes a source of order without a record for r, once per line
@@ -315,7 +313,7 @@ func (b *builder) noSource(r *Record, e *OrderEntry, field string, ref Ref) {
 	k := fmt.Sprintf("%d|%s", e.Line, field)
 	g := b.gaps[k]
 	if g == nil {
-		g = &sourceGap{at: len(b.problems)}
+		g = &sourceGap{at: len(b.problems), fix: -1}
 		b.gaps[k] = g
 		b.problems = append(b.problems, "")
 	}
@@ -323,55 +321,59 @@ func (b *builder) noSource(r *Record, e *OrderEntry, field string, ref Ref) {
 		return
 	}
 	g.ids = append(g.ids, r.ID)
-	b.problems[g.at] = b.noSourceRecord(g.ids, e, field, ref)
+	msg, f := b.noSourceRecord(g.ids, e, field, ref)
+	b.problems[g.at] = msg
+	if f.apply != nil {
+		if g.fix < 0 {
+			g.fix = len(b.fixes)
+			b.fixes = append(b.fixes, f)
+		}
+		b.fixes[g.fix] = f
+	}
 }
 
-// noSourceRecord explains a source of order without a record for the
-// records ids: what is missing, why the fetch has none, and how to fix it.
-func (b *builder) noSourceRecord(ids []string, e *OrderEntry, field string, ref Ref) string {
+// noSourceRecord says in short what a source of order without a record for
+// the records ids needs: the change of tree.yaml, and the fetch after it.
+func (b *builder) noSourceRecord(ids []string, e *OrderEntry, field string, ref Ref) (string, Fix) {
+	src, at := b.t.Node(ref.Node), b.t.Node(e.Node)
 	where := "below or above"
-	cond := "{<field " + ref.Node + " reads>: present}"
-	if src, at := b.t.Node(ref.Node), b.t.Node(e.Node); src != nil && at != nil {
+	var conds []string // the fields of the record the source reads with (.pilotId)
+	if src != nil && at != nil {
 		if below(src, at) {
 			where = "below"
 		} else if at.Ancestor(ref.Node) != nil {
 			where = "above"
 		}
-		// the fields of the record the source reads with (.pilotId)
 		if src.Parent == at {
-			var fields []string
 			for _, k := range sortedKeys(src.Path) {
-				if x, ok := ParseRef(src.Path[k], nil); ok && x.Field != "" {
-					fields = append(fields, x.Field+": present")
+				if x, ok := ParseRef(src.Path[k], nil); ok && x.Field != "" && !strings.Contains(x.Field, ".") {
+					conds = append(conds, x.Field)
 				}
-			}
-			if len(fields) > 0 {
-				cond = "{" + strings.Join(fields, ", ") + "}"
 			}
 		}
 	}
-	subject, them := "the record "+ids[0]+" has", "it"
+	who, them := ids[0]+" has", "it"
 	if len(ids) > 1 {
-		subject, them = "the records "+strings.Join(ids, ", ")+" have", "them"
+		who, them = strings.Join(ids, ", ")+" have", "them"
 	}
-	where += " " + them
 	none := !slices.ContainsFunc(b.d.Records, func(c *Record) bool { return c.Node.Name == ref.Node })
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "line %d: order: %s: {%s: %s}: %s no record of %s %s, so %s of the body has no value",
-		e.Line, e.Node, field, ref, subject, ref.Node, where, field)
+	msg := fmt.Sprintf("line %d: order: %s: {%s: %s}: %s no record of %s %s %s", e.Line, e.Node, field, ref, who, ref.Node, where, them)
+	var f Fix
 	switch {
 	case none:
-		fmt.Fprintf(&sb, "\n  why: the data holds no record of %s at all (fetched before the node was in the tree, or every request of it failed: see the notes of the fetch)", ref.Node)
-		fmt.Fprintf(&sb, "\n  fix: fetch again (-base-url …), then look at the notes of %s", ref.Node)
-	case where == "below "+them:
-		fmt.Fprintf(&sb, "\n  why: the fetch took no record of %s under %s (the notes of the fetch say why: an empty list, a failed request, where or require left all out)", ref.Node, them)
-		fmt.Fprintf(&sb, "\n  fix: let only %s records with a record of %s through: at %s add where: %s (or require %s with min: 1), then fetch again (-node %s)",
-			e.Node, ref.Node, e.Node, cond, ref.Node, e.Node)
+		msg += fmt.Sprintf(" (the data holds no record of %s at all)", ref.Node)
+		f = Fix{Change: fmt.Sprintf("fetch again (-base-url …) and read the notes of %s", ref.Node)}
+	case where == "below" && len(conds) == 1 && at.value != nil:
+		msg += " (the fetch took none under " + them + ": see its notes)"
+		f = Fix{Line: at.Line, Change: fmt.Sprintf("%s: add where: {%s: present}, then fetch again with -node %s", at.Name, conds[0], at.Name),
+			apply: addWhere(at.Name, conds[0], ref.Node+" reads it")}
+	case where == "below":
+		msg += " (the fetch took none under " + them + ": see its notes)"
+		f = Fix{Line: at.Line, Change: fmt.Sprintf("%s: require %s with min: 1, or remove {%s: …} in line %d", at.Name, ref.Node, field, e.Line)}
 	default:
-		fmt.Fprintf(&sb, "\n  fix: fetch a record of %s for %s (pick, where of %s), then fetch again", ref.Node, them, ref.Node)
+		f = Fix{Line: e.Line, Change: fmt.Sprintf("remove {%s: …}, or fetch a record of %s for %s", field, ref.Node, them)}
 	}
-	fmt.Fprintf(&sb, "\n   or: name another source for %s in this line of order, or remove {%s: …} there", field, field)
-	return sb.String()
+	return msg + f.change(), f
 }
 
 // sentValue is the value the create of a record sent in a field when order

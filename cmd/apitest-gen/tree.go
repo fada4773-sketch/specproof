@@ -213,11 +213,12 @@ ORDER
 
 MESSAGES
 
-  A problem names the line of tree.yaml, then "why:" and "fix:" lines:
-    line 5: order: ships: {pilotId: shipPilot.id}: the record ships1 has no
-    record of shipPilot below it, so pilotId of the body has no value
-      why: the fetch took no record of shipPilot under it (…)
-      fix: … at ships add where: {pilotId: present} …, then fetch again (-node ships)
+  A problem names the line, then the change to make there:
+    line 23: order: ships.pilotId: the records of shipPilot have no field rank
+      change line 23: pilotId: shipPilot.rank → pilotId: shipPilot.id (-fix does it)
+  "(-fix does it)": apitest-gen tree … -fix makes the change in tree.yaml
+  (comments stay) and goes on. A change that needs the records again
+  (a where to add) is made, then fetch again; "next:" says what to run.
   The notes of a fetch (printed and in tree-review_gen.md) say why a node
   took no records: a failed request, an empty list, where or require.
   docs/scenario.md has the full reference.
@@ -269,7 +270,7 @@ type treeOptions struct {
 	scenario, golden, report, junit  string
 	settings, errors, run, skip      string
 	update, noExamples, remote, uniq bool
-	dryRun                           bool
+	dryRun, fix                      bool
 	tok                              tokenFlags
 	timeout                          time.Duration
 }
@@ -356,8 +357,47 @@ func treeFlags(name string, out io.Writer) (*flag.FlagSet, *treeOptions) {
 		fs.StringVar(&o.excludeOps, "exclude-ops", "", `never propose these operations (operationId or "METHOD /path"); added to scope.exclude.ops`)
 		fs.BoolVar(&o.deps, "with-deps", false, "also propose the reads of other tags that give values the scope needs (scope.deps)")
 		fs.StringVar(&o.only, "node", "", "with -base-url: fetch only this node and what hangs below it again; the other records stay")
+		fs.BoolVar(&o.fix, "fix", false, `make the changes the problems name with "(-fix does it)" in tree.yaml, then go on`)
 	}
 	return fs, o
+}
+
+// repair makes the fixes of the check in tree.yaml and reads it again.
+func (o *treeOptions) repair(s *spec.Spec, t *tree.Tree, out io.Writer) (*tree.Tree, error) {
+	fixed, done, err := tree.Repair(s, t)
+	if len(done) > 0 {
+		if werr := o.writeFixes(fixed, done, out); werr != nil {
+			return t, werr
+		}
+		if fixed, werr := tree.Load(o.file); werr == nil {
+			return fixed, err
+		}
+	}
+	return fixed, err
+}
+
+// writeFixes writes tree.yaml after fixes and says what changed.
+func (o *treeOptions) writeFixes(t *tree.Tree, done []string, out io.Writer) error {
+	b, err := t.Bytes()
+	if err != nil {
+		return err
+	}
+	if err := scenario.WriteFile(o.file, b); err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "%s: %d fixes\n", o.file, len(done))
+	for _, d := range done {
+		fmt.Fprintf(out, "  fixed %s\n", d)
+	}
+	return nil
+}
+
+// fixHint is the line after problems that -fix can change.
+func (o *treeOptions) fixHint(n int) string {
+	if n == 0 || o.fix {
+		return ""
+	}
+	return fmt.Sprintf("\n  %d of them -fix changes in tree.yaml: add -fix to the same command", n)
 }
 
 func (o *treeOptions) next(name string) string {
@@ -420,6 +460,11 @@ func treeMain(o *treeOptions, out io.Writer) (int, error) {
 			fmt.Fprintf(out, "%s: up to date with the spec\n", o.file)
 		}
 	}
+	if o.fix {
+		if t, err = o.repair(s, t, out); err != nil {
+			return 1, err
+		}
+	}
 	summary, body := tree.FileSection(t, changes, proposed)
 	problems := tree.Check(s, t)
 	if len(problems) > 0 {
@@ -441,7 +486,7 @@ func treeMain(o *treeOptions, out io.Writer) (int, error) {
 		if err := o.writeReview(review, out); err != nil {
 			return 1, err
 		}
-		return 1, fmt.Errorf("%s:\n  %s", o.file, strings.Join(problems, "\n  "))
+		return 1, fmt.Errorf("%s:\n  %s%s", o.file, strings.Join(problems, "\n  "), o.fixHint(len(tree.Fixes(s, t))))
 	}
 	if unset := t.UnsetParams(); len(unset) > 0 {
 		fmt.Fprintf(out, "%s: params without value: %s; set them at the top of the file (the nodes that use them are left out)\n", o.file, strings.Join(unset, ", "))
@@ -523,6 +568,17 @@ func treeMain(o *treeOptions, out io.Writer) (int, error) {
 			if werr := o.writeReview(review, out); werr != nil {
 				return 1, werr
 			}
+			if o.fix && len(fe.Fixes) > 0 {
+				// the changes need the records fetched again: the test is
+				// built after that fetch
+				if _, done, ferr := tree.ApplyFixes(t, fe.Fixes); ferr != nil {
+					return 1, ferr
+				} else if werr := o.writeFixes(t, done, out); werr != nil {
+					return 1, werr
+				}
+				return 1, fmt.Errorf("%w\n  tree.yaml changed: fetch again with -base-url (the change lines say which -node)", err)
+			}
+			return 1, fmt.Errorf("%w%s", err, o.fixHint(len(fe.Fixes)))
 		}
 		return 1, err
 	}

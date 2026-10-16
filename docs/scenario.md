@@ -625,18 +625,32 @@ is not fetched. A node without records, candidates `where` or `require`
 left out, keys `pick` names that are not there, and every failed request
 are printed and listed in the review.
 
-A problem or note names what is wrong, then `why:` and `fix:` lines with
-the change to make:
+A problem names the line of `tree.yaml` and, below it, the change to make
+there; `(-fix does it)` marks the changes `apitest-gen tree -fix` makes
+itself (comments and the rest of the file stay):
 
 ```
-line 24: order: ships: {pilotId: shipPilot.id}: the record ships1 has no record of shipPilot below it, so pilotId of the body has no value
-  why: the fetch took no record of shipPilot under it (the notes of the fetch say why: an empty list, a failed request, where or require left all out)
-  fix: let only ships records with a record of shipPilot through: at ships add where: {pilotId: present} (or require shipPilot with min: 1), then fetch again (-node ships)
-   or: name another source for pilotId in this line of order, or remove {pilotId: …} there
+line 23: order: ships.pilotId: the body takes an integer, shipPilot.name is a string
+  change line 23: pilotId: shipPilot.name → pilotId: shipPilot.id (-fix does it)
+line 48: ship: ".docks.id" reads the field "docks" of the record of ships above, but docks is a node
+  change line 48: .docks.id → docks.id (-fix does it)
+line 5: order: ships: {pilotId: shipPilot.id}: ships1 has no record of shipPilot below it (the fetch took none under it: see its notes)
+  change line 28: ships: add where: {pilotId: present}, then fetch again with -node ships (-fix does it)
 ```
 
-A reference to a field the record lacks lists the fields it has; `.docks.id`
-(a leading dot before a node name) gets the hint to write `docks.id`.
+`-fix` makes: a leading dot before a node name (`.docks.id` → `docks.id`);
+in `order` a line listed twice, a line that creates nothing, a delete or
+create step (removed), a node name in other case, a create moved above
+the line that takes its values, a source the body has not or whose node is
+neither below nor above (removed), a source field the records lack or of
+another type (→ the key of that node of the right type); after a build, a
+`where: {field: present}` at the node whose records lack the source below
+them (then fetch again). The others name the change to make by hand. A
+reference to a field the record lacks lists the fields it has.
+
+The top of `tree.yaml` explains the syntax in a few lines (fields,
+nodes, `/`, `$name`, `{{…}}`, `order`); a run puts it there once, also in
+place of the text of an earlier version.
 
 ### The scenario
 
@@ -1020,7 +1034,7 @@ seed the review lists); apitest only gets its URL. The reports and the diff are 
 ## Command reference
 
 ```
-apitest-gen tree            -spec <openapi.yaml> [-file tree.yaml] [-tags A,B] [-exclude-tags X] [-exclude-ops opId] [-with-deps] [-base-url <url> [tokens] [-node name]] [-timeout 10s]
+apitest-gen tree            -spec <openapi.yaml> [-file tree.yaml] [-tags A,B] [-exclude-tags X] [-exclude-ops opId] [-with-deps] [-fix] [-base-url <url> [tokens] [-node name]] [-timeout 10s]
 apitest-gen tree run        -spec <openapi.yaml> [-file tree.yaml] -base-url <url> [tokens] [-update] [-no-examples] [-errors 401,404] [-run <pattern>] [-skip <pattern>] [-unique] [-junit <file>]
 apitest-gen regression init -spec <openapi.yaml> [-out regression-sample.yaml]
 apitest-gen regression pre  -spec <openapi.yaml> -sample <file> -base-url <url> [tokens] [-out dir] [-seed n] [-probe 2s] [-strict] [-junit <file>]

@@ -374,3 +374,33 @@ func TestTreeTagsStepByStep(t *testing.T) {
 		t.Errorf("fetch one node: %d\n%s%s", code, out, errOut)
 	}
 }
+
+// TestTreeFix: a problem names the change; -fix makes it in tree.yaml and
+// the run goes on.
+func TestTreeFix(t *testing.T) {
+	specPath, file := treeProject(t)
+	if code, out, errOut := cli("tree", "-spec", specPath, "-file", file, "-dry-run"); code != 0 {
+		t.Fatalf("propose: %d %s %s", code, out, errOut)
+	}
+	b, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(b)
+	at := strings.Index(text, "order:\n") + len("order:\n")
+	line := text[at : at+strings.Index(text[at:], "\n")+1]
+	if err := os.WriteFile(file, []byte(text[:at]+line+line+text[at+len(line):]), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, _, errOut := cli("tree", "-spec", specPath, "-file", file, "-dry-run")
+	if code != 1 || !strings.Contains(errOut, "is listed twice") || !strings.Contains(errOut, "(-fix does it)") || !strings.Contains(errOut, "add -fix to the same command") {
+		t.Fatalf("the change: %d %s", code, errOut)
+	}
+	code, out, errOut := cli("tree", "-spec", specPath, "-file", file, "-dry-run", "-fix")
+	if code != 0 || !strings.Contains(out, "1 fixes") || !strings.Contains(out, "fixed line") {
+		t.Errorf("-fix: %d %s %s", code, out, errOut)
+	}
+	if b, _ := os.ReadFile(file); strings.Count(string(b), line) != 1 {
+		t.Errorf("the line once:\n%s", b)
+	}
+}

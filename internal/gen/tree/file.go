@@ -301,7 +301,12 @@ type Clause struct {
 }
 
 // FindingError lists the problems of a file.
-type FindingError struct{ Problems []string }
+type FindingError struct {
+	Problems []string
+	// Fixes are the changes of tree.yaml that solve some of them; -fix
+	// makes them.
+	Fixes []Fix
+}
 
 func (e *FindingError) Error() string { return strings.Join(e.Problems, "\n") }
 

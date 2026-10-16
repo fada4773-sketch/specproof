@@ -199,15 +199,25 @@ contain breaking changes, which are listed here.
   - `apitest-gen tree -help` (also `help`, `-h`, `--help`, after `run`
     and other flags) explains the whole syntax of `tree.yaml` (top-level
     keys, values and references, keys of a node and of `write`, `order`,
-    messages) and lists the flags. Problems and notes name what is wrong,
-    then `why:` and `fix:` lines: a source of `order` without a record
-    names all records that lack it once, whether the data has no record
-    of the source at all, and the `where` to add (`{pilotId: present}`);
-    a path value that is an empty list says so and which `where` lets
-    only records with values through; a reference to a missing field
-    lists the fields of the record and catches a leading dot before a
-    node name (`.docks.id` → `docks.id`); a reference without a record
-    says where to put the node.
+    messages) and lists the flags. A problem names the line and below it
+    the change to make (`change line 23: pilotId: shipPilot.name →
+    pilotId: shipPilot.id`); `apitest-gen tree -fix` makes the changes
+    marked `(-fix does it)` in `tree.yaml`, comments kept: a leading dot
+    before a node name (`.docks.id` → `docks.id`, now found before the
+    fetch), lines of `order` listed twice, creating nothing or a delete
+    step, creates moved above the lines that take their values, sources
+    the body has not or that hang neither below nor above, a source field
+    the records lack or of another type than the body field (new check)
+    → the key of that node; after a build the `where: {f: present}` at
+    the node whose records lack the source below them (then fetch again).
+    A source of `order` without a record names all records that lack it
+    once; a path value that is an empty list says so and which `where`
+    lets only records with values through; a reference to a missing
+    field lists the fields of the record. Problems are sorted by line.
+    The top of `tree.yaml` explains the syntax in a few lines; a run puts
+    it there once (it stood there again with each new `order`), and a
+    merge no longer takes sources of the proposal whose node hangs
+    elsewhere in the file.
   - Token flags for both: `-token`, `-token-env`, `-forbidden-token`,
     `-forbidden-token-env`, `-header`. The settings file of a run is
     optional (spec, base URL, health, tokens, headers, report, unique).

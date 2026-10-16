@@ -54,6 +54,13 @@ func Parse(b []byte) (*Doc, error) {
 	return d, nil
 }
 
+// Head is the comment above the first key that yaml.v3 keeps with the
+// document (all but the last block of comment lines at the top).
+func (d *Doc) Head() string { return d.doc.HeadComment }
+
+// SetHead sets that comment.
+func (d *Doc) SetHead(c string) { d.doc.HeadComment = c }
+
 // Bytes renders the document: YAML with two-space indentation, or JSON
 // with the original key order.
 func (d *Doc) Bytes() ([]byte, error) {

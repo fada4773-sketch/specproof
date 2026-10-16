@@ -166,8 +166,8 @@ func Fetch(ctx context.Context, s *spec.Spec, t *Tree, opt Options) (*Data, erro
 	if opt.Timeout == 0 {
 		opt.Timeout = 10 * time.Second
 	}
-	if problems := Check(s, t); len(problems) > 0 {
-		return nil, &FindingError{Problems: problems}
+	if problems, fixes := check(s, t); len(problems) > 0 {
+		return nil, &FindingError{Problems: problems, Fixes: fixes}
 	}
 	f := &fetcher{s: s, t: t, opt: opt, data: &Data{Source: opt.BaseURL}, cache: map[string]*answer{}, count: map[*Node]int{}, budget: t.Budget, scope: t.names(), unset: map[*Node]bool{},
 		global: map[*Node][]Clause{}, filtered: map[string]bool{},

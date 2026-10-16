@@ -1,6 +1,7 @@
 package tree
 
 import (
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -87,24 +88,41 @@ func TestOrderCheck(t *testing.T) {
 	if problems := Check(s, parse(t, orderTree)); len(problems) > 0 {
 		t.Fatalf("a right order: %v", problems)
 	}
-	for name, c := range map[string]struct{ from, to, want string }{
+	// fixed: -fix makes the change, and the file has no problem after it
+	for name, c := range map[string]struct {
+		from, to, want, change string
+		fixed                  bool
+	}{
 		"after what it takes": {"  - pilots\n  - docks\n  - ships: {pilotId: shipPilot.id}\n", "  - pilots\n  - ships: {pilotId: shipPilot.id}\n  - docks\n",
-			"order: ships comes before docks, but the create of ships takes a value of docks; move docks above ships"},
+			"order: ships comes before docks, but the create of ships takes a value of docks", "change line 5: move - docks above - ships (line 4)", true},
 		"the source's create too": {"  - pilots\n  - docks\n  - ships: {pilotId: shipPilot.id}\n", "  - docks\n  - ships: {pilotId: shipPilot.id}\n  - pilots\n",
-			"order: ships comes before pilots, but the create of ships takes a value of shipPilot (created like pilots); move pilots above ships"},
-		"no node":       {"  - pilots\n", "  - pilots\n  - moons\n", "order: moons is no node of the tree"},
-		"twice":         {"  - pilots\n", "  - pilots\n  - pilots\n", "order: pilots is listed twice"},
-		"no create":     {"  - pilots\n", "  - pilots\n  - planets\n", "order: planets creates nothing"},
-		"no place":      {"  - pilots\n", "", "pilots: its create has no place in order"},
-		"no body field": {"{pilotId: shipPilot.id}", "{pilotId: shipPilot.id, captain: shipPilot.id}", "order: ships: the body of POST /docks/{dockId}/ships has no field captain"},
-		"no reference":  {"{pilotId: shipPilot.id}", "{pilotId: 7}", "order: ships.pilotId: 7 is no reference to a node"},
-		"no relation":   {"{pilotId: shipPilot.id}", "{pilotId: pilots.id}", "order: ships.pilotId: pilots is neither below nor above ships"},
-		"no field":      {"{pilotId: shipPilot.id}", "{pilotId: shipPilot.rank}", "order: ships.pilotId: the records of shipPilot have no field rank"},
+			"order: ships comes before pilots, but the create of ships takes a value of shipPilot (created like pilots)", "move - pilots above - ships", true},
+		"no node":       {"  - pilots\n", "  - pilots\n  - moons\n", "order: moons is no node of the tree", "remove the line, or name a node", false},
+		"other case":    {"  - pilots\n", "  - Pilots\n", "order: Pilots is no node of the tree", "Pilots → pilots", true},
+		"twice":         {"  - pilots\n", "  - pilots\n  - pilots\n", "order: pilots is listed twice", "remove the line (- pilots)", true},
+		"no create":     {"  - pilots\n", "  - pilots\n  - planets\n", "order: planets creates nothing", "remove the line (- planets)", true},
+		"no place":      {"  - pilots\n", "", "pilots: its create has no place in order", "", false},
+		"no body field": {"{pilotId: shipPilot.id}", "{pilotId: shipPilot.id, captain: shipPilot.id}", "order: ships: the body of POST /docks/{dockId}/ships has no field captain", "remove captain: shipPilot.id", true},
+		"no reference":  {"{pilotId: shipPilot.id}", "{pilotId: 7}", "order: ships.pilotId: 7 is no reference to a node", "pilotId: 7 → pilotId: <node>.<field>", false},
+		"no relation":   {"{pilotId: shipPilot.id}", "{pilotId: pilots.id}", "order: ships.pilotId: pilots is neither below nor above ships", "remove pilotId: pilots.id", true},
+		"no field":      {"{pilotId: shipPilot.id}", "{pilotId: shipPilot.rank}", "order: ships.pilotId: the records of shipPilot have no field rank", "pilotId: shipPilot.rank → pilotId: shipPilot.id", true},
+		"other type":    {"{pilotId: shipPilot.id}", "{pilotId: shipPilot.name}", "order: ships.pilotId: the body takes an integer, shipPilot.name is a string", "pilotId: shipPilot.name → pilotId: shipPilot.id", true},
 	} {
 		tr := parse(t, strings.Replace(orderTree, c.from, c.to, 1))
 		problems := Check(s, tr)
-		if !slices.ContainsFunc(problems, func(p string) bool { return strings.HasPrefix(p, "line ") && strings.Contains(p, c.want) }) {
-			t.Errorf("%s: want %q, got %v", name, c.want, problems)
+		if !slices.ContainsFunc(problems, func(p string) bool {
+			return strings.HasPrefix(p, "line ") && strings.Contains(p, c.want) && strings.Contains(p, c.change)
+		}) {
+			t.Errorf("%s: want %q and %q, got %v", name, c.want, c.change, problems)
+		}
+		fixed, done, err := Repair(s, tr)
+		if err != nil {
+			t.Errorf("%s: -fix: %v", name, err)
+			continue
+		}
+		if left := Check(s, fixed); c.fixed && (len(done) == 0 || len(left) > 0) {
+			b, _ := fixed.Bytes()
+			t.Errorf("%s: -fix made %v, left %v\n%s", name, done, left, b)
 		}
 	}
 	// without order the file is as before: nothing to check
@@ -165,7 +183,7 @@ func TestOrderStrictBuild(t *testing.T) {
 		"              shipPilot: GET /pilots/{pilotId} pilotId=.pilotId\n              crew: GET /pilots/{pilotId} pilotId=.pilotId\n", 1))
 	gone.Order[2].Values = map[string]any{"pilotId": "crew.id"}
 	_, err = Build(s, gone, d)
-	if err == nil || !strings.Contains(err.Error(), "have no record of crew below them") || !strings.Contains(err.Error(), "why: the data holds no record of crew at all") {
+	if err == nil || !strings.Contains(err.Error(), "ships1, ships2 have no record of crew below them (the data holds no record of crew at all)") || !strings.Contains(err.Error(), "next: fetch again") {
 		t.Errorf("a missing source: %v", err)
 	}
 	if err != nil && strings.Count(err.Error(), "line 5:") != 1 {
@@ -186,9 +204,22 @@ func TestOrderStrictBuild(t *testing.T) {
 		}
 	}
 	_, err = Build(s, tr, lack)
-	if err == nil || !strings.Contains(err.Error(), "the record "+ship.ID+" has no record of shipPilot below it") ||
-		!strings.Contains(err.Error(), "at ships add where: {pilotId: present}") {
+	if err == nil || !strings.Contains(err.Error(), ship.ID+" has no record of shipPilot below it") ||
+		!strings.Contains(err.Error(), "ships: add where: {pilotId: present}, then fetch again with -node ships (-fix does it)") {
 		t.Errorf("a ship without its pilot: %v", err)
+	}
+	// -fix adds the where at the ships
+	var fe *FindingError
+	if !errors.As(err, &fe) || len(fe.Fixes) != 1 {
+		t.Fatalf("one fix: %v", err)
+	}
+	fixed, done, err := ApplyFixes(tr, fe.Fixes)
+	if err != nil || len(done) != 1 {
+		t.Fatalf("apply: %v %v", done, err)
+	}
+	if n := fixed.Node("ships"); n == nil || len(n.Where) != 1 || n.Where[0].Field != "pilotId" || n.Where[0].Test != "present" || n.Where[0].Note != "shipPilot reads it" {
+		b, _ := fixed.Bytes()
+		t.Errorf("the where of the ships:\n%s", b)
 	}
 }
 
@@ -239,19 +270,34 @@ func TestOrderSteps(t *testing.T) {
 	if res, log := runEmpty(t, built); res.Failed {
 		t.Fatalf("the scenario failed:\n%s", log)
 	}
-	for name, c := range map[string]struct{ from, to, want string }{
+	for name, c := range map[string]struct {
+		from, to, want, change string
+		fixed                  bool
+	}{
 		"before its create": {"  - docks\n  - docks.update\n", "  - docks.update\n  - docks\n",
-			"order: docks.update comes before docks, but it needs the records docks creates; move docks above docks.update"},
+			"order: docks.update comes before docks, but it needs the records docks creates", "move - docks above - docks.update (line 4)", true},
 		"below a record created later": {"  - ships: {pilotId: shipPilot.id}\n  - shipPilot.read\n", "  - shipPilot.read\n  - ships: {pilotId: shipPilot.id}\n",
-			"order: shipPilot.read comes before ships, but it needs the records ships creates"},
-		"no such step": {"  - docks.list\n", "  - pilots.update\n", "order: pilots.update: pilots has no step update; it has list"},
-		"a delete":     {"  - docks.list\n", "  - docks.delete\n", "order: docks.delete: the deletes run at the end, bottom up"},
-		"the create":   {"  - docks.list\n", "  - docks.create\n", "order: docks.create: the node alone stands for its create (- docks)"},
-		"twice":        {"  - docks.list\n", "  - docks.list\n  - docks.list\n", "order: docks.list is listed twice"},
+			"order: shipPilot.read comes before ships, but it needs the records ships creates", "move - ships above - shipPilot.read", true},
+		"no such step": {"  - docks.list\n", "  - pilots.update\n", "order: pilots.update: pilots has no step update", "pilots.update → pilots.list", false},
+		"a delete":     {"  - docks.list\n", "  - docks.delete\n", "order: docks.delete: the deletes run at the end, bottom up", "remove the line (- docks.delete)", true},
+		"the create":   {"  - docks.list\n", "  - docks.create\n", "order: docks.create: the node alone stands for its create (- docks)", "remove the line (- docks.create)", true},
+		"twice":        {"  - docks.list\n", "  - docks.list\n  - docks.list\n", "order: docks.list is listed twice", "remove the line (- docks.list)", true},
 	} {
-		problems := Check(s, parse(t, strings.Replace(stepTree, c.from, c.to, 1)))
-		if !slices.ContainsFunc(problems, func(p string) bool { return strings.HasPrefix(p, "line ") && strings.Contains(p, c.want) }) {
-			t.Errorf("%s: want %q, got %v", name, c.want, problems)
+		tr := parse(t, strings.Replace(stepTree, c.from, c.to, 1))
+		problems := Check(s, tr)
+		if !slices.ContainsFunc(problems, func(p string) bool {
+			return strings.HasPrefix(p, "line ") && strings.Contains(p, c.want) && strings.Contains(p, c.change)
+		}) {
+			t.Errorf("%s: want %q and %q, got %v", name, c.want, c.change, problems)
+		}
+		fixed, done, err := Repair(s, tr)
+		if err != nil {
+			t.Errorf("%s: -fix: %v", name, err)
+			continue
+		}
+		if left := Check(s, fixed); c.fixed && (len(done) == 0 || len(left) > 0) {
+			b, _ := fixed.Bytes()
+			t.Errorf("%s: -fix made %v, left %v\n%s", name, done, left, b)
 		}
 	}
 }
@@ -298,4 +344,57 @@ func TestOrderMerge(t *testing.T) {
 // withoutOrder is a tree file without its order section.
 func withoutOrder(file string) string {
 	return "tree:" + strings.SplitN(file, "tree:", 2)[1]
+}
+
+// TestOrderHeadOnce: the explanation above order stays once, when order
+// is proposed again (an empty order: with the explanation above it) and in
+// a file that has it several times.
+func TestOrderHeadOnce(t *testing.T) {
+	s := loadStarport(t)
+	head := "# " + strings.ReplaceAll(orderHead, "\n", "\n# ") + "\n"
+	file := head + "order:\n" + withoutOrder(orderTree)
+	for range 3 {
+		tr := parse(t, file)
+		Merge(s, tr, Propose(s), "1.0")
+		b, _ := tr.Bytes()
+		// the order emptied again, its explanation kept
+		out := string(b)
+		section := out[strings.Index(out, "order:\n"):strings.Index(out, "tree:")]
+		file = strings.Replace(out, section, "order:\n", 1)
+		if n := strings.Count(out, "How to read this file"); n != 1 {
+			t.Fatalf("the explanation %d times:\n%s", n, out)
+		}
+	}
+	// the text of an earlier version, three times: the new one, once
+	old := "# " + strings.ReplaceAll(oldHeads[0], "\n", "\n# ") + "\n"
+	tr := parse(t, old+"\n"+old+"\n"+old+orderTree)
+	changes := Merge(s, tr, Propose(s), "1.0")
+	b, _ := tr.Bytes()
+	if n := strings.Count(string(b), "How to read this file"); n != 1 || strings.Contains(string(b), "Creates top down") ||
+		!slices.ContainsFunc(changes, func(c Change) bool { return c.Where == "order" }) {
+		t.Errorf("once, the new one: %v\n%s", changes, b)
+	}
+	// the new one stays as it is: no change
+	again := parse(t, string(b))
+	if ch := Merge(s, again, Propose(s), "1.0"); slices.ContainsFunc(ch, func(c Change) bool { return c.Where == "order" }) {
+		t.Errorf("a second merge: %v", ch)
+	}
+}
+
+// TestOrderMergeRelated: a source of the proposal whose node hangs
+// elsewhere in the file (not below or above the created one) is left out,
+// so the order a merge writes passes the check.
+func TestOrderMergeRelated(t *testing.T) {
+	s := loadStarport(t)
+	file := strings.Replace(withoutOrder(orderTree), "              shipPilot: GET /pilots/{pilotId} pilotId=.pilotId\n", "", 1) +
+		"  shipPilot: GET /pilots/{pilotId} pilotId=7\n"
+	tr := parse(t, file)
+	Merge(s, tr, Propose(s), "1.0")
+	b, _ := tr.Bytes()
+	if e := tr.Entry("ships"); e == nil || len(e.Values) > 0 {
+		t.Errorf("ships without the source:\n%s", b)
+	}
+	if problems := Check(s, parse(t, string(b))); len(problems) > 0 {
+		t.Errorf("check after merge: %v\n%s", problems, b)
+	}
 }

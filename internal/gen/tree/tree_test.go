@@ -1468,3 +1468,34 @@ func TestFetchMessages(t *testing.T) {
 		t.Errorf("no record: %v", err)
 	}
 }
+
+// TestCheckLeadingDot: ".<node>.field" where the record has no such field
+// is named with the change, and -fix makes it, in a node, a write and
+// params; a field of the record of that name is no problem.
+func TestCheckLeadingDot(t *testing.T) {
+	s := loadStarport(t)
+	file := strings.NewReplacer(
+		"              shipPilot: GET /pilots/{pilotId} pilotId=.pilotId\n",
+		"              shipPilot: GET /pilots/{pilotId} pilotId=.pilotId\n              ship: GET /ships/{shipId} shipId=.docks.id\n",
+	).Replace(orderTree)
+	tr := parse(t, file)
+	problems := Check(s, tr)
+	if !slices.ContainsFunc(problems, func(p string) bool {
+		return strings.Contains(p, `ship: ".docks.id" reads the field "docks" of the record of ships above, but docks is a node`) &&
+			strings.Contains(p, "change line 37: .docks.id → docks.id (-fix does it)")
+	}) {
+		t.Fatalf("the leading dot: %v", problems)
+	}
+	fixed, done, err := Repair(s, tr)
+	if err != nil || len(done) != 1 {
+		t.Fatalf("-fix: %v %v", done, err)
+	}
+	if n := fixed.Node("ship"); n == nil || n.Path["shipId"] != "docks.id" {
+		b, _ := fixed.Bytes()
+		t.Errorf("fixed:\n%s", b)
+	}
+	// a field of the record named like a node stays
+	if problems := Check(s, parse(t, strings.Replace(file, "shipId=.docks.id", "shipId=.id", 1))); len(problems) > 0 {
+		t.Errorf("no problem: %v", problems)
+	}
+}

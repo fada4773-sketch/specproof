@@ -6,9 +6,11 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/getkin/kin-openapi/openapi3"
 	"gopkg.in/yaml.v3"
 
 	"github.com/fada4773-sketch/specproof/internal/gen/model"
+	"github.com/fada4773-sketch/specproof/internal/gen/value"
 	"github.com/fada4773-sketch/specproof/internal/spec"
 )
 
@@ -36,11 +38,27 @@ type OrderEntry struct {
 	Line int
 }
 
-// orderHead explains the order section.
-const orderHead = `Creates top down, deletes bottom up; fetch, test and run follow it.
+// orderHead heads order, the top of the file: the syntax in short, for
+// someone who reads the file the first time.
+const orderHead = `How to read this file (all of it: apitest-gen tree -help):
+  a node is one request; the nodes under each run once per record it picked
+  .id            the field id of the record one step up (in write: of the record itself)
+  docks.id       the field id of the node docks above (else of its first record)
+  .route.id      a field inside a field
+  /id            a place in the answer: only in key, save, items, page
+  $season        a value you write under params
+  '{{a}}-{{b}}'  values glued into one text
+order: what the test creates, top down; it deletes bottom up
+  - ships: {pilotId: shipPilot.id}   pilotId of the new ship = id of the shipPilot below it
+  - docks.update                     this step of docks runs here
+A problem says "change line N: old → new"; apitest-gen tree -fix makes it.`
+
+// oldHeads are the texts above order of earlier versions: a merge puts
+// orderHead in their place.
+var oldHeads = []string{`Creates top down, deletes bottom up; fetch, test and run follow it.
 "field: node.key": where a value of the body comes from.
 "node.read", "node.list", "node.update", "node.patch", "node.<action>":
-that step runs at that place; the steps not named run after the list.`
+that step runs at that place; the steps not named run after the list.`}
 
 // Step names of order besides the write kinds.
 const (
@@ -276,37 +294,50 @@ func createRefs(t *Tree, n *Node, w *Write, e *OrderEntry) []string {
 // after the creates of the records it reads by name; every source of a
 // value is a node below or above the created one, with that field, and the
 // body of the create has the field.
-func checkOrder(s *spec.Spec, t *Tree) []string {
+func checkOrder(s *spec.Spec, t *Tree) ([]string, []Fix) {
 	if !t.HasOrder {
-		return nil
+		return nil, nil
 	}
 	var out []string
+	var fixes []Fix
 	add := func(line int, format string, args ...any) {
 		out = append(out, fmt.Sprintf("line %d: %s", line, fmt.Sprintf(format, args...)))
+	}
+	fix := func(f Fix, format string, args ...any) {
+		out = append(out, fmt.Sprintf("line %d: %s", f.Line, fmt.Sprintf(format, args...))+f.change())
+		if f.apply != nil {
+			fixes = append(fixes, f)
+		}
 	}
 	m := modelOf(s)
 	seen := map[string]int{}
 	for i, e := range t.Order {
 		if j, dup := seen[e.Key()]; dup {
-			add(e.Line, "order: %s is listed twice (also line %d)", e.Key(), t.Order[j].Line)
+			fix(Fix{Line: e.Line, Change: "remove the line (- " + e.Key() + ")", apply: removeOrderLine(e.Line)},
+				"order: %s is listed twice (also line %d)", e.Key(), t.Order[j].Line)
 			continue
 		}
 		seen[e.Key()] = i
 		n := t.Node(e.Node)
 		if n == nil || n.IsRequire {
-			add(e.Line, "order: %s is no node of the tree", e.Node)
+			f := Fix{Line: e.Line, Change: "remove the line, or name a node of the tree"}
+			if like := nodeLike(t, e.Node); like != "" {
+				f = Fix{Line: e.Line, Change: e.Node + " → " + like, apply: renameOrderLine(e.Line, like)}
+			}
+			fix(f, "order: %s is no node of the tree", e.Node)
 			continue
 		}
 		if n.Gone {
 			continue
 		}
 		if e.Step != "" {
-			checkStep(s, m, t, i, e, n, add)
+			checkStep(s, m, t, i, e, n, fix)
 			continue
 		}
 		w, op := ownCreate(s, n)
 		if w == nil {
-			add(e.Line, "order: %s creates nothing (its write block has no create); remove the line", e.Node)
+			fix(Fix{Line: e.Line, Change: "remove the line (- " + e.Node + ")", apply: removeOrderLine(e.Line)},
+				"order: %s creates nothing (its write block has no create)", e.Node)
 			continue
 		}
 		for _, ref := range createRefs(t, n, w, &e) {
@@ -323,34 +354,46 @@ func checkOrder(s *spec.Spec, t *Tree) []string {
 				if owner.Name != ref {
 					what = ref + " (created like " + owner.Name + ")"
 				}
-				add(e.Line, "order: %s comes before %s, but the create of %s takes a value of %s; move %s above %s",
-					e.Node, owner.Name, e.Node, what, owner.Name, e.Node)
+				fix(Fix{Line: t.Order[j].Line, Change: fmt.Sprintf("move - %s above - %s (line %d)", owner.Name, e.Node, e.Line), apply: moveOrderLine(t.Order[j].Line, e.Line)},
+					"order: %s comes before %s, but the create of %s takes a value of %s", e.Node, owner.Name, e.Node, what)
 			}
 		}
 		props, _ := properties(schemaOf(requestRef(op)))
 		for _, field := range sortedKeys(e.Values) {
 			if len(props) > 0 {
 				if _, ok := propertyFoldIn(props, field); !ok {
-					add(e.Line, "order: %s: the body of %s has no field %s", e.Node, callOf(op), field)
+					fix(Fix{Line: e.Line, Change: fmt.Sprintf("remove %s: %v (the body has no such field)", field, e.Values[field]), apply: setOrderSource(e.Line, field, "")},
+						"order: %s: the body of %s has no field %s", e.Node, callOf(op), field)
 					continue
 				}
 			}
 			ref, ok := ParseRef(e.Values[field], t.names())
 			if !ok || ref.Node == "" {
-				add(e.Line, "order: %s.%s: %v is no reference to a node (shipPilot.id)", e.Node, field, e.Values[field])
+				fix(Fix{Line: e.Line, Change: fmt.Sprintf("%s: %v → %s: <node>.<field> (a node below or above %s)", field, e.Values[field], field, e.Node)},
+					"order: %s.%s: %v is no reference to a node", e.Node, field, e.Values[field])
 				continue
 			}
 			src := t.Node(ref.Node)
 			if src == nil || !below(src, n) && n.Ancestor(ref.Node) == nil {
-				add(e.Line, "order: %s.%s: %s is neither below nor above %s", e.Node, field, ref.Node, e.Node)
+				fix(Fix{Line: e.Line, Change: fmt.Sprintf("remove %s: %s, or name a node below or above %s", field, ref, e.Node), apply: setOrderSource(e.Line, field, "")},
+					"order: %s.%s: %s is neither below nor above %s", e.Node, field, ref.Node, e.Node)
 				continue
 			}
-			if sop := lookupOp(s, src.Call); sop != nil && ref.Field != "" {
-				if sprops, _ := properties((&proposer{}).recordSchema(sop)); len(sprops) > 0 {
-					if _, ok := propertyFoldIn(sprops, strings.SplitN(ref.Field, ".", 2)[0]); !ok {
-						add(e.Line, "order: %s.%s: the records of %s have no field %s", e.Node, field, ref.Node, ref.Field)
-					}
-				}
+			sop := lookupOp(s, src.Call)
+			if sop == nil || ref.Field == "" {
+				continue
+			}
+			sprops, _ := properties((&proposer{}).recordSchema(sop))
+			if len(sprops) == 0 {
+				continue
+			}
+			want := fieldType(props, field)
+			got, has := propertyFoldIn(sprops, strings.SplitN(ref.Field, ".", 2)[0])
+			switch {
+			case !has:
+				fix(sourceFix(e, field, ref, src, sprops, want), "order: %s.%s: the records of %s have no field %s", e.Node, field, ref.Node, ref.Field)
+			case !strings.Contains(ref.Field, ".") && want != "" && got != nil && value.Type(got.Value) != "" && value.Type(got.Value) != want:
+				fix(sourceFix(e, field, ref, src, sprops, want), "order: %s.%s: the body takes %s, %s is %s", e.Node, field, article(want), ref, article(value.Type(got.Value)))
 			}
 		}
 	}
@@ -364,7 +407,82 @@ func checkOrder(s *spec.Spec, t *Tree) []string {
 			}
 		}
 	})
-	return out
+	return out, fixes
+}
+
+// fieldType is the type of a body field, of its items for a list: the
+// type a source must have.
+func fieldType(props openapi3.Schemas, field string) string {
+	p, ok := propertyFoldIn(props, field)
+	if !ok || p == nil || p.Value == nil {
+		return ""
+	}
+	if value.Type(p.Value) == "array" && p.Value.Items != nil {
+		return value.Type(p.Value.Items.Value)
+	}
+	return value.Type(p.Value)
+}
+
+// sourceFix is the change for a source of order with no such field, or a
+// field of another type: the key of the source node of the type the body
+// takes, else the fields to choose from.
+func sourceFix(e OrderEntry, field string, ref Ref, src *Node, sprops openapi3.Schemas, want string) Fix {
+	keys := slices.Clone(src.Key)
+	keys = append(keys, "/id")
+	for _, k := range keys {
+		name, ok := propertyFoldName(sprops, strings.TrimPrefix(k, "/"))
+		if !ok || strings.Contains(strings.TrimPrefix(k, "/"), "/") {
+			continue
+		}
+		if p := sprops[name]; p != nil && p.Value != nil && (want == "" || value.Type(p.Value) == want) && name != ref.Field {
+			to := ref.Node + "." + name
+			return Fix{Line: e.Line, Change: fmt.Sprintf("%s: %s → %s: %s", field, ref, field, to), apply: setOrderSource(e.Line, field, to)}
+		}
+	}
+	return Fix{Line: e.Line, Change: fmt.Sprintf("%s: %s → %s: %s.<one of %s>", field, ref, field, ref.Node, strings.Join(sortedKeys(sprops), ", "))}
+}
+
+// article puts a or an before a type name.
+func article(typ string) string {
+	if strings.ContainsAny(typ[:1], "aeiou") {
+		return "an " + typ
+	}
+	return "a " + typ
+}
+
+// nodeLike is the node whose name differs from name only in case, "" when
+// there is none or several.
+func nodeLike(t *Tree, name string) string {
+	var found []string
+	t.Walk(func(n *Node) {
+		if !n.IsRequire && strings.EqualFold(n.Name, name) && n.Name != name {
+			found = append(found, n.Name)
+		}
+	})
+	if len(found) != 1 {
+		return ""
+	}
+	return found[0]
+}
+
+// renameOrderLine sets the node a line of order names.
+func renameOrderLine(line int, name string) func(*Tree) bool {
+	return func(t *Tree) bool {
+		section, i := orderItem(t, line)
+		if section == nil {
+			return false
+		}
+		item := section.Content[i]
+		if item.Kind == yaml.MappingNode {
+			item = item.Content[0]
+		}
+		_, step, _ := strings.Cut(item.Value, ".")
+		item.Value = name
+		if step != "" {
+			item.Value += "." + step
+		}
+		return true
+	}
 }
 
 // stepsOf are the steps of a node order can place: its read or list, and
@@ -391,18 +509,27 @@ func stepsOf(s *spec.Spec, n *Node) []string {
 
 // checkStep verifies a step line of order: the node has the step, and the
 // creates of its records and of the records above them come before it.
-func checkStep(s *spec.Spec, m *model.Model, t *Tree, i int, e OrderEntry, n *Node, add func(int, string, ...any)) {
+func checkStep(s *spec.Spec, m *model.Model, t *Tree, i int, e OrderEntry, n *Node, fix func(Fix, string, ...any)) {
 	steps := stepsOf(s, n)
 	if !slices.Contains(steps, e.Step) {
+		remove := Fix{Line: e.Line, Change: "remove the line (- " + e.Key() + ")", apply: removeOrderLine(e.Line)}
 		switch {
+		case e.Step == WriteCreate && t.OrderIndex(e.Node) >= 0:
+			fix(remove, "order: %s: the node alone stands for its create (- %s)", e.Key(), e.Node)
 		case e.Step == WriteCreate:
-			add(e.Line, "order: %s: the node alone stands for its create (- %s)", e.Key(), e.Node)
+			fix(Fix{Line: e.Line, Change: e.Key() + " → " + e.Node, apply: renameOrderLine(e.Line, e.Node)},
+				"order: %s: the node alone stands for its create (- %s)", e.Key(), e.Node)
 		case KindBase(e.Step) == WriteDelete:
-			add(e.Line, "order: %s: the deletes run at the end, bottom up; remove the line", e.Key())
+			fix(remove, "order: %s: the deletes run at the end, bottom up", e.Key())
 		case len(steps) == 0:
-			add(e.Line, "order: %s: %s has no step order can place", e.Key(), e.Node)
+			fix(remove, "order: %s: %s has no step order can place", e.Key(), e.Node)
 		default:
-			add(e.Line, "order: %s: %s has no step %s; it has %s", e.Key(), e.Node, e.Step, strings.Join(steps, ", "))
+			to := e.Node + "." + steps[0]
+			if len(steps) > 1 {
+				to = e.Node + ".<one of " + strings.Join(steps, ", ") + ">"
+			}
+			fix(Fix{Line: e.Line, Change: e.Key() + " → " + to},
+				"order: %s: %s has no step %s", e.Key(), e.Node, e.Step)
 		}
 		return
 	}
@@ -412,8 +539,8 @@ func checkStep(s *spec.Spec, m *model.Model, t *Tree, i int, e OrderEntry, n *No
 			continue
 		}
 		if j := t.OrderIndex(owner.Name); j > i {
-			add(e.Line, "order: %s comes before %s, but it needs the records %s creates; move %s above %s",
-				e.Key(), owner.Name, owner.Name, owner.Name, e.Key())
+			fix(Fix{Line: t.Order[j].Line, Change: fmt.Sprintf("move - %s above - %s (line %d)", owner.Name, e.Key(), e.Line), apply: moveOrderLine(t.Order[j].Line, e.Line)},
+				"order: %s comes before %s, but it needs the records %s creates", e.Key(), owner.Name, owner.Name)
 		}
 	}
 }
@@ -474,6 +601,7 @@ func (m *merger) mergeOrder() {
 	}
 	m.t.Complete(m.s)
 	root := m.t.doc.Root
+	m.tidyOrderHead()
 	section := valueOf(root, "order")
 	if !m.t.HasOrder || section == nil || section.Kind != yaml.SequenceNode {
 		// the whole order: the creates of the file in the order of what
@@ -481,7 +609,7 @@ func (m *merger) mergeOrder() {
 		sources := map[string]map[string]any{}
 		for _, e := range m.proposal.Order {
 			if n := m.fileNode(e.Node); n != nil {
-				sources[n.Name] = m.fileValues(e.Values)
+				sources[n.Name] = related(m.t, n, m.fileValues(e.Values))
 			}
 		}
 		list := proposeOrder(m.s, modelOf(m.s), m.t, sources)
@@ -490,8 +618,11 @@ func (m *merger) mergeOrder() {
 		}
 		key, val := orderKey(), orderYAML(list)
 		if len(root.Content) > 0 && root.Content[0].HeadComment != "" {
-			key.HeadComment = root.Content[0].HeadComment + "\n\n" + key.HeadComment
+			if old := withoutHead(root.Content[0].HeadComment); old != "" {
+				key.HeadComment = old + "\n\n" + key.HeadComment
+			}
 			root.Content[0].HeadComment = ""
+			m.t.doc.SetHead(withoutHead(m.t.doc.Head()))
 		}
 		if section != nil {
 			for i := 0; i+1 < len(root.Content); i += 2 {
@@ -572,7 +703,7 @@ func (m *merger) missingCreates(list []OrderEntry) []OrderEntry {
 	sources := map[string]map[string]any{}
 	for _, e := range m.proposal.Order {
 		if n := m.fileNode(e.Node); n != nil {
-			sources[n.Name] = m.fileValues(e.Values)
+			sources[n.Name] = related(m.t, n, m.fileValues(e.Values))
 		}
 	}
 	var out []OrderEntry
@@ -606,6 +737,78 @@ func (m *merger) fileValues(vals map[string]any) map[string]any {
 		return nil
 	}
 	return out
+}
+
+// related keeps the sources of a create whose node is below or above it
+// in the file: a source the file has elsewhere fails the check.
+func related(t *Tree, n *Node, vals map[string]any) map[string]any {
+	scope := t.names()
+	for field, v := range vals {
+		ref, ok := ParseRef(v, scope)
+		src := t.Node(ref.Node)
+		if !ok || src == nil || !below(src, n) && n.Ancestor(ref.Node) == nil {
+			delete(vals, field)
+		}
+	}
+	if len(vals) == 0 {
+		return nil
+	}
+	return vals
+}
+
+// withoutHead is a head comment without the paragraphs that explain order
+// (they come with the order key).
+func withoutHead(c string) string {
+	var keep []string
+	for _, p := range strings.Split(c, "\n\n") {
+		if strings.TrimSpace(p) != "" && !isOrderHead(p) {
+			keep = append(keep, p)
+		}
+	}
+	return strings.Join(keep, "\n\n")
+}
+
+// isOrderHead reports whether a paragraph of a comment is orderHead, or
+// the text of an earlier version.
+func isOrderHead(p string) bool {
+	return slices.ContainsFunc(append([]string{orderHead}, oldHeads...), func(h string) bool { return commentText(p) == commentText(h) })
+}
+
+// commentText is a comment without "#" and the spaces around its lines.
+func commentText(c string) string {
+	var lines []string
+	for _, l := range strings.Split(strings.TrimSpace(c), "\n") {
+		lines = append(lines, strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(l), "#")))
+	}
+	return strings.Join(lines, "\n")
+}
+
+// tidyOrderHead keeps orderHead once, above order: files of an earlier
+// version got it again with each new order, and yaml.v3 keeps all but the
+// last block of comment lines at the top with the document.
+func (m *merger) tidyOrderHead() {
+	doc, root := m.t.doc, m.t.doc.Root
+	var key *yaml.Node
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		if root.Content[i].Value == "order" {
+			key = root.Content[i]
+		}
+	}
+	if key == nil {
+		return
+	}
+	head := withoutHead(doc.Head())
+	own := withoutHead(key.HeadComment)
+	if own != "" {
+		own += "\n\n"
+	}
+	own += orderHead
+	if head == doc.Head() && commentText(own) == commentText(key.HeadComment) {
+		return
+	}
+	doc.SetHead(head)
+	key.HeadComment = own
+	m.changed("order", "the explanation at the top is new (once, the syntax in short)")
 }
 
 // fileNode is the node of the file a node of the proposal became.
