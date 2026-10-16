@@ -76,6 +76,13 @@ type builder struct {
 	// gives, problems are what the records do not allow (the build stops)
 	strict   bool
 	problems []string
+	// slot is the line of order the steps being added belong to (ships,
+	// ships.read, ships.update); slotOf keeps it per step. changes are the
+	// writes that change a record, reader the reads that check one.
+	slot    string
+	slotOf  map[*scenario.Step]string
+	changes map[*scenario.Step]*Record
+	reader  map[*scenario.Step]*Record
 }
 
 func (b *builder) problem(format string, args ...any) {
@@ -99,6 +106,7 @@ func Build(s *spec.Spec, t *Tree, d *Data) (*Built, error) {
 		byValue: map[string][]keyRef{}, etag: map[*Record]string{}, createID: map[*Record]string{},
 		readID: map[*Record]string{}, deps: map[*Record][]*Record{}, ids: map[string]int{}, sent: map[string]bool{},
 		scope: t.names(), writeSaved: map[string]bool{}, stage: map[string]any{}, strict: t.Strict(),
+		slotOf: map[*scenario.Step]string{}, changes: map[*scenario.Step]*Record{}, reader: map[*scenario.Step]*Record{},
 	}
 	if s.Doc.Components != nil {
 		b.schemes = s.Doc.Components.SecuritySchemes
@@ -120,6 +128,7 @@ func Build(s *spec.Spec, t *Tree, d *Data) (*Built, error) {
 	order := b.creates()
 	b.reads()
 	b.updates()
+	b.arrange()
 	b.unauthorized()
 	b.deletes(order)
 	b.afterSaves()
@@ -812,8 +821,10 @@ func (b *builder) creates() []*Record {
 	take := func(p *pending) {
 		done[p.r] = true
 		order = append(order, p.r)
-		b.steps = append(b.steps, p.st)
+		b.slot = ownerName(b, p.r)
+		b.push(p.st)
 	}
+	defer func() { b.slot = "" }()
 	if b.strict {
 		// the order of the file: each record after the records its create
 		// takes keys of, else the file is wrong
@@ -1191,6 +1202,7 @@ func isUniqueField(p *openapi3.Schema, name string, n *Node) bool {
 // per record above it (it holds the records of the node), per other node
 // one read per record (it holds what the create sent).
 func (b *builder) reads() {
+	defer func() { b.slot = "" }()
 	listed := map[string]bool{}
 	for _, r := range b.d.Records {
 		n := r.Node
@@ -1210,9 +1222,11 @@ func (b *builder) reads() {
 				continue
 			}
 			listed[key] = true
+			b.slot = n.Name + "." + StepList
 			b.listStep(r, op)
 			continue
 		}
+		b.slot = n.Name + "." + StepRead
 		b.readStep(r, op)
 	}
 }
@@ -1350,6 +1364,9 @@ func (b *builder) readStep(r *Record, op *spec.Operation) {
 	if b.add(st) && b.readID[e] == "" {
 		b.readID[e] = st.ID
 	}
+	if st.Equals != "" {
+		b.reader[st] = e
+	}
 }
 
 // ownKeys sets a path value that is a list (the keys the record above
@@ -1398,8 +1415,16 @@ func (b *builder) add(st *scenario.Step) bool {
 		return false
 	}
 	b.sent[key] = true
-	b.steps = append(b.steps, st)
+	b.push(st)
 	return true
+}
+
+// push appends a step to the slot of order being built.
+func (b *builder) push(st *scenario.Step) {
+	b.steps = append(b.steps, st)
+	if b.slot != "" {
+		b.slotOf[st] = b.slot
+	}
 }
 
 // updates adds per node the update and the patch of its first created
@@ -1447,7 +1472,9 @@ func (b *builder) updates() {
 				b.note("", n.Name+": "+kind+" not run", why)
 				continue
 			}
+			b.slot = n.Name + "." + kind
 			b.update(r, w, op, kind)
+			b.slot = ""
 		}
 	}
 }
@@ -1507,6 +1534,9 @@ func (b *builder) update(r *Record, w *Write, op *spec.Operation, kind string) {
 		st.Why = "runs " + kind + " on " + e.ID
 		return
 	}
+	if st.HasBody {
+		b.changes[st] = e
+	}
 	if read := b.readID[e]; read != "" && st.HasBody {
 		if rs := b.stepByID(read); rs != nil {
 			again := cloneStep(rs)
@@ -1514,7 +1544,79 @@ func (b *builder) update(r *Record, w *Write, op *spec.Operation, kind string) {
 			again.Equals = st.ID
 			again.Contains = nil
 			again.Why = "reads " + e.ID + " again, it holds what " + st.ID + " sent"
-			b.steps = append(b.steps, again)
+			b.push(again)
+		}
+	}
+}
+
+// arrange puts the steps in the order of the file when it places steps
+// besides the creates: the lines of order in turn, each with its steps,
+// then the steps it does not name in the order they were built. A read
+// after a change of its record checks what the change sent. A step that
+// takes a value a later step saves is a problem.
+func (b *builder) arrange() {
+	if !b.strict || !b.t.HasSteps() {
+		return
+	}
+	byKey := map[string][]*scenario.Step{}
+	var rest []*scenario.Step
+	for _, st := range b.steps {
+		if k := b.slotOf[st]; k != "" && b.t.StepIndex(k) >= 0 {
+			byKey[k] = append(byKey[k], st)
+		} else {
+			rest = append(rest, st)
+		}
+	}
+	var out []*scenario.Step
+	for _, e := range b.t.Order {
+		if e.Step != "" && len(byKey[e.Key()]) == 0 {
+			b.note("", "order: "+e.Key()+" runs no step", "the scenario builds no such step; the notes of "+e.Node+" say why")
+		}
+		out = append(out, byKey[e.Key()]...)
+	}
+	out = append(out, rest...)
+	b.steps = out
+
+	saver := map[string]*scenario.Step{}
+	for _, st := range b.steps {
+		for name := range st.Save {
+			if saver[name] == nil {
+				saver[name] = st
+			}
+		}
+	}
+	slotName := func(st *scenario.Step) string {
+		if k := b.slotOf[st]; k != "" {
+			return k
+		}
+		return st.ID
+	}
+	saved := map[string]bool{}
+	seen := map[string]bool{}
+	last := map[*Record]string{}
+	for _, st := range b.steps {
+		if r := b.reader[st]; r != nil && last[r] != "" {
+			st.Equals = last[r]
+			st.Why = "reads " + r.ID + ", it holds what " + st.Equals + " sent"
+		}
+		if r := b.changes[st]; r != nil {
+			last[r] = st.ID
+		}
+		for _, name := range st.Uses() {
+			if saved[name] || b.writeSaved[name] {
+				continue
+			}
+			if s := saver[name]; s != nil {
+				b.problem("order: %s runs before %s, but %s takes {{%s}}, which %s saves; move %s below %s",
+					slotName(st), slotName(s), st.ID, name, s.ID, slotName(st), slotName(s))
+			}
+		}
+		if st.Equals != "" && !seen[st.Equals] {
+			b.problem("order: %s runs before the step %s it checks against; move it below", slotName(st), st.Equals)
+		}
+		seen[st.ID] = true
+		for name := range st.Save {
+			saved[name] = true
 		}
 	}
 }

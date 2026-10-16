@@ -377,7 +377,10 @@ the references (`docks.id`).
 
 `order` at the top of `tree.yaml` names every node that creates records
 (a write block with `create`), in the order the test creates them; the
-deletes run the other way round, the updates in this order too. A line
+deletes run the other way round, the updates in this order too. Nodes
+without a create of their own (reads only, `create: none`, a node that
+creates like another node of the same resource) have no line of their
+own, but their steps can be placed (below). A line
 may name where values of the create's body come from: `field: node.key`,
 a node below the created record (the pilot read below a ship) or above
 it; a list field takes the key of every record of that node (`docks:
@@ -389,6 +392,27 @@ order:
   - docks
   - ships: {pilotId: shipPilot.id}
 ```
+
+**Steps besides the creates.** A line `node.step` places a step of a
+node: `read` (a node that reads one record), `list` (a node that reads a
+list), `update`, `patch`, a variant (`update-by-code`) or an action
+(`open`). The steps of the lines run in the order of `order`; the steps
+no line names run after them, in their usual place (reads and lists,
+then updates, 401 checks, deletes bottom up). Deletes always run at the
+end.
+
+```yaml
+order:
+  - pilots
+  - docks
+  - docks.update        # before the ships are created
+  - ships: {pilotId: shipPilot.id}
+  - shipPilot.read      # right after the ships
+  - docks.list
+```
+
+A read placed after an update or patch of its record checks what the
+change sent.
 
 **Proposed once.** The first run writes `order` from what the creates
 need (the values their paths take by name, the records their fields refer
@@ -406,7 +430,14 @@ marked `# new: check its place`, and the run says so.
   (`order: ships comes before docks, but the create of ships takes a value
   of docks; move docks above ships`);
 - every source is a node below or above the created one, its records
-  have the field, and the body of the create has the field.
+  have the field, and the body of the create has the field;
+- a step line names a step the node has, and comes after the creates of
+  its records and of the records above them (`order: docks.update comes
+  before docks, but it needs the records docks creates; move docks above
+  docks.update`).
+
+When the test is built, a step that takes a value a later step saves
+stops the build with the lines to swap.
 
 **Followed strictly.** With `order` the test creates in that order and
 takes body values only from `body from` and the sources of `order`, for

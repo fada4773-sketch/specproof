@@ -162,6 +162,13 @@ contain breaking changes, which are listed here.
     patches), no guessing; a value of the stage that is the key of a
     created record stays and the review names the source to add; records
     that do not fit stop the build. Files without `order` work as before.
+    `order` places reads, lists, updates, patches and actions too
+    (`- docks.update`, `- shipPilot.read`, `- docks.list`): those steps
+    run at that place, the steps not named after the list as before. The
+    check names a step before the creates of its records or of the records
+    above them, a step the node lacks, a delete (they run at the end) and
+    a step that takes a value a later step saves; a read placed after an
+    update checks what the update sent.
     **Shorter `tree.yaml`:** a head of three lines, and writes leave out
     what follows from their node (a path value the node reads with, the
     key of the record, the body from the node itself):

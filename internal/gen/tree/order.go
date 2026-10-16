@@ -13,14 +13,20 @@ import (
 )
 
 // OrderEntry is a line of order: a node whose create runs at that place,
-// and where values of its body come from.
+// and where values of its body come from; or a step of a node (its read,
+// list, update, patch or action) that runs at that place.
 //
 //	order:
 //	  - pilots
+//	  - pilots.read
 //	  - docks
 //	  - ships: {pilotId: shipPilot.id}
+//	  - ships.update
 type OrderEntry struct {
 	Node string
+	// Step is the step of the node the line places: read, list, a write
+	// kind (update, patch, update-by-name, an action); empty for its create.
+	Step string
 	// Values sets fields of the body of the create: field → a reference to
 	// the record below the created one ("shipPilot.id": the pilot read
 	// below the ship) or above it.
@@ -32,7 +38,23 @@ type OrderEntry struct {
 
 // orderHead explains the order section.
 const orderHead = `Creates top down, deletes bottom up; fetch, test and run follow it.
-"field: node.key": where a value of the body comes from.`
+"field: node.key": where a value of the body comes from.
+"node.read", "node.list", "node.update", "node.patch", "node.<action>":
+that step runs at that place; the steps not named run after the list.`
+
+// Step names of order besides the write kinds.
+const (
+	StepRead = "read"
+	StepList = "list"
+)
+
+// Key is the name of the line: the node for its create, else node.step.
+func (e OrderEntry) Key() string {
+	if e.Step == "" {
+		return e.Node
+	}
+	return e.Node + "." + e.Step
+}
 
 // noteNew marks an entry a merge added.
 const noteNew = "new: check its place"
@@ -41,9 +63,20 @@ const noteNew = "new: check its place"
 // and the values the file gives, and nothing is guessed.
 func (t *Tree) Strict() bool { return t.HasOrder }
 
-// OrderIndex is the place of a node in order, -1 when it has none.
+// OrderIndex is the place of a node's create in order, -1 when it has none.
 func (t *Tree) OrderIndex(name string) int {
-	return slices.IndexFunc(t.Order, func(e OrderEntry) bool { return e.Node == name })
+	return slices.IndexFunc(t.Order, func(e OrderEntry) bool { return e.Node == name && e.Step == "" })
+}
+
+// StepIndex is the place of a line of order by its key (ships.update), -1
+// when there is none.
+func (t *Tree) StepIndex(key string) int {
+	return slices.IndexFunc(t.Order, func(e OrderEntry) bool { return e.Key() == key })
+}
+
+// HasSteps reports whether order places steps besides the creates.
+func (t *Tree) HasSteps() bool {
+	return slices.ContainsFunc(t.Order, func(e OrderEntry) bool { return e.Step != "" })
 }
 
 // Entry is the order entry of a node, nil without.
@@ -88,6 +121,17 @@ func (p *parser) order(v *yaml.Node) []OrderEntry {
 			p.errf(item, "order: a node name, or a node with the sources of its body")
 			continue
 		}
+		if node, step, ok := strings.Cut(e.Node, "."); ok {
+			e.Node, e.Step = node, step
+			if !nameForm(step) {
+				p.errf(item, "order: %q is no step of a node (ships.read, ships.update)", e.Key())
+				continue
+			}
+			if e.Values != nil {
+				p.errf(item, "order: %s: the sources of a body stand at the create (- %s: {…})", e.Key(), node)
+				continue
+			}
+		}
 		if !nameForm(e.Node) {
 			p.errf(item, "order: %q is no node name", e.Node)
 			continue
@@ -114,7 +158,7 @@ func orderYAML(list []OrderEntry) *yaml.Node {
 func entryYAML(e OrderEntry) *yaml.Node {
 	var n *yaml.Node
 	if len(e.Values) == 0 {
-		n = scalar(e.Node)
+		n = scalar(e.Key())
 	} else {
 		v := valueYAML(e.Values, true)
 		v.Style = yaml.FlowStyle
@@ -243,17 +287,21 @@ func checkOrder(s *spec.Spec, t *Tree) []string {
 	m := modelOf(s)
 	seen := map[string]int{}
 	for i, e := range t.Order {
-		if j, dup := seen[e.Node]; dup {
-			add(e.Line, "order: %s is listed twice (also line %d)", e.Node, t.Order[j].Line)
+		if j, dup := seen[e.Key()]; dup {
+			add(e.Line, "order: %s is listed twice (also line %d)", e.Key(), t.Order[j].Line)
 			continue
 		}
-		seen[e.Node] = i
+		seen[e.Key()] = i
 		n := t.Node(e.Node)
-		if n == nil {
+		if n == nil || n.IsRequire {
 			add(e.Line, "order: %s is no node of the tree", e.Node)
 			continue
 		}
 		if n.Gone {
+			continue
+		}
+		if e.Step != "" {
+			checkStep(s, m, t, i, e, n, add)
 			continue
 		}
 		w, op := ownCreate(s, n)
@@ -317,6 +365,57 @@ func checkOrder(s *spec.Spec, t *Tree) []string {
 		}
 	})
 	return out
+}
+
+// stepsOf are the steps of a node order can place: its read or list, and
+// its updates, patches and actions.
+func stepsOf(s *spec.Spec, n *Node) []string {
+	var out []string
+	if op := lookupOp(s, n.Call); op != nil {
+		if n.HasItems || isList(op) {
+			out = append(out, StepList)
+		} else {
+			out = append(out, StepRead)
+		}
+	}
+	for _, kind := range n.Kinds() {
+		if base := KindBase(kind); base != WriteUpdate && base != WritePatch && !IsAction(kind) {
+			continue
+		}
+		if w := n.Write[kind]; w != nil && !w.None && !w.Off && !w.Gone && lookupOp(s, w.Call) != nil {
+			out = append(out, kind)
+		}
+	}
+	return out
+}
+
+// checkStep verifies a step line of order: the node has the step, and the
+// creates of its records and of the records above them come before it.
+func checkStep(s *spec.Spec, m *model.Model, t *Tree, i int, e OrderEntry, n *Node, add func(int, string, ...any)) {
+	steps := stepsOf(s, n)
+	if !slices.Contains(steps, e.Step) {
+		switch {
+		case e.Step == WriteCreate:
+			add(e.Line, "order: %s: the node alone stands for its create (- %s)", e.Key(), e.Node)
+		case KindBase(e.Step) == WriteDelete:
+			add(e.Line, "order: %s: the deletes run at the end, bottom up; remove the line", e.Key())
+		case len(steps) == 0:
+			add(e.Line, "order: %s: %s has no step order can place", e.Key(), e.Node)
+		default:
+			add(e.Line, "order: %s: %s has no step %s; it has %s", e.Key(), e.Node, e.Step, strings.Join(steps, ", "))
+		}
+		return
+	}
+	for c := n; c != nil; c = c.Parent {
+		owner := createOwner(s, m, t, c)
+		if owner == nil {
+			continue
+		}
+		if j := t.OrderIndex(owner.Name); j > i {
+			add(e.Line, "order: %s comes before %s, but it needs the records %s creates; move %s above %s",
+				e.Key(), owner.Name, owner.Name, owner.Name, e.Key())
+		}
+	}
 }
 
 // proposeOrder gives the creates of the tree their order: each after the
@@ -414,7 +513,7 @@ func (m *merger) mergeOrder() {
 		section.Content = slices.Insert(section.Content, at, entryYAML(e))
 		after := "at the top"
 		if at > 0 {
-			after = "after " + m.t.Order[at-1].Node
+			after = "after " + m.t.Order[at-1].Key()
 		}
 		m.changed("order."+e.Node, "new, %s; check its place", after)
 		m.reload()
@@ -440,6 +539,15 @@ func (m *merger) placeOf(n *Node, e OrderEntry) int {
 	for i, x := range m.t.Order {
 		xn := m.t.Node(x.Node)
 		if xn == nil {
+			continue
+		}
+		if x.Step != "" {
+			// a step on its records or on records below them
+			for c := xn; c != nil; c = c.Parent {
+				if createOwner(m.s, mod, m.t, c) == n {
+					before = min(before, i)
+				}
+			}
 			continue
 		}
 		xw, _ := ownCreate(m.s, xn)
@@ -472,7 +580,7 @@ func (m *merger) missingCreates(list []OrderEntry) []OrderEntry {
 		if n.IsRequire || n.Gone {
 			return
 		}
-		if w, _ := ownCreate(m.s, n); w == nil || slices.ContainsFunc(list, func(e OrderEntry) bool { return e.Node == n.Name }) {
+		if w, _ := ownCreate(m.s, n); w == nil || slices.ContainsFunc(list, func(e OrderEntry) bool { return e.Node == n.Name && e.Step == "" }) {
 			return
 		}
 		out = append(out, OrderEntry{Node: n.Name, Values: sources[n.Name]})

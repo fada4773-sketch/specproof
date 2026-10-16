@@ -4,6 +4,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/fada4773-sketch/specproof/internal/scenario"
 )
 
 // orderTree is a Starport tree with an order: pilots, docks, then ships,
@@ -164,6 +166,70 @@ func TestOrderStrictBuild(t *testing.T) {
 	gone.Order[2].Values = map[string]any{"pilotId": "crew.id"}
 	if _, err := Build(s, gone, d); err == nil || !strings.Contains(err.Error(), "has no record of crew below or above it") {
 		t.Errorf("a missing source: %v", err)
+	}
+}
+
+// stepTree is orderTree with an update of the docks and steps in order:
+// the update of the docks before the ships, the reads of the ships' pilots
+// right after the ships, the list of the docks after them.
+var stepTree = strings.NewReplacer(
+	"  - ships: {pilotId: shipPilot.id}\n",
+	"  - docks.update\n  - ships: {pilotId: shipPilot.id}\n  - shipPilot.read\n  - docks.list\n",
+	"          create: POST /planets/{code}/docks code=planets.code\n",
+	"          create: POST /planets/{code}/docks code=planets.code\n          update: PUT /docks/{dockId}\n",
+).Replace(orderTree)
+
+// TestOrderSteps: order places reads, lists and updates too; the steps it
+// does not name run after them as before; a step before the creates it
+// needs, a step the node lacks and a delete are named.
+func TestOrderSteps(t *testing.T) {
+	s := loadStarport(t)
+	tr := parse(t, stepTree)
+	if problems := Check(s, tr); len(problems) > 0 {
+		t.Fatalf("a right order: %v", problems)
+	}
+	if b, _ := tr.Bytes(); !strings.Contains(string(b), "  - docks.update\n") {
+		t.Errorf("a step line round-trips:\n%s", b)
+	}
+	_, base := stage(t)
+	tr, d := fetch(t, s, stepTree, base)
+	built, err := Build(s, tr, d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := func(pred func(id, call string) bool) int {
+		return slices.IndexFunc(built.Scenario.Steps, func(st *scenario.Step) bool { return pred(st.ID, st.Call) })
+	}
+	update := first(func(_, call string) bool { return call == "PUT /docks/{dockId}" })
+	ship := first(func(_, call string) bool { return call == "POST /docks/{dockId}/ships" })
+	pilotRead := first(func(id, call string) bool { return call == "GET /pilots/{pilotId}" && strings.HasSuffix(id, ".read") })
+	dockList := first(func(_, call string) bool { return call == "GET /planets/{code}/docks" })
+	shipList := first(func(_, call string) bool { return call == "GET /docks/{dockId}/ships" })
+	if update < 0 || ship < 0 || pilotRead < 0 || dockList < 0 || shipList < 0 ||
+		update > ship || ship > pilotRead || pilotRead > dockList || dockList > shipList {
+		var ids []string
+		for _, st := range built.Scenario.Steps {
+			ids = append(ids, st.ID)
+		}
+		t.Fatalf("update %d < ship %d < pilot read %d < dock list %d < ship list %d: %v", update, ship, pilotRead, dockList, shipList, ids)
+	}
+	if res, log := runEmpty(t, built); res.Failed {
+		t.Fatalf("the scenario failed:\n%s", log)
+	}
+	for name, c := range map[string]struct{ from, to, want string }{
+		"before its create": {"  - docks\n  - docks.update\n", "  - docks.update\n  - docks\n",
+			"order: docks.update comes before docks, but it needs the records docks creates; move docks above docks.update"},
+		"below a record created later": {"  - ships: {pilotId: shipPilot.id}\n  - shipPilot.read\n", "  - shipPilot.read\n  - ships: {pilotId: shipPilot.id}\n",
+			"order: shipPilot.read comes before ships, but it needs the records ships creates"},
+		"no such step": {"  - docks.list\n", "  - pilots.update\n", "order: pilots.update: pilots has no step update; it has list"},
+		"a delete":     {"  - docks.list\n", "  - docks.delete\n", "order: docks.delete: the deletes run at the end, bottom up"},
+		"the create":   {"  - docks.list\n", "  - docks.create\n", "order: docks.create: the node alone stands for its create (- docks)"},
+		"twice":        {"  - docks.list\n", "  - docks.list\n  - docks.list\n", "order: docks.list is listed twice"},
+	} {
+		problems := Check(s, parse(t, strings.Replace(stepTree, c.from, c.to, 1)))
+		if !slices.ContainsFunc(problems, func(p string) bool { return strings.HasPrefix(p, "line ") && strings.Contains(p, c.want) }) {
+			t.Errorf("%s: want %q, got %v", name, c.want, problems)
+		}
 	}
 }
 

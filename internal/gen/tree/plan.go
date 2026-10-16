@@ -16,7 +16,7 @@ func PlanSection(t *Tree, d *Data) string {
 	if len(t.Order) > 0 {
 		var parts []string
 		for _, e := range t.Order {
-			p := e.Node
+			p := e.Key()
 			var src []string
 			for _, f := range sortedKeys(e.Values) {
 				src = append(src, fmt.Sprintf("%s <- %v", f, e.Values[f]))
@@ -132,7 +132,7 @@ func PlanText(t *Tree) string {
 	if len(t.Order) > 0 {
 		var parts []string
 		for _, e := range t.Order {
-			p := e.Node
+			p := e.Key()
 			var src []string
 			for _, f := range sortedKeys(e.Values) {
 				src = append(src, fmt.Sprintf("%s <- %v", f, e.Values[f]))
