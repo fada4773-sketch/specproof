@@ -47,8 +47,11 @@ type ScenarioConfig struct {
 	Settings string
 	// Scenario is the scenario file: the steps in the order they run.
 	Scenario string
-	// Golden is the golden snapshot the answers are compared with. Empty
-	// checks status, schema and the checks of the steps only.
+	// Golden is a golden snapshot file the answers are compared with. Empty
+	// takes the answers the scenario file holds (its golden section, written
+	// by Update), and without them checks status, schema and the checks of
+	// the steps only. With Update and Golden empty the answers are written
+	// into the scenario file.
 	Golden string
 	// Errors selects the error steps (status 400 and above) that run and
 	// orders them: a status ("401", "404") or a class ("4xx", "5xx"). Error
@@ -180,7 +183,11 @@ func runScenario(t tester, cfg ScenarioConfig) *Result {
 				t.Errorf("apitest: golden snapshot: %v", err)
 			}
 		} else if cfg.Update {
-			r.warn(fmt.Sprintf("the golden snapshot %s was not written: steps failed", cfg.Golden))
+			where := cfg.Golden
+			if where == "" {
+				where = "in " + cfg.Scenario
+			}
+			r.warn(fmt.Sprintf("the golden snapshot %s was not written: steps failed", where))
 		}
 	}
 	r.writeReport()
@@ -195,10 +202,7 @@ func (c *ScenarioConfig) resolve() error {
 		errs = append(errs, errors.New("Config.MethodOrder, DeleteLast, LastInTag and ErrorCases are not used by RunScenario: the scenario fixes the order and holds the error steps; use ScenarioConfig.Errors to choose error steps"))
 	}
 	if c.Scenario == "" {
-		errs = append(errs, errors.New("ScenarioConfig.Scenario missing: set the scenario file (tree-scenario_gen.yaml)"))
-	}
-	if c.Golden == "" && c.Update {
-		errs = append(errs, errors.New("ScenarioConfig.Golden missing: Update writes the golden snapshot there (tree-golden_gen.yaml)"))
+		errs = append(errs, errors.New("ScenarioConfig.Scenario missing: set the scenario file (tree-test_gen.yaml)"))
 	}
 	for _, e := range c.Errors {
 		if !errorEntry.MatchString(e) {
@@ -297,10 +301,15 @@ func (s *scenarioRunner) prepare() error {
 		return err
 	}
 	s.sc = sc
-	if !s.scfg.Update && s.scfg.Golden != "" {
+	switch {
+	case s.scfg.Update:
+	case s.scfg.Golden != "":
 		if s.golden, err = scenario.LoadSnapshot(s.scfg.Golden); err != nil {
 			return fmt.Errorf("golden snapshot: %w; write it with ScenarioConfig.Update (apitest-gen tree run -update)", err)
 		}
+	default:
+		// the answers the scenario file holds, if it has them
+		s.golden = sc.Golden
 	}
 	var errs []string
 	for _, st := range sc.Steps {
@@ -1329,6 +1338,20 @@ func (s *scenarioRunner) reverseVars() map[string]any {
 }
 
 func (s *scenarioRunner) writeGolden() error {
+	if s.scfg.Golden == "" {
+		// into the scenario file: one file holds the steps and the answers
+		snap := &scenario.Snapshot{
+			Kind:    scenario.KindGolden,
+			Spec:    relTo(filepath.Dir(s.scfg.Scenario), s.spec.Path),
+			Created: s.now().UTC().Format(time.RFC3339),
+			Reread:  true,
+			Steps:   s.shots,
+		}
+		if s.spec.Doc.Info != nil {
+			snap.SpecVersion = s.spec.Doc.Info.Version
+		}
+		return scenario.WriteAnswers(s.scfg.Scenario, snap)
+	}
 	dir := filepath.Dir(s.scfg.Golden)
 	snap := &scenario.Snapshot{
 		Kind:     scenario.KindGolden,

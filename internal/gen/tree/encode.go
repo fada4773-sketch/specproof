@@ -11,33 +11,18 @@ import (
 )
 
 // fileHead heads a new tree file.
-const fileHead = `The records "apitest-gen tree" fetches and how they hang together.
-Written once by "apitest-gen tree"; yours from then on. A later run keeps
-what you wrote and only adds new endpoints at their place.
-
-A node is a request ("GET /path p=.field") or a mapping: call, path, query,
-header, body (with read: true for a POST that only reads), items, page,
-pick (a number, all, {first: n} or a list of keys), candidates, where,
-require, key, save, write, each, off. ".field" reads the record the node
-runs under (in write: the record itself), "<node>.field" a node above it
-or fetched before it, "$name" a value of params; a text composes them:
-"{{planets.code}}-{{.number}}".
-"where" at the top holds for every record of a resource, at every node
-that reads one: "Garden.name: [Rose, Mint]" or "Garden: {code: [a, b]}";
-"prefer" in the same form: a pick takes those records first (and the
-records above them), the rest of the pick are others.
-"write" says how the integration test rebuilds a record in an empty
-instance: create (none: the instance holds it), update, patch, delete,
-their variants by another key (update-by-name), and actions by name. A
-write's save ("receiptNo: header X-Receipt-No") gives $receiptNo its value in
-the scenario, after the write; onSeed: true runs an update on a record of
-the seed.`
+const fileHead = `Records "apitest-gen tree" fetches and rebuilds in an empty instance; yours
+after the first run, later runs only add new endpoints. docs/scenario.md
+explains every key.`
 
 // Encode writes a new tree file.
 func (t *Tree) Encode() ([]byte, error) {
 	doc := yamldoc.New(fileHead)
 	root := doc.Root
 	add := func(k string, v *yaml.Node) { root.Content = append(root.Content, scalar(k), v) }
+	if t.HasOrder || len(t.Order) > 0 {
+		root.Content = append(root.Content, orderKey(), orderYAML(t.Order))
+	}
 	if sc := scopeYAML(t.Scope); sc != nil {
 		k := scalar("scope")
 		k.HeadComment = scopeHead
@@ -312,7 +297,7 @@ func nodeYAML(n *Node) *yaml.Node {
 		add("save", valueYAML(n.Save, true))
 	}
 	if len(n.Write) > 0 {
-		add("write", writesYAML(n.Write))
+		add("write", writesYAML(n, n.Write))
 	}
 	if len(n.Each) > 0 {
 		add("each", nodesYAML(n.Each))
@@ -348,23 +333,36 @@ func pageYAML(p *Page) *yaml.Node {
 	return m
 }
 
-func writesYAML(ws map[string]*Write) *yaml.Node {
+func writesYAML(n *Node, ws map[string]*Write) *yaml.Node {
 	m := &yaml.Node{Kind: yaml.MappingNode}
 	for _, kind := range kindsOf(ws) {
-		m.Content = append(m.Content, scalar(kind), writeYAML(ws[kind]))
+		m.Content = append(m.Content, scalar(kind), writeYAML(ws[kind], n))
 	}
 	return m
 }
 
-func writeYAML(w *Write) *yaml.Node {
+// writeYAML writes a write of node n; what follows from the node is left
+// out: a path value the node gives (code=planets.code below the planets),
+// the key of the record (dockId=.id), the body from the node itself.
+func writeYAML(w *Write, n *Node) *yaml.Node {
 	if w.None {
 		v := scalar("none")
 		v.LineComment = comment(w.Note)
 		return v
 	}
-	if !w.Off && len(w.Query) == 0 && len(w.Header) == 0 && !w.HasBody && w.From == "" && w.Change == nil && w.Expect == 0 &&
+	path := map[string]any{}
+	for k, v := range w.Path {
+		if d, ok := defaultWritePath(n, k); !ok || text(d) != text(v) {
+			path[k] = v
+		}
+	}
+	from := w.From
+	if n != nil && from == n.Name {
+		from = ""
+	}
+	if !w.Off && len(w.Query) == 0 && len(w.Header) == 0 && !w.HasBody && from == "" && w.Change == nil && w.Expect == 0 &&
 		len(w.Save) == 0 && !w.OnSeed {
-		if s, ok := shortText(w.Call, w.Path); ok {
+		if s, ok := shortText(w.Call, path); ok {
 			v := scalar(s)
 			v.LineComment = comment(w.Comment, w.Note)
 			return v
@@ -375,8 +373,8 @@ func writeYAML(w *Write) *yaml.Node {
 	call := scalar(w.Call)
 	call.LineComment = comment(w.Comment)
 	add("call", call)
-	if len(w.Path) > 0 {
-		add("path", valueYAML(w.Path, true))
+	if len(path) > 0 {
+		add("path", valueYAML(path, true))
 	}
 	if len(w.Query) > 0 {
 		add("query", valueYAML(w.Query, true))
@@ -385,8 +383,8 @@ func writeYAML(w *Write) *yaml.Node {
 		add("header", valueYAML(w.Header, true))
 	}
 	switch {
-	case w.From != "":
-		add("body", scalar("from "+w.From))
+	case from != "":
+		add("body", scalar("from "+from))
 	case w.HasBody:
 		add("body", valueYAML(w.Body, true))
 	}

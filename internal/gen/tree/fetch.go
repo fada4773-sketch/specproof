@@ -58,6 +58,22 @@ type Data struct {
 	Records  []*Record
 	Notes    []string
 	Requests int
+	// Log is every request the fetch sent, in order (not in the data
+	// file: the review shows it).
+	Log []Exchange
+}
+
+// Exchange is one request and its answer, for the review.
+type Exchange struct {
+	// For says what sent it: a node under a record, a step of the test.
+	For            string
+	Method, Target string
+	Request        any
+	HasRequest     bool
+	Status         int
+	Answer         any
+	Ms             int64
+	Error          string
 }
 
 // Of returns the records of a node, in fetch order.
@@ -93,8 +109,10 @@ type fetcher struct {
 	cache  map[string]*answer
 	count  map[*Node]int
 	budget int
-	// lastTarget is the request sent last, for notes.
+	// lastTarget is the request sent last, for notes; sending names what
+	// the next requests are for (the log).
 	lastTarget string
+	sending    string
 	scope      func(string) bool
 	// unset are the nodes left out for a "$name" without value, noted once.
 	unset map[*Node]bool
@@ -396,6 +414,7 @@ func paren(parts []string) string {
 // of a list-valued parameter, and returns the elements; single is set for
 // an answer that is one record. nil means the request failed (noted).
 func (f *fetcher) candidates(ctx context.Context, n *Node, op *spec.Operation, parent *Record) ([]cand, bool, error) {
+	f.sending = where(n, parent)
 	reqs, err := f.requests(n, op, parent)
 	if err != nil {
 		f.note("%s: %v", where(n, parent), err)
@@ -774,6 +793,7 @@ func (f *fetcher) required(ctx context.Context, n *Node, cand any, parent *Recor
 		if op == nil {
 			return false, nil
 		}
+		f.sending = "require " + r.Name + " of a candidate of " + where(n, parent)
 		reqs, err := f.requests(r, op, probe)
 		if err != nil {
 			f.note("%s: require %s: %v", where(n, parent), r.Name, err)
@@ -894,6 +914,12 @@ func (f *fetcher) send(ctx context.Context, method, path string, query, header m
 		return nil, errBudget
 	}
 	f.data.Requests++
+	ex := Exchange{For: f.sending, Method: method, Target: target, Request: body, HasRequest: hasBody}
+	start := time.Now()
+	defer func() {
+		ex.Ms = time.Since(start).Milliseconds()
+		f.data.Log = append(f.data.Log, ex)
+	}()
 	ctx, cancel := context.WithTimeout(ctx, f.opt.Timeout)
 	defer cancel()
 	var rd io.Reader
@@ -924,6 +950,7 @@ func (f *fetcher) send(ctx context.Context, method, path string, query, header m
 	resp, err := f.opt.Client.Do(req)
 	if err != nil {
 		// the error holds the URL, never the token
+		ex.Error = err.Error()
 		return nil, fmt.Errorf("%s: %w", f.lastTarget, err)
 	}
 	defer resp.Body.Close()
@@ -939,6 +966,10 @@ func (f *fetcher) send(ctx context.Context, method, path string, query, header m
 		if dec.Decode(&v) == nil {
 			a.body = v
 		}
+	}
+	ex.Status, ex.Answer = a.status, a.body
+	if a.body == nil && len(raw) > 0 {
+		ex.Answer = string(raw)
 	}
 	f.cache[cacheKey] = a
 	return a, nil

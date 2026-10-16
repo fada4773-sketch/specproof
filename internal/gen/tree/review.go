@@ -27,7 +27,7 @@ var reviewSteps = []string{ReviewTree, ReviewFetch, ReviewScenario, ReviewRun, R
 var reviewTitles = map[string]string{
 	ReviewTree:     "Tree (tree.yaml)",
 	ReviewFetch:    "Fetch (tree-data_gen.yaml)",
-	ReviewScenario: "Scenario (tree-scenario_gen.yaml)",
+	ReviewScenario: "Test (tree-test_gen.yaml)",
 	ReviewRun:      "Run (tree run)",
 	ReviewUpdate:   "Update (tree run -update)",
 }
@@ -39,6 +39,8 @@ type ReviewDoc struct {
 	Spec, SpecVersion, File string
 	sections                map[string]*reviewSection
 	fresh                   map[string]bool
+	// plan is the plan on top: order, tree, writes, sources (PlanSection)
+	plan string
 }
 
 type reviewSection struct {
@@ -47,6 +49,8 @@ type reviewSection struct {
 }
 
 var specRE = regexp.MustCompile(`<!-- tree:spec \| (.*?) \| (.*?) -->`)
+
+var planRE = regexp.MustCompile(`<!-- tree:plan -->\n(?s:(.*?))<!-- /tree:plan -->`)
 
 var sectionRE = regexp.MustCompile(`<!-- tree:(\w+) \| ([^\n]*?) \| ([^\n]*?) \| ([^\n]*?) -->\n(?s:(.*?))<!-- /tree:(\w+) -->`)
 
@@ -61,6 +65,9 @@ func LoadReview(path string) *ReviewDoc {
 	if m := specRE.FindStringSubmatch(string(b)); m != nil {
 		d.Spec, d.SpecVersion = m[1], m[2]
 	}
+	if m := planRE.FindStringSubmatch(string(b)); m != nil {
+		d.plan = strings.TrimSpace(m[1])
+	}
 	for _, m := range sectionRE.FindAllStringSubmatch(string(b), -1) {
 		if m[1] != m[6] || !slices.Contains(reviewSteps, m[1]) {
 			continue
@@ -69,6 +76,9 @@ func LoadReview(path string) *ReviewDoc {
 	}
 	return d
 }
+
+// SetPlan writes the plan on top of the review (PlanSection).
+func (d *ReviewDoc) SetPlan(plan string) { d.plan = strings.TrimSpace(plan) }
 
 // Has reports whether the review holds the section of a step.
 func (d *ReviewDoc) Has(step string) bool { return d.sections[step] != nil }
@@ -100,8 +110,8 @@ func oneLine(s string) string {
 	return strings.TrimSpace(s)
 }
 
-// Render writes the review: status, next command, the sections in the
-// order of the steps.
+// Render writes the review: the next command, the plan, the status of the
+// steps, and each step folded (a failed or outdated one open).
 func (d *ReviewDoc) Render() string {
 	var b strings.Builder
 	b.WriteString("# Review: tree\n\n")
@@ -112,6 +122,10 @@ func (d *ReviewDoc) Render() string {
 			fmt.Fprintf(&b, " (version %s)", d.SpecVersion)
 		}
 		fmt.Fprintf(&b, " · %s\n", d.File)
+	}
+	fmt.Fprintf(&b, "\n**Next:** %s\n", d.next())
+	if d.plan != "" {
+		fmt.Fprintf(&b, "\n## Plan\n\n<!-- tree:plan -->\n%s\n<!-- /tree:plan -->\n", d.plan)
 	}
 	b.WriteString("\n## Status\n\n| Step | State | Summary |\n|---|---|---|\n")
 	for i, s := range reviewSteps {
@@ -127,7 +141,6 @@ func (d *ReviewDoc) Render() string {
 		}
 		fmt.Fprintf(&b, "| %d. %s | %s | %s |\n", i+1, reviewTitles[s], state, cell(summary))
 	}
-	fmt.Fprintf(&b, "\n**Next:** %s\n", d.next())
 	for i, s := range reviewSteps {
 		sec := d.sections[s]
 		if sec == nil {
@@ -137,8 +150,12 @@ func (d *ReviewDoc) Render() string {
 		if sec.failed {
 			state = "failed"
 		}
+		open := ""
+		if sec.failed || sec.outdated != "" {
+			open = " open"
+		}
+		fmt.Fprintf(&b, "\n<details%s><summary><b>%d. %s</b> – %s</summary>\n", open, i+1, reviewTitles[s], html(sec.summary))
 		fmt.Fprintf(&b, "\n<!-- tree:%s | %s | %s | %s -->\n", s, state, sec.summary, sec.outdated)
-		fmt.Fprintf(&b, "## %d. %s\n\n", i+1, reviewTitles[s])
 		if sec.outdated != "" {
 			fmt.Fprintf(&b, "> **Outdated:** %s\n\n", sec.outdated)
 		}
@@ -152,9 +169,14 @@ func (d *ReviewDoc) Render() string {
 			}
 		}
 		b.WriteString(body)
-		fmt.Fprintf(&b, "\n<!-- /tree:%s -->\n", s)
+		fmt.Fprintf(&b, "\n<!-- /tree:%s -->\n\n</details>\n", s)
 	}
 	return b.String()
+}
+
+// html escapes text for a summary line.
+func html(s string) string {
+	return strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;").Replace(s)
 }
 
 // next is the command (or task) the review proposes next.
@@ -172,20 +194,24 @@ func (d *ReviewDoc) next() string {
 	switch {
 	case d.sections[ReviewTree] == nil:
 		return "propose the tree:\n\n```\n" + tree + "\n```\n"
+	case d.sections[ReviewTree].failed:
+		return "fix the problems of tree.yaml (section 1), then check it again:\n\n```\n" + tree + " -dry-run\n```\n"
+	case d.sections[ReviewScenario] != nil && d.sections[ReviewScenario].failed:
+		return "the records do not fit tree.yaml (section 3): fix order or the tree, or fetch again; check it with:\n\n```\n" + tree + " -dry-run\n```\n"
 	case stale(ReviewFetch):
 		return "check tree.yaml (section 1: pick, where, write, params), then fetch the records from a stage:\n\n```\n" +
 			tree + " -base-url <stage> -token-env <NAME>\n```\n"
 	case stale(ReviewScenario):
-		return "build the scenario from the records fetched before:\n\n```\n" + tree + "\n```\n"
+		return "build the test from the records fetched before:\n\n```\n" + tree + "\n```\n"
 	case stale(ReviewRun):
-		return "check the seed and the gaps (section 3), then run the scenario against an empty instance; -update writes the golden snapshot and the examples:\n\n```\n" +
+		return "check the seed and the gaps (section 3), then run the test against an empty instance; -update writes the answers into the test and the examples into the spec:\n\n```\n" +
 			run + " -update\n```\n"
 	case d.sections[ReviewRun].failed:
 		return "fix the failed steps (section 4: the instance, tree.yaml or the API), then run again:\n\n```\n" + run + "\n```\n"
 	case stale(ReviewUpdate) || d.sections[ReviewUpdate].failed:
-		return "write the golden snapshot and the examples:\n\n```\n" + run + " -update\n```\n"
+		return "write the answers and the examples:\n\n```\n" + run + " -update\n```\n"
 	}
-	return "done. Review the diff of the spec (examples) and the golden snapshot, commit them with tree.yaml and the scenario; CI runs:\n\n```\n" + run + "\n```\n"
+	return "done. Review the diff of the spec (examples) and of the test (answers), commit them with tree.yaml; CI runs:\n\n```\n" + run + "\n```\n"
 }
 
 // FileSection is the section of tree.yaml: scope, the nodes with what they

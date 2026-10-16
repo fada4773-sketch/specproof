@@ -551,10 +551,12 @@ func TestColonyWriteAtView(t *testing.T) {
 		"              garden: GET /gardens/{gardenId} gardenId=.id # getGardenById\n": "              garden:\n                call: GET /gardens/{gardenId}\n                path: {gardenId: .id}\n" +
 			"                write:\n                  update:\n                    call: PUT /gardens/{gardenId}\n                    path: {gardenId: .id}\n                    body: from garden\n" +
 			"                  delete: DELETE /gardens/{gardenId} gardenId=.id\n",
-		"              update:\n                call: PUT /gardens/{gardenId} # updateGardenById\n                path: {gardenId: .id}\n                body: from gardens\n": "",
-		"              delete: DELETE /gardens/{gardenId} gardenId=.id # deleteGardenById\n":                                                                                   "",
-		"              delete-by-code: DELETE /gardens/code/{code} code=.code # deleteGardenByCode\n":                                                                          "",
-		"              delete-by-name: DELETE /gardens/name/{name} name=.name # deleteGardenByName\n":                                                                          "",
+		// the short form: the key of the garden and the body from the node
+		// itself follow from the node
+		"              update: PUT /gardens/{gardenId} # updateGardenById\n":               "",
+		"              delete: DELETE /gardens/{gardenId} # deleteGardenById\n":            "",
+		"              delete-by-code: DELETE /gardens/code/{code} # deleteGardenByCode\n": "",
+		"              delete-by-name: DELETE /gardens/name/{name} # deleteGardenByName\n": "",
 	} {
 		if !strings.Contains(file, old) {
 			t.Fatalf("not in the proposal: %q", old)

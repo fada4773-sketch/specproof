@@ -28,6 +28,9 @@ type Scenario struct {
 	// Records are the records the scenario creates, for the reader.
 	Records []Record
 	Steps   []*Step
+	// Golden are the answers of the last run with Update when the file
+	// holds them (the golden section and an answer per step), else nil.
+	Golden *Snapshot
 }
 
 // Record is one record the scenario creates.
@@ -88,7 +91,7 @@ type Contains struct {
 	Values []any
 }
 
-var stepKeys = []string{"id", "call", "path", "query", "header", "body", "bodyFrom", "save", "token", "expect", "check", "unique"}
+var stepKeys = []string{"id", "call", "path", "query", "header", "body", "bodyFrom", "save", "token", "expect", "check", "unique", "answer"}
 
 // sourceForm is the form of a save source.
 var sourceForm = regexp.MustCompile(`^(/.*|header \S+|request /.*|request (path|query) \S+)$`)
@@ -126,8 +129,8 @@ func Parse(b []byte) (*Scenario, error) {
 		return nil, fmt.Errorf("a scenario is a mapping with the key \"steps\"")
 	}
 	for k := range top {
-		if !slices.Contains([]string{"order", "records", "steps"}, k) {
-			return nil, fmt.Errorf("unknown key %q (known: order, records, steps)", k)
+		if !slices.Contains([]string{"order", "records", "golden", "steps"}, k) {
+			return nil, fmt.Errorf("unknown key %q (known: order, records, golden, steps)", k)
 		}
 	}
 	sc := &Scenario{}
@@ -170,6 +173,7 @@ func Parse(b []byte) (*Scenario, error) {
 		}
 		sc.Steps = append(sc.Steps, st)
 	}
+	sc.Golden = goldenOf(top, list)
 	if err := sc.Check(); err != nil {
 		return nil, err
 	}
@@ -387,9 +391,18 @@ func (sc *Scenario) Encode(head string) ([]byte, error) {
 		}
 		root.Content = append(root.Content, str("records"), recs)
 	}
+	if sc.Golden != nil {
+		root.Content = append(root.Content, str("golden"), goldenMeta(sc.Golden))
+	}
 	steps := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
 	for _, st := range sc.Steps {
-		steps.Content = append(steps.Content, st.node())
+		n := st.node()
+		if sc.Golden != nil {
+			if sh := sc.Golden.Shot(st.ID); sh != nil {
+				n.Content = append(n.Content, str("answer"), shotNode(sh, false))
+			}
+		}
+		steps.Content = append(steps.Content, n)
 	}
 	root.Content = append(root.Content, str("steps"), steps)
 	return encode(head, root)

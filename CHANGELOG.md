@@ -147,6 +147,38 @@ contain breaking changes, which are listed here.
     (`read: true`) takes the body fields a node gives by name
     (`pilotId`, `planet: .code`) and hangs below that node, instead of
     `body: {}` at the top.
+    **The plan of the test: `order`.** `tree.yaml` starts with `order`,
+    the nodes that create records in the order the test creates them
+    (deletes the other way round, updates in this order) and where values
+    of their bodies come from (`- ships: {pilotId: shipPilot.id}`). The
+    first run proposes it with every source it finds; a create that comes
+    in later gets a line after what it needs, marked `# new: check its
+    place`. Every run checks it before anything is sent (unknown or
+    duplicate nodes, a create without line, a create before the records
+    it takes values of, a source that is neither below nor above, a field
+    the records or the body lack) and stops with the line and the reason.
+    With `order` the test follows it strictly: creates in its order, body
+    values only from `body from` and its sources (also for updates and
+    patches), no guessing; a value of the stage that is the key of a
+    created record stays and the review names the source to add; records
+    that do not fit stop the build. Files without `order` work as before.
+    **Shorter `tree.yaml`:** a head of three lines, and writes leave out
+    what follows from their node (a path value the node reads with, the
+    key of the record, the body from the node itself):
+    `create: POST /planets/{code}/docks`.
+    **One test file:** `tree-test_gen.yaml` holds the steps and the
+    answers of the last `tree run -update` (`answer` per step, `golden`
+    on top), replacing `tree-scenario_gen.yaml` and
+    `tree-golden_gen.yaml`; building the test again keeps the answers of
+    the steps it still has. `ScenarioConfig.Golden` is optional: empty
+    takes the answers of the scenario file, and `Update` writes them
+    there (in place, the comments stay).
+    **Review:** the next command and the plan (order, tree with records,
+    writes, body sources) on top, the steps folded, and every request of
+    the fetch and of the run with its bodies in full (secrets masked).
+    **`-dry-run`** for `tree` and `tree run`: sends nothing, writes no
+    data or test, shows the plan, the requests a fetch would send and the
+    steps of the test.
   - `apitest-gen regression init|pre|post|diff`: a check before and after a
     deployment that only sends GET requests. `pre` draws real records of a
     stage by the rules of `regression-sample.yaml` (a new sample every

@@ -307,10 +307,20 @@ func TestScenarioConfigErrors(t *testing.T) {
 	if res, ft := runScenarioFake(t, cfg); !res.Failed || !strings.Contains(ft.output(), "golden snapshot") {
 		t.Errorf("a missing golden snapshot must fail:\n%s", ft.output())
 	}
-	cfg = bookstoreScenarioConfig(t, testserver.Faults{}, sc, "")
+	// Update without Golden writes the answers into the scenario file; a
+	// later run compares with them
+	own, _ := scenarioFiles(t, bookstoreScenario)
+	cfg = bookstoreScenarioConfig(t, testserver.Faults{}, own, "")
 	cfg.Update = true
-	if res, ft := runScenarioFake(t, cfg); !res.Failed || !strings.Contains(ft.output(), "Golden missing") {
-		t.Errorf("Update without Golden must fail:\n%s", ft.output())
+	if res, ft := runScenarioFake(t, cfg); res.Failed {
+		t.Errorf("Update without Golden writes into the scenario:\n%s", ft.output())
+	}
+	if loaded, err := scenario.Load(own); err != nil || loaded.Golden == nil || len(loaded.Golden.Steps) != len(loaded.Steps) {
+		t.Errorf("the answers in the scenario file: %v %+v", err, loaded)
+	}
+	cfg = bookstoreScenarioConfig(t, testserver.Faults{ExampleMismatch: true}, own, "")
+	if res, ft := runScenarioFake(t, cfg); !res.Failed || !strings.Contains(ft.output(), "golden snapshot") {
+		t.Errorf("a run compares with the answers of the scenario file:\n%s", ft.output())
 	}
 	// without golden snapshot: status, schema and checks only
 	cfg = bookstoreScenarioConfig(t, testserver.Faults{ExampleMismatch: true}, sc, "")

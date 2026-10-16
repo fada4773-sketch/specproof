@@ -135,37 +135,44 @@ func ParseSnapshot(b []byte) (*Snapshot, error) {
 		if !ok {
 			return nil, fmt.Errorf("step %d: a step is a mapping", i+1)
 		}
-		sh := &Shot{
-			ID:         Text(m["id"]),
-			Op:         Text(m["op"]),
-			Request:    Text(m["request"]),
-			Status:     atoi(m["status"]),
-			DurationMs: int64(atoi(m["durationMs"])),
-			Error:      Text(m["error"]),
-		}
+		sh := shotOf(Text(m["id"]), m)
 		if sh.ID == "" {
 			return nil, fmt.Errorf("step %d: \"id\" is missing", i+1)
-		}
-		if h, ok := m["headers"].(map[string]any); ok {
-			sh.Headers = map[string]string{}
-			for k, x := range h {
-				sh.Headers[k] = Text(x)
-			}
-		}
-		if b, ok := m["body"]; ok {
-			sh.Body, sh.HasBody = b, true
-		}
-		sh.Volatile = texts(m["volatile"])
-		sh.Problems = texts(m["problems"])
-		if l, ok := m["lists"].(map[string]any); ok {
-			sh.Lists = map[string]string{}
-			for k, x := range l {
-				sh.Lists[k] = Text(x)
-			}
 		}
 		s.Steps = append(s.Steps, sh)
 	}
 	return s, nil
+}
+
+// shotOf reads the answer of a step: status, headers, body and what is
+// volatile.
+func shotOf(id string, m map[string]any) *Shot {
+	sh := &Shot{
+		ID:         id,
+		Op:         Text(m["op"]),
+		Request:    Text(m["request"]),
+		Status:     atoi(m["status"]),
+		DurationMs: int64(atoi(m["durationMs"])),
+		Error:      Text(m["error"]),
+	}
+	if h, ok := m["headers"].(map[string]any); ok {
+		sh.Headers = map[string]string{}
+		for k, x := range h {
+			sh.Headers[k] = Text(x)
+		}
+	}
+	if b, ok := m["body"]; ok {
+		sh.Body, sh.HasBody = b, true
+	}
+	sh.Volatile = texts(m["volatile"])
+	sh.Problems = texts(m["problems"])
+	if l, ok := m["lists"].(map[string]any); ok {
+		sh.Lists = map[string]string{}
+		for k, x := range l {
+			sh.Lists[k] = Text(x)
+		}
+	}
+	return sh
 }
 
 func texts(v any) []string {
@@ -228,39 +235,56 @@ func (s *Snapshot) Encode(head string) ([]byte, error) {
 	}
 	steps := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
 	for _, sh := range s.Steps {
-		var headers, body, volatile, lists, problems any
-		if len(sh.Headers) > 0 {
-			headers = sh.Headers
-		}
-		if sh.HasBody {
-			body = sh.Body
-			if body == nil {
-				body = &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!null", Value: "null"}
-			}
-		}
-		if len(sh.Volatile) > 0 {
-			volatile = sh.Volatile
-		}
-		if len(sh.Lists) > 0 {
-			lists = sh.Lists
-		}
-		if len(sh.Problems) > 0 {
-			problems = sh.Problems
-		}
-		var dur any
-		if sh.DurationMs > 0 {
-			dur = sh.DurationMs
-		}
-		var status any
-		if sh.Status != 0 {
-			status = sh.Status
-		}
-		steps.Content = append(steps.Content, mapping("id", sh.ID, "op", opt(sh.Op), "request", sh.Request, "status", status,
-			"headers", headers, "body", body, "volatile", volatile, "lists", lists, "problems", problems,
-			"durationMs", dur, "error", opt(sh.Error)))
+		steps.Content = append(steps.Content, shotNode(sh, true))
 	}
 	root.Content = append(root.Content, str("steps"), steps)
 	return encode(head, root)
+}
+
+// shotNode writes an answer; withID for a snapshot file, which also keeps
+// the operation and the duration. In a scenario file the step holds the id
+// and the duration would change every run.
+func shotNode(sh *Shot, withID bool) *yaml.Node {
+	opt := func(v string) any {
+		if v == "" {
+			return nil
+		}
+		return v
+	}
+	var headers, body, volatile, lists, problems any
+	if len(sh.Headers) > 0 {
+		headers = sh.Headers
+	}
+	if sh.HasBody {
+		body = sh.Body
+		if body == nil {
+			body = &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!null", Value: "null"}
+		}
+	}
+	if len(sh.Volatile) > 0 {
+		volatile = sh.Volatile
+	}
+	if len(sh.Lists) > 0 {
+		lists = sh.Lists
+	}
+	if len(sh.Problems) > 0 {
+		problems = sh.Problems
+	}
+	var status any
+	if sh.Status != 0 {
+		status = sh.Status
+	}
+	if !withID {
+		return mapping("request", sh.Request, "status", status, "headers", headers, "body", body,
+			"volatile", volatile, "lists", lists, "problems", problems, "error", opt(sh.Error))
+	}
+	var dur any
+	if sh.DurationMs > 0 {
+		dur = sh.DurationMs
+	}
+	return mapping("id", sh.ID, "op", opt(sh.Op), "request", sh.Request, "status", status,
+		"headers", headers, "body", body, "volatile", volatile, "lists", lists, "problems", problems,
+		"durationMs", dur, "error", opt(sh.Error))
 }
 
 // Save writes the snapshot atomically.

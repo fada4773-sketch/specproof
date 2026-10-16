@@ -251,6 +251,7 @@ func (f *fetcher) reach(ctx context.Context, n *Node, rec any, parent *Record, d
 		if err != nil {
 			continue
 		}
+		f.sending = "prefer: " + c.Name + " below a candidate of " + n.Name
 		for _, rq := range reqs {
 			a, err := f.send(ctx, op.Method, rq.path, rq.query, rq.header, rq.body, rq.hasBody)
 			if err != nil {

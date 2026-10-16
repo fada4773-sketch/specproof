@@ -160,6 +160,7 @@ func isList(op *spec.Operation) bool {
 // and every "$name" an entry of params. Nodes that are off are not
 // checked.
 func Check(s *spec.Spec, t *Tree) []string {
+	t.Complete(s)
 	var problems []string
 	names := map[string]bool{}
 	t.Walk(func(n *Node) { names[n.Name] = true })
@@ -269,6 +270,7 @@ func Check(s *spec.Spec, t *Tree) []string {
 	}
 	walk(t.Roots)
 	problems = append(problems, checkFilters(s, t)...)
+	problems = append(problems, checkOrder(s, t)...)
 	sort.Strings(problems)
 	return problems
 }

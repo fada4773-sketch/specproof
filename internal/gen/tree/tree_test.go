@@ -198,7 +198,7 @@ tree:
         path: {dockId: ships.id}
         write:
           create: POST /nope
-          update: PUT /docks/{dockId}
+          delete: DELETE /ships/{shipId}
           patch:
             call: PATCH /docks/{dockId}
             path: {dockId: .id}
@@ -217,7 +217,8 @@ tree:
 		`wrong: "GET /nowhere" is no operation`,
 		`names node ships, which is neither above it nor fetched before it`,
 		`dock.write.create: "POST /nope" is no operation`,
-		"dock.write.update: no value for the path parameter {dockId}",
+		// a value neither the node nor the key of its record gives
+		"dock.write.delete: no value for the path parameter {shipId}",
 		`body from "nothing": no node of that name`,
 		"require r: \"POST /pilots\" is no reading operation",
 	} {
@@ -470,7 +471,7 @@ tree:
 	doc.Set(ReviewScenario, sum, body, false)
 	review := doc.Render()
 	for _, want := range []string{"# Review: tree", "### Seed", "| planets1 | GET /planets | mars |", "### Records per node", "no longer has",
-		"| 1. Tree (tree.yaml) | open |", "| 3. Scenario (tree-scenario_gen.yaml) | done |", "**Next:** propose the tree"} {
+		"| 1. Tree (tree.yaml) | open |", "| 3. Test (tree-test_gen.yaml) | done |", "**Next:** propose the tree"} {
 		if !strings.Contains(review, want) {
 			t.Errorf("review lacks %q:\n%s", want, review)
 		}
@@ -634,8 +635,9 @@ ignore: [GET /pilots, getHealth]
 		"# mine", "seed: 3", "# my comment", "pick: [mars]", "pick: 1",
 		"crew: GET /docks/{dockId}/crew dockId=.id # gone: not in the spec 1.0",
 		"  renamed:\n            call: GET /docks/{dockId}/ships # listShips",
-		"call: PUT /docks/{dockId} # updateDock · new in 1.0",
-		"body: from docks",
+		// short: the key of the dock and the body from docks follow from the
+		// node
+		"update: PUT /docks/{dockId} # updateDock · new in 1.0",
 		// the list of pilots is ignored: a pilot hangs below the ships, whose
 		// field names it, and takes the writes of pilots
 		"pilot:\n                call: GET /pilots/{pilotId} # getPilot · new in 1.0\n                path: {pilotId: .pilotId}",
@@ -978,8 +980,10 @@ func TestProposalParamsInsteadOfUnplaced(t *testing.T) {
 	if h := tr.Node("harvest"); h == nil || h.Query["season"] != "$season" {
 		t.Errorf("harvest:\n%s", out)
 	}
-	// the update of a garden goes to the node that reads it, with a body
-	if w := g.Write[WriteUpdate]; w == nil || w.Path["gardenNo"] != ".gardenNo" || w.From != "gardens" {
+	// the update of a garden goes to the node that reads it; its key and
+	// the body from the node itself follow from the node
+	tr.Complete(s)
+	if w := g.Write[WriteUpdate]; w == nil || w.Path["gardenNo"] != ".gardenNo" || w.From != "" || !strings.Contains(out, "update: PUT /gardens/{gardenNo} gardenNo=.gardenNo # updateGarden") {
 		t.Errorf("update:\n%s", out)
 	}
 	// a write no node reads goes to ignore, with the reason
@@ -1138,14 +1142,21 @@ func TestReviewSteps(t *testing.T) {
 		}
 	}
 	out := step(func(d *ReviewDoc) { d.Set(ReviewTree, "proposed: 3 nodes", "the nodes", false) })
-	want(out, "| 1. Tree (tree.yaml) | done | proposed: 3 nodes |", "| 2. Fetch (tree-data_gen.yaml) | open |", "-base-url <stage>", "## 1. Tree (tree.yaml)\n\nthe nodes")
+	want(out, "| 1. Tree (tree.yaml) | done | proposed: 3 nodes |", "| 2. Fetch (tree-data_gen.yaml) | open |", "-base-url <stage>",
+		"<details><summary><b>1. Tree (tree.yaml)</b> – proposed: 3 nodes</summary>", "-->\nthe nodes\n<!-- /tree:tree -->\n\n</details>")
+	// next and plan come first, the steps after the status
+	out = step(func(d *ReviewDoc) { d.SetPlan("order: docks → ships") })
+	if i, j, k := strings.Index(out, "**Next:**"), strings.Index(out, "## Plan\n\n<!-- tree:plan -->\norder: docks → ships"), strings.Index(out, "## Status"); i < 0 || j < i || k < j {
+		t.Errorf("next, plan, status:\n%s", out)
+	}
 	out = step(func(d *ReviewDoc) {
 		d.Set(ReviewFetch, "9 records", "the records", false)
 		d.Set(ReviewScenario, "40 steps", "the steps", false)
 	})
-	want(out, "## 1. Tree (tree.yaml)\n\nthe nodes", "the records", "| 3. Scenario (tree-scenario_gen.yaml) | done | 40 steps |", "apitest-gen tree run -spec api.yaml -file tree.yaml")
+	want(out, "-->\nthe nodes\n", "the records", "| 3. Test (tree-test_gen.yaml) | done | 40 steps |", "apitest-gen tree run -spec api.yaml -file tree.yaml",
+		"order: docks → ships")
 	out = step(func(d *ReviewDoc) { d.Set(ReviewRun, "FAILED: 40 steps", "| gardens1.update | FAILED |", true) })
-	want(out, "| 4. Run (tree run) | failed |", "**Next:** fix the failed steps")
+	want(out, "| 4. Run (tree run) | failed |", "**Next:** fix the failed steps", "<details open><summary><b>4. Run (tree run)</b>")
 	out = step(func(d *ReviewDoc) {
 		d.Set(ReviewRun, "PASSED: 40 steps", "all passed", false)
 		d.Set(ReviewUpdate, "golden written", "the golden", false)
@@ -1166,7 +1177,7 @@ func TestReviewSteps(t *testing.T) {
 	}
 	out = step(func(d *ReviewDoc) { d.Set(ReviewRun, "PASSED: 41 steps", "all passed", false) })
 	want(out, "| 4. Run (tree run) | done | PASSED: 41 steps |", "| 5. Update (tree run -update) | outdated |")
-	if strings.Count(out, "> **Outdated:**") != 1 || strings.Count(out, "## 4. Run") != 1 {
+	if strings.Count(out, "> **Outdated:**") != 1 || strings.Count(out, "<b>4. Run (tree run)</b>") != 1 {
 		t.Errorf("one mark, one heading:\n%s", out)
 	}
 }
@@ -1362,6 +1373,7 @@ func TestProposeKeysAndValues(t *testing.T) {
 	}
 	out := string(b)
 	tr := parse(t, out)
+	tr.Complete(s)
 	docks := tr.Node("docks")
 	if docks == nil || docks.Write["update"] == nil || docks.Write["update"].Path["dockNumber"] != ".Id" || docks.Write["delete"].Path["dockNumber"] != ".Id" {
 		t.Errorf("dockNumber holds the Id ships refer to:\n%s", out)

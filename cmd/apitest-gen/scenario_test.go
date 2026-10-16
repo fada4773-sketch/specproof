@@ -100,9 +100,17 @@ func TestTreeProposeFetchRun(t *testing.T) {
 	if err := os.WriteFile(file, []byte(changed), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// 2. fetch from the stage
+	// 2. a dry run sends nothing, also with -base-url, and shows the plan
 	srv, stageURL := starport(t, true)
 	t.Setenv("CLI_TREE_TOKEN", starportToken)
+	code, out, errOut = cli("tree", "-spec", specPath, "-file", file, "-base-url", stageURL, "-token-env", "CLI_TREE_TOKEN", "-dry-run")
+	if code != 0 || !strings.Contains(out, "order  ") || !strings.Contains(out, "the fetch would send") || len(srv.Requests) != 0 {
+		t.Fatalf("dry run: %d %v\n%s%s", code, srv.Requests, out, errOut)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "tree-data_gen.yaml")); err == nil {
+		t.Error("a dry run writes no data")
+	}
+	// then fetch from the stage
 	code, out, errOut = cli("tree", "-spec", specPath, "-file", file, "-base-url", stageURL, "-token-env", "CLI_TREE_TOKEN")
 	if code != 0 || !strings.Contains(out, "up to date") || !strings.Contains(out, "records created") {
 		t.Fatalf("fetch: %d\n%s%s", code, out, errOut)
@@ -111,7 +119,7 @@ func TestTreeProposeFetchRun(t *testing.T) {
 	if n := srv.Requests["PUT"] + srv.Requests["PATCH"] + srv.Requests["DELETE"]; n != 0 || srv.Requests["POST"] > 1 {
 		t.Errorf("the fetch wrote to the stage: %v", srv.Requests)
 	}
-	for _, f := range []string{"tree-data_gen.yaml", "tree-scenario_gen.yaml", "tree-review_gen.md"} {
+	for _, f := range []string{"tree-data_gen.yaml", "tree-test_gen.yaml", "tree-review_gen.md"} {
 		if _, err := os.Stat(filepath.Join(dir, f)); err != nil {
 			t.Errorf("%s not written: %v", f, err)
 		}
@@ -120,23 +128,28 @@ func TestTreeProposeFetchRun(t *testing.T) {
 		t.Error("the change of the user must stay")
 	}
 	review("### Seed", "mars", "| 1. Tree (tree.yaml) | done | up to date with the spec", "| 2. Fetch (tree-data_gen.yaml) | done |",
-		"| 3. Scenario (tree-scenario_gen.yaml) | done |", "### Records per node", "tree run -spec")
+		"| 3. Test (tree-test_gen.yaml) | done |", "### Records per node", "tree run -spec",
+		"## Plan", "order: ", "<summary>Requests of the fetch (", "#### 1. GET /")
 	// 3. build again without fetching
 	code, out, _ = cli("tree", "-spec", specPath, "-file", file)
 	if code != 0 || !strings.Contains(out, "fetched before") {
 		t.Errorf("rebuild: %d\n%s", code, out)
 	}
-	// 4. run against an empty instance: write the golden snapshot and the examples
+	// 4. run against an empty instance: write the answers into the test and the examples
 	_, empty := starport(t, false)
 	junit := filepath.Join(dir, "out", "junit.xml")
 	code, out, errOut = cli("tree", "run", "-spec", specPath, "-file", file, "-base-url", empty, "-token", starportToken, "-update", "-junit", junit)
 	if code != 0 || !strings.Contains(out, "PASSED") || !strings.Contains(out, "examples") {
 		t.Fatalf("run -update: %d\n%s%s", code, out, errOut)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "tree-golden_gen.yaml")); err != nil {
-		t.Error("golden snapshot not written")
+	if sc, err := scenario.Load(filepath.Join(dir, "tree-test_gen.yaml")); err != nil || sc.Golden == nil || len(sc.Golden.Steps) == 0 {
+		t.Errorf("answers not written into the test: %v", err)
 	}
-	review("| 4. Run (tree run) | done | PASSED", "| 5. Update (tree run -update) | done | golden written", "examples", "### Seed", "**Next:** done")
+	review("| 4. Run (tree run) | done | PASSED", "| 5. Update (tree run -update) | done | answers written", "examples", "### Seed", "**Next:** done",
+		"<summary>Requests of the run (", "request\n\n```json")
+	if b, _ := os.ReadFile(filepath.Join(dir, "tree-review_gen.md")); strings.Contains(string(b), starportToken) {
+		t.Error("the review must not show the token")
+	}
 	if b, _ := os.ReadFile(specPath); !strings.Contains(string(b), "example") {
 		t.Error("the examples were not written into the spec")
 	}
@@ -145,7 +158,11 @@ func TestTreeProposeFetchRun(t *testing.T) {
 	if err := xml.Unmarshal(b, &ju); err != nil || len(ju.Suites) != 1 || ju.Suites[0].Tests < 20 || ju.Suites[0].Failures != 0 {
 		t.Errorf("junit: %v %+v", err, ju)
 	}
-	// 5. run again on a fresh empty instance: compares with the golden snapshot
+	// 5. run again on a fresh empty instance: compares with the answers;
+	// building the test again keeps them
+	if code, out, _ := cli("tree", "-spec", specPath, "-file", file); code != 0 || !hasAnswers(filepath.Join(dir, "tree-test_gen.yaml")) {
+		t.Errorf("a rebuild must keep the answers: %d\n%s", code, out)
+	}
 	_, empty = starport(t, false)
 	code, out, _ = cli("tree", "run", "-spec", specPath, "-file", file, "-base-url", empty, "-token", starportToken, "-run", "Dock/")
 	if code != 0 || !strings.Contains(out, "PASSED") || strings.Contains(out, "Ship/ships1.read") {

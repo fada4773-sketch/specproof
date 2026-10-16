@@ -56,6 +56,7 @@ func Merge(s *spec.Spec, t *Tree, proposal *Tree, version string) []Change {
 	m.bodies()
 	m.ignore()
 	m.params()
+	m.mergeOrder()
 	return m.changes
 }
 
@@ -223,6 +224,9 @@ func (m *merger) bodies() {
 			from := e.Name
 			if src := m.at[m.byName[pw.From]]; src != nil {
 				from = src.Name
+			}
+			if from == e.Name {
+				continue // the body from the node itself: no body key says so
 			}
 			v := m.writeMapping(e, kind)
 			if v == nil {
@@ -754,7 +758,7 @@ func (m *merger) addWrites(p, e *Node) {
 		if m.version != "" {
 			c.Comment = strings.TrimPrefix(strings.TrimSpace(c.Comment+" · new in "+m.version), "· ")
 		}
-		block.Content = append(block.Content, scalar(w.Kind), writeYAML(&c))
+		block.Content = append(block.Content, scalar(w.Kind), writeYAML(&c, e))
 		m.mark(w.Call)
 		m.changed(e.Name+".write."+w.Kind, "new %s", w.Call)
 	}

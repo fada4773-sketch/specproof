@@ -108,6 +108,8 @@ func propose(full *spec.Spec, ops []*spec.Operation) *Tree {
 	p.attachWrites()
 	p.conditions()
 	p.t.Roots = p.sortSiblings(p.t.Roots, p.t.names())
+	t.Order = proposeOrder(p.s, p.m, t, p.orderValues())
+	t.HasOrder = len(t.Order) > 0
 	for name, ops := range p.paramOps {
 		t.ParamNotes[name] = usedBy(ops)
 		if vals := p.enums[name]; len(vals) > 0 {
@@ -204,6 +206,9 @@ type proposer struct {
 	// referenced are the nodes that read the records a record refers to
 	// (by a where on their key): no conditions of their own
 	referenced map[*Node]bool
+	// refBy is the reference a node reads its records by (pilotId of the
+	// ship above it): the source of that field in order
+	refBy map[*Node]reference
 }
 
 func (p *proposer) resourceOf(op *spec.Operation) *model.Resource {
@@ -595,6 +600,16 @@ func (p *proposer) references(n *Node, r *model.Resource, here *chain, lean bool
 		}
 		c.Key = keyPointers(t)
 		p.res[c] = t
+		if p.refBy == nil {
+			p.refBy = map[*Node]reference{}
+		}
+		key := ref.key
+		if len(c.Where) > 0 && op == nil {
+			key = c.Where[0].Field
+		} else if f := t.Field(key); f != "" {
+			key = f
+		}
+		p.refBy[c] = reference{field: ref.field, to: t, key: key, many: ref.many}
 		next := &chain{res: t, node: c, up: here}
 		if lean {
 			p.referenced[c] = true
@@ -621,6 +636,38 @@ func (p *proposer) creatable(t *model.Resource, key string) *model.Resource {
 		}
 	}
 	return t
+}
+
+// orderValues are the sources of the bodies of the creates: a field of the
+// body a node below reads its record by (pilotId: shipPilot.id).
+func (p *proposer) orderValues() map[string]map[string]any {
+	out := map[string]map[string]any{}
+	p.t.Walk(func(n *Node) {
+		w := n.Write[WriteCreate]
+		if n.IsRequire || w == nil || w.None {
+			return
+		}
+		op := p.lookup(w.Call)
+		if op == nil {
+			return
+		}
+		props, _ := properties(schemaOf(requestRef(op)))
+		for _, c := range n.Each {
+			ref, ok := p.refBy[c]
+			if !ok || ref.key == "" {
+				continue
+			}
+			for name := range props {
+				if strings.EqualFold(name, ref.field) {
+					if out[n.Name] == nil {
+						out[n.Name] = map[string]any{}
+					}
+					out[n.Name][name] = c.Name + "." + ref.key
+				}
+			}
+		}
+	})
+	return out
 }
 
 // createdReferences adds the references below a list node that was not

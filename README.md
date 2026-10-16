@@ -698,21 +698,20 @@ With the examples removed from the Bookstore test spec, apitest can send 32 of 5
 
 `apitest.Run` derives its cases from the examples of the spec: one example per request, ordered by the operations. The scenario mode instead runs a **scenario**, the requests in the order they run, with as many records and calls per endpoint as the test needs, and keeps the answers as a **snapshot**.
 
-- **Integration test**, rebuilt in an empty instance: `tree.yaml` says which records to fetch and how they hang together (five docks of two planets, the ships of each dock, the pilot of each ship: `pick`, `where`, `require`, `page`), and how a record is created, updated, patched and deleted. `apitest-gen tree` proposes the file from the spec and later only adds new endpoints at their place; with `-base-url` it fetches the records (GET only) and writes the scenario that creates them in an empty instance in the right order (the ids of the stage replaced by saved values), reads and lists them, changes and deletes them. `apitest-gen tree run -update` runs it and writes the golden snapshot and the examples of the spec; `apitest-gen tree run`, or `apitest.RunScenario` in `go test`, runs it again and compares.
+- **Integration test**, rebuilt in an empty instance: `tree.yaml` says which records to fetch and how they hang together (five docks of two planets, the ships of each dock, the pilot of each ship: `pick`, `where`, `require`, `page`), and how a record is created, updated, patched and deleted. `apitest-gen tree` proposes the file from the spec, with `order` on top: the plan of the test (the order of the creates and where values of their bodies come from); it checks every change you make (a wrong order stops with the line and the reason), follows the plan strictly from then on, and later only adds new endpoints at their place. `-dry-run` sends nothing and shows the plan and what a fetch would send. With `-base-url` it fetches the records (GET only) and writes the test `tree-test_gen.yaml` that creates them in an empty instance in that order (the ids of the stage replaced by saved values), reads and lists them, changes and deletes them. `apitest-gen tree run -update` runs it and writes the answers next to the steps and the examples into the spec; `apitest-gen tree run`, or `apitest.RunScenario` in `go test`, runs it again and compares. `tree-review_gen.md` shows the next command, the plan, every step and every request.
 - **Regression check**, on a shared stage, GET requests only: `apitest-gen regression pre` draws real records by the rules of a sample file before a deployment and reads every GET with them; `apitest-gen regression post` reads the same after the deployment and reports what changed, as Markdown, HTML and JUnit.
 
 ```go
 func TestTree(t *testing.T) {
 	apitest.RunScenario(t, apitest.ScenarioConfig{
 		Config:   apitest.Config{SpecPath: "../../api/openapi.yaml", Handler: router, Token: apitest.StaticToken(token)}, // or BaseURL
-		Scenario: "tree-scenario_gen.yaml",
-		Golden:   "tree-golden_gen.yaml",
+		Scenario: "tree-test_gen.yaml", // the steps and the answers of -update
 	})
 }
 ```
 
 ```sh
-apitest-gen tree -spec api/openapi.yaml -file apitest/tree/tree.yaml                                    # propose tree.yaml
+apitest-gen tree -spec api/openapi.yaml -file apitest/tree/tree.yaml -dry-run                           # propose tree.yaml, show the plan
 apitest-gen tree -spec api/openapi.yaml -file apitest/tree/tree.yaml -base-url https://dev.example.com/api -token-env DEV_TOKEN
 apitest-gen tree run -spec api/openapi.yaml -file apitest/tree/tree.yaml -base-url http://localhost:8080/api -token-env API_TOKEN -update
 apitest-gen regression pre  -spec api/openapi.yaml -sample regression-sample.yaml -base-url https://dev.example.com/api -token-env DEV_TOKEN -out out

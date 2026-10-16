@@ -370,3 +370,64 @@ func TestDiff(t *testing.T) {
 		t.Errorf("scalar → object: %+v", fs)
 	}
 }
+
+// TestAnswersInTheScenario: the answers of a run with Update stand next to
+// the steps; they are read as the golden snapshot, written back in place
+// (the comments stay), and an answer of a step the snapshot lacks goes.
+func TestAnswersInTheScenario(t *testing.T) {
+	file := `# the test
+steps:
+  - id: dock1.create # rebuilds dock1
+    call: POST /docks
+    body: {name: North}
+    save: {dock1.id: /id}
+    expect: 201
+  - id: dock1.read
+    call: GET /docks/{id}
+    path: {id: '{{dock1.id}}'}
+    expect: 200
+    answer: {request: GET /docks/7, status: 200}
+`
+	sc, err := Parse([]byte(file))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sc.Golden == nil || sc.Golden.Kind != KindGolden || len(sc.Golden.Steps) != 1 || sc.Golden.Shot("dock1.read").Status != 200 {
+		t.Fatalf("golden: %+v", sc.Golden)
+	}
+	path := filepath.Join(t.TempDir(), "tree-test_gen.yaml")
+	if err := os.WriteFile(path, []byte(file), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	snap := &Snapshot{Kind: KindGolden, Spec: "../openapi.yaml", Created: "2026-10-16T10:12:00Z", Reread: true, Steps: []*Shot{
+		{ID: "dock1.create", Request: "POST /docks", Status: 201, Body: map[string]any{"id": 7, "name": "North"}, HasBody: true, Volatile: []string{"/id"}, DurationMs: 3},
+	}}
+	if err := WriteAnswers(path, snap); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(path)
+	out := string(b)
+	for _, want := range []string{"# the test", "# rebuilds dock1", "golden: {spec: ../openapi.yaml, created: \"2026-10-16T10:12:00Z\", reread: true}", "    answer:\n      request: POST /docks\n      status: 201"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "GET /docks/7") || strings.Contains(out, "durationMs") {
+		t.Errorf("the old answer goes, the duration is no answer:\n%s", out)
+	}
+	again, err := Parse(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Golden == nil || again.Golden.Spec != "../openapi.yaml" || !again.Golden.Reread || again.Golden.Shot("dock1.create") == nil || again.Golden.Shot("dock1.read") != nil {
+		t.Errorf("read back: %+v", again.Golden)
+	}
+	// Encode writes them as well
+	enc, err := again.Encode(" head")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third, err := Parse(enc); err != nil || third.Golden == nil || third.Golden.Shot("dock1.create").Status != 201 {
+		t.Errorf("encode: %v\n%s", err, enc)
+	}
+}

@@ -72,6 +72,17 @@ type builder struct {
 	// write that saves it runs.
 	writeSaved map[string]bool
 	stage      map[string]any
+	// strict: the file has an order; the test follows it and the sources it
+	// gives, problems are what the records do not allow (the build stops)
+	strict   bool
+	problems []string
+}
+
+func (b *builder) problem(format string, args ...any) {
+	p := fmt.Sprintf(format, args...)
+	if !slices.Contains(b.problems, p) {
+		b.problems = append(b.problems, p)
+	}
 }
 
 // Build turns the records into the scenario that rebuilds them in an empty
@@ -87,7 +98,7 @@ func Build(s *spec.Spec, t *Tree, d *Data) (*Built, error) {
 		canon: map[*Record]*Record{}, created: map[*Record]bool{}, keyVar: map[*Record]map[string]string{},
 		byValue: map[string][]keyRef{}, etag: map[*Record]string{}, createID: map[*Record]string{},
 		readID: map[*Record]string{}, deps: map[*Record][]*Record{}, ids: map[string]int{}, sent: map[string]bool{},
-		scope: t.names(), writeSaved: map[string]bool{}, stage: map[string]any{},
+		scope: t.names(), writeSaved: map[string]bool{}, stage: map[string]any{}, strict: t.Strict(),
 	}
 	if s.Doc.Components != nil {
 		b.schemes = s.Doc.Components.SecuritySchemes
@@ -112,6 +123,9 @@ func Build(s *spec.Spec, t *Tree, d *Data) (*Built, error) {
 	b.unauthorized()
 	b.deletes(order)
 	b.afterSaves()
+	if len(b.problems) > 0 {
+		return nil, &FindingError{Problems: b.problems}
+	}
 	sc := &scenario.Scenario{Steps: b.steps}
 	for _, r := range order {
 		if !slices.Contains(sc.Order, r.Node.Name) {
@@ -154,34 +168,163 @@ var idChars = strings.NewReplacer("/", "_", " ", "_", "{", "", "}", "")
 // author below a book creates like the list of authors), if the create
 // names no node above it that the node lacks.
 func (b *builder) createOf(n *Node) (*Write, *spec.Operation) {
-	if w, op := b.writeOf(n, WriteCreate); w != nil || n.Write[WriteCreate] != nil {
-		return w, op
-	}
-	res := b.resourceOf(n)
-	if res == nil {
+	owner := createOwner(b.s, b.m, b.t, n)
+	if owner == nil {
 		return nil, nil
 	}
-	var found *Write
-	var fop *spec.Operation
-	b.t.Walk(func(o *Node) {
-		if found != nil || o == n || o.IsRequire || b.resourceOf(o) != res {
-			return
-		}
-		w, op := b.writeOf(o, WriteCreate)
-		if w == nil {
-			return
-		}
-		ok := true
-		walkStrings(anyMap(w.Path), func(s string) {
-			if ref, isRef := ParseRef(s, func(name string) bool { return o.Ancestor(name) != nil }); isRef && ref.Node != "" && n.Ancestor(ref.Node) == nil {
-				ok = false
+	return ownCreate(b.s, owner)
+}
+
+// ownerName is the node of order a record is created by.
+func ownerName(b *builder, r *Record) string {
+	if o := createOwner(b.s, b.m, b.t, r.Node); o != nil {
+		return o.Name
+	}
+	return r.Node.Name
+}
+
+// entryOf is the order entry of the create of a record's node, nil without.
+func (b *builder) entryOf(r *Record) *OrderEntry {
+	if !b.strict {
+		return nil
+	}
+	owner := createOwner(b.s, b.m, b.t, r.Node)
+	if owner == nil {
+		return nil
+	}
+	return b.t.Entry(owner.Name)
+}
+
+// orderIndex is the place of a record's create in order; records without
+// one come last.
+func (b *builder) orderIndex(n *Node) int {
+	owner := createOwner(b.s, b.m, b.t, n)
+	if owner == nil {
+		return len(b.t.Order)
+	}
+	if i := b.t.OrderIndex(owner.Name); i >= 0 {
+		return i
+	}
+	return len(b.t.Order)
+}
+
+// sources sets the fields of a body that order names to the values of the
+// records it names: below the record (the pilot read below a ship), else
+// above it; the key of a record the test creates as its placeholder. A
+// record without such a record is a problem: the build stops.
+func (b *builder) sources(r *Record, body map[string]any, props openapi3.Schemas) {
+	e := b.entryOf(b.entity(r))
+	if e == nil {
+		return
+	}
+	for _, field := range sortedKeys(e.Values) {
+		name := field
+		if len(props) > 0 {
+			k, ok := propertyFoldName(props, field)
+			if !ok {
+				continue // an update without the field
 			}
-		})
-		if ok {
-			found, fop = w, op
+			name = k
 		}
-	})
-	return found, fop
+		vals, ok := b.sourceOf(r, e, field)
+		if !ok {
+			continue
+		}
+		if p := props[name]; p != nil && p.Value != nil && value.Type(p.Value) == "array" {
+			body[name] = vals
+		} else {
+			body[name] = vals[0]
+		}
+	}
+}
+
+// sourceOf are the values order gives a field of a record's body: of the
+// records of the source node below r (or of its entity), else above it.
+// A record without them is a problem.
+func (b *builder) sourceOf(r *Record, e *OrderEntry, field string) ([]any, bool) {
+	ref, ok := ParseRef(e.Values[field], b.scope)
+	if !ok || ref.Node == "" {
+		return nil, false
+	}
+	var from []*Record
+	for _, under := range []*Record{r, b.entity(r)} {
+		for _, c := range b.d.Records {
+			if c.Parent == under && c.Node.Name == ref.Node {
+				from = append(from, c)
+			}
+		}
+		if len(from) > 0 {
+			break
+		}
+	}
+	if len(from) == 0 {
+		if a := r.Ancestor(ref.Node); a != nil {
+			from = []*Record{a}
+		}
+	}
+	if len(from) == 0 {
+		b.problem("order: %s.%s <- %s: %s has no record of %s below or above it; fetch it, or give another source",
+			e.Node, field, ref, r.ID, ref.Node)
+		return nil, false
+	}
+	var vals []any
+	for _, c := range from {
+		v, found := c.Get(ref.Field)
+		if !found {
+			b.problem("order: %s.%s <- %s: %s has no field %s", e.Node, field, ref, c.ID, ref.Field)
+			continue
+		}
+		ce := b.entity(c)
+		if name := b.keyVar[ce][ref.Field]; b.created[ce] && name != "" {
+			v = "{{" + name + "}}"
+		}
+		vals = append(vals, v)
+	}
+	return vals, len(vals) > 0
+}
+
+// sentValue is the value the create of a record sent in a field when order
+// gives its source (the pilotId of a ship: the pilot's placeholder).
+func (b *builder) sentValue(r *Record, field string) (any, bool) {
+	e := b.entity(r)
+	if !b.created[e] {
+		return nil, false
+	}
+	entry := b.entryOf(e)
+	if entry == nil {
+		return nil, false
+	}
+	// a path value of the create named like the field (the moonId of a
+	// garden created at /moons/{moonId}/gardens)
+	if w, _ := b.createOf(e.Node); w != nil {
+		for p, v := range w.Path {
+			if strings.EqualFold(p, field) {
+				if x := b.resolve(v, e, e.Node, p, "", e); x != nil {
+					return x, true
+				}
+			}
+		}
+	}
+	for f := range entry.Values {
+		if strings.EqualFold(f, field) {
+			if vals, ok := b.sourceOf(e, entry, f); ok {
+				if len(vals) == 1 {
+					return vals[0], true
+				}
+				return vals, true
+			}
+		}
+	}
+	return nil, false
+}
+
+func propertyFoldName(props openapi3.Schemas, name string) (string, bool) {
+	for k := range props {
+		if strings.EqualFold(k, name) {
+			return k, true
+		}
+	}
+	return "", false
 }
 
 func (b *builder) writeOf(n *Node, kind string) (*Write, *spec.Operation) {
@@ -405,12 +548,38 @@ func (b *builder) readBy(n *Node, field string) bool {
 // record: authorId 3 → {{authors2.id}}. Without a fitting record the value
 // stays.
 func (b *builder) placeholderFor(v any, fields []string, exclude *Record, step string) any {
-	if v == nil {
+	best := b.matches(v, fields, exclude)
+	if b.strict {
+		// the file says where values come from: a match is only a hint
+		if len(best) == 1 {
+			b.note(step, fmt.Sprintf("%s = %s stays as it is", strings.Join(fields, "/"), text(v)),
+				"it is the key of "+best[0].rec.ID+", which the test creates; to send that, give the source in order ("+fields[0]+": <node>."+best[0].field+")")
+		}
 		return v
+	}
+	switch {
+	case len(best) == 1:
+		return "{{" + b.keyVar[best[0].rec][best[0].field] + "}}"
+	case len(best) > 1:
+		var names []string
+		for _, kr := range best {
+			names = append(names, kr.rec.ID)
+		}
+		b.note(step, fmt.Sprintf("%s = %s stays as it is", strings.Join(fields, "/"), text(v)),
+			"it fits several records ("+strings.Join(names, ", ")+"); write a reference (.field or <node>.field) to choose one")
+	}
+	return v
+}
+
+// matches are the keys of created records a value of the stage is, whose
+// record the field names best.
+func (b *builder) matches(v any, fields []string, exclude *Record) []keyRef {
+	if v == nil {
+		return nil
 	}
 	switch v.(type) {
 	case map[string]any, []any, bool:
-		return v
+		return nil
 	}
 	var best []keyRef
 	score := 0
@@ -430,18 +599,7 @@ func (b *builder) placeholderFor(v any, fields []string, exclude *Record, step s
 			best = append(best, kr)
 		}
 	}
-	switch {
-	case len(best) == 1:
-		return "{{" + b.keyVar[best[0].rec][best[0].field] + "}}"
-	case len(best) > 1:
-		var names []string
-		for _, kr := range best {
-			names = append(names, kr.rec.ID)
-		}
-		b.note(step, fmt.Sprintf("%s = %s stays as it is", strings.Join(fields, "/"), text(v)),
-			"it fits several records ("+strings.Join(names, ", ")+"); write a reference (.field or <node>.field) to choose one")
-	}
-	return v
+	return best
 }
 
 // resolve fills a value of the tree for the scenario: a reference to a key
@@ -532,6 +690,10 @@ func (b *builder) resolve(v any, at *Record, scope *Node, param, step string, ex
 				}
 			}
 		}
+	}
+	if v, ok := b.sentValue(rec, ref.Field); ok {
+		// the create sent it from the source order gives
+		return v
 	}
 	last := ref.Field[strings.LastIndex(ref.Field, ".")+1:]
 	return b.placeholderFor(val, []string{param, last}, exclude, step)
@@ -651,6 +813,20 @@ func (b *builder) creates() []*Record {
 		done[p.r] = true
 		order = append(order, p.r)
 		b.steps = append(b.steps, p.st)
+	}
+	if b.strict {
+		// the order of the file: each record after the records its create
+		// takes keys of, else the file is wrong
+		slices.SortStableFunc(list, func(x, y *pending) int { return b.orderIndex(x.r.Node) - b.orderIndex(y.r.Node) })
+		for _, p := range list {
+			for _, name := range p.uses {
+				if o := owner[name]; o != nil && o != p.r && !done[o] {
+					b.problem("order: %s is created before %s, but its create takes {{%s}}; move %s above %s in order",
+						p.r.ID, o.ID, name, ownerName(b, o), ownerName(b, p.r))
+				}
+			}
+			take(p)
+		}
 	}
 	for len(order) < len(list) {
 		var next *pending
@@ -803,8 +979,19 @@ func (b *builder) body(step string, r *Record, w *Write, ref *openapi3.SchemaRef
 	}
 	props, _ := properties(ref.Value)
 	var unique []string
+	set := map[string]bool{}
+	if e := b.entryOf(b.entity(r)); e != nil {
+		for f := range e.Values {
+			if k, ok := propertyFoldName(props, f); ok {
+				set[k] = true
+			}
+		}
+	}
+	b.sources(r, m, props)
 	for _, k := range sortedKeys(m) {
-		m[k] = b.substitute(m[k], k, r, step)
+		if !set[k] {
+			m[k] = b.substitute(m[k], k, r, step)
+		}
 		if p := props[k]; p != nil && p.Value != nil && isUniqueField(p.Value, k, r.Node) {
 			if _, isStr := m[k].(string); isStr && len(scenario.Names(m[k])) == 0 {
 				unique = append(unique, "/"+k)
@@ -1172,6 +1359,18 @@ func (b *builder) ownKeys(st *scenario.Step, r, e *Record) {
 	for k, v := range st.Path {
 		l, ok := v.([]any)
 		if !ok {
+			// the read of one record by its key: the key the test created it
+			// with (the moon of a garden the test does not rebuild)
+			if s, isText := v.(string); b.created[e] && (!isText || len(scenario.Names(s)) == 0) {
+				for _, ptr := range keyOf(r.Node) {
+					if own, found := Pointer(r.Value, ptr); found && text(own) == text(v) {
+						if name := b.keyVar[e][PointerField(ptr)]; name != "" {
+							st.Path[k] = "{{" + name + "}}"
+						}
+						break
+					}
+				}
+			}
 			continue
 		}
 		st.Path[k] = nil
@@ -1213,6 +1412,10 @@ func (b *builder) updates() {
 			nodes = append(nodes, n)
 		}
 	})
+	if b.strict {
+		// the changes in the order of the file, the others after them
+		slices.SortStableFunc(nodes, func(x, y *Node) int { return b.orderIndex(x) - b.orderIndex(y) })
+	}
 	for _, n := range nodes {
 		for _, kind := range n.Kinds() {
 			if base := KindBase(kind); base != WriteUpdate && base != WritePatch && !IsAction(kind) {

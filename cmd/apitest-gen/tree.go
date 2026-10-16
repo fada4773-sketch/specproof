@@ -15,17 +15,20 @@ import (
 	"github.com/fada4773-sketch/specproof/apitest"
 	"github.com/fada4773-sketch/specproof/internal/gen/tree"
 	"github.com/fada4773-sketch/specproof/internal/gen/yamldoc"
+	"github.com/fada4773-sketch/specproof/internal/redact"
 	"github.com/fada4773-sketch/specproof/internal/scenario"
 	"github.com/fada4773-sketch/specproof/internal/spec"
 )
 
 // File names of the tree, next to the tree file.
 const (
-	treeFile         = "tree.yaml"
-	treeDataFile     = "tree-data_gen.yaml"
-	treeScenarioFile = "tree-scenario_gen.yaml"
-	treeGoldenFile   = "tree-golden_gen.yaml"
-	treeReviewFile   = "tree-review_gen.md"
+	treeFile       = "tree.yaml"
+	treeDataFile   = "tree-data_gen.yaml"
+	treeTestFile   = "tree-test_gen.yaml"
+	treeReviewFile = "tree-review_gen.md"
+	// files of an earlier version, replaced by the test file
+	oldScenarioFile = "tree-scenario_gen.yaml"
+	oldGoldenFile   = "tree-golden_gen.yaml"
 )
 
 const treeUsage = `apitest-gen tree: fetch connected records from a running instance and
@@ -46,17 +49,19 @@ Usage:
              records (GET only, and
              POSTs marked read: true) and writes next to tree.yaml:
                tree-data_gen.yaml      the records (data of the instance)
-               tree-scenario_gen.yaml  the steps that rebuild them in an
-                                       empty instance (apitest.RunScenario)
+               tree-test_gen.yaml      the test: the steps that rebuild
+                                       them in an empty instance, and the
+                                       answers of the last run -update
+                                       (apitest.RunScenario)
                tree-review_gen.md      the review: a section per step
                                        (tree, fetch, scenario, run,
                                        update), the state of each and
                                        the next command
              Without -base-url the scenario is built again from
              tree-data_gen.yaml, if it exists.
-  run        runs the scenario against an empty instance and compares with
-             tree-golden_gen.yaml if it exists; -update writes the golden
-             snapshot and the examples into the spec instead; both write
+  run        runs the test against an empty instance and compares with the
+             answers tree-test_gen.yaml holds; -update writes the answers
+             into it and the examples into the spec instead; both write
              their section into tree-review_gen.md. Exit code 1 if a step
              fails (for CI).
 
@@ -109,6 +114,7 @@ type treeOptions struct {
 	scenario, golden, report, junit  string
 	settings, errors, run, skip      string
 	update, noExamples, remote, uniq bool
+	dryRun                           bool
 	tok                              tokenFlags
 	timeout                          time.Duration
 }
@@ -165,12 +171,13 @@ func treeFlags(name string, out io.Writer) (*flag.FlagSet, *treeOptions) {
 	fs.StringVar(&o.spec, "spec", "", "the OpenAPI file, required")
 	fs.StringVar(&o.file, "file", treeFile, "the tree file; the generated files sit next to it")
 	fs.DurationVar(&o.timeout, "timeout", 0, "timeout of each request (default 10s)")
+	fs.BoolVar(&o.dryRun, "dry-run", false, "send nothing and write no data or test: show the plan, check tree.yaml, and list what would be sent")
 	if name == "run" {
 		fs.StringVar(&o.baseURL, "base-url", "", "the empty instance, with base path, required (or baseURL of -settings)")
 		o.tok.register(fs, true)
-		fs.StringVar(&o.scenario, "scenario", "", "the scenario; default "+treeScenarioFile+" next to the tree file")
-		fs.StringVar(&o.golden, "golden", "", "the golden snapshot; default "+treeGoldenFile+" next to the tree file")
-		fs.BoolVar(&o.update, "update", false, "write the golden snapshot and the examples of the spec instead of comparing")
+		fs.StringVar(&o.scenario, "scenario", "", "the test; default "+treeTestFile+" next to the tree file")
+		fs.StringVar(&o.golden, "golden", "", "a golden snapshot file of its own; default the answers the test file holds")
+		fs.BoolVar(&o.update, "update", false, "write the answers into the test file and the examples into the spec instead of comparing")
 		fs.BoolVar(&o.noExamples, "no-examples", false, "with -update: do not write the examples into the spec")
 		fs.StringVar(&o.settings, "settings", "", "optional settings file (spec, baseURL, health, tokens, headers, report)")
 		fs.StringVar(&o.report, "report", "", "Markdown report (HTML and JSON next to it)")
@@ -262,6 +269,7 @@ func treeMain(o *treeOptions, out io.Writer) (int, error) {
 		}
 	}
 	review.Set(tree.ReviewTree, summary, body, len(problems) > 0)
+	review.SetPlan(tree.PlanSection(t, nil))
 	switch {
 	case proposed:
 		review.Outdate(tree.ReviewTree, "tree.yaml was proposed anew; run the steps again")
@@ -276,6 +284,9 @@ func treeMain(o *treeOptions, out io.Writer) (int, error) {
 	}
 	if unset := t.UnsetParams(); len(unset) > 0 {
 		fmt.Fprintf(out, "%s: params without value: %s; set them at the top of the file (the nodes that use them are left out)\n", o.file, strings.Join(unset, ", "))
+	}
+	if o.dryRun {
+		return o.dryTree(s, t, review, body, out)
 	}
 	var data *tree.Data
 	var stale []string
@@ -299,6 +310,8 @@ func treeMain(o *treeOptions, out io.Writer) (int, error) {
 		if err != nil {
 			return 1, err
 		}
+		red := redact.New(nil)
+		red.AddSecret(tok)
 		head := " Generated by \"apitest-gen tree\" from " + o.baseURL + ": the records the tree picked.\n Data of that instance; commit it only if it may be in git."
 		b, err := data.Encode(head)
 		if err != nil {
@@ -315,6 +328,7 @@ func treeMain(o *treeOptions, out io.Writer) (int, error) {
 		if o.only != "" {
 			body = "Only " + o.only + " and what hangs below it was fetched again; the other records are from before.\n\n" + body
 		}
+		body += tree.RequestsBlock("Requests of the fetch", data.Log, red)
 		review.Set(tree.ReviewFetch, summary, body, false)
 	default:
 		if _, err := os.Stat(dataPath); err != nil {
@@ -334,25 +348,106 @@ func treeMain(o *treeOptions, out io.Writer) (int, error) {
 			review.Set(tree.ReviewFetch, summary, "From "+treeDataFile+", fetched before.\n\n"+body, false)
 		}
 	}
+	review.SetPlan(tree.PlanSection(t, data))
 	built, err := tree.Build(s, t, data)
 	if err != nil {
+		var fe *tree.FindingError
+		if errors.As(err, &fe) {
+			// the records do not fit the plan: the review says so
+			body := fmt.Sprintf("The records do not fit tree.yaml; nothing was written.\n\n### Problems (%d)\n\n", len(fe.Problems))
+			for _, p := range fe.Problems {
+				body += "- " + p + "\n"
+			}
+			review.Set(tree.ReviewScenario, fmt.Sprintf("%d problems: fix tree.yaml", len(fe.Problems)), body, true)
+			if werr := o.writeReview(review, out); werr != nil {
+				return 1, werr
+			}
+		}
 		return 1, err
 	}
-	text, err := built.Scenario.Encode(" Generated by \"apitest-gen tree\" from " + filepath.Base(o.file) + " and " + treeDataFile + ".\n Do not edit: change tree.yaml and run apitest-gen tree again.\n It rebuilds the records in an empty instance: apitest.RunScenario or \"apitest-gen tree run\".")
+	text, err := built.Scenario.Encode(testHead(o.file))
 	if err != nil {
 		return 1, err
 	}
-	before, _ := os.ReadFile(o.next(treeScenarioFile))
-	if err := scenario.WriteFile(o.next(treeScenarioFile), text); err != nil {
+	testPath := o.next(treeTestFile)
+	before, _ := os.ReadFile(testPath)
+	if old, err := scenario.Load(testPath); err == nil && old.Golden != nil {
+		// the answers of the steps the test still has stay; run -update
+		// writes the others
+		built.Scenario.Golden = keepAnswers(old.Golden, built.Scenario)
+		if text, err = built.Scenario.Encode(testHead(o.file)); err != nil {
+			return 1, err
+		}
+	}
+	if err := scenario.WriteFile(testPath, text); err != nil {
 		return 1, err
 	}
-	fmt.Fprintf(out, "  %s: %d steps, %d records created, %d of the seed\n", o.next(treeScenarioFile), len(built.Scenario.Steps), len(built.Created), len(built.Seeds))
+	fmt.Fprintf(out, "  %s: %d steps, %d records created, %d of the seed\n", testPath, len(built.Scenario.Steps), len(built.Created), len(built.Seeds))
+	for _, f := range []string{oldScenarioFile, oldGoldenFile} {
+		if _, err := os.Stat(o.next(f)); err == nil {
+			fmt.Fprintf(out, "  %s: replaced by %s; delete it\n", o.next(f), treeTestFile)
+		}
+	}
 	summary, body = tree.ScenarioSection(built)
 	review.Set(tree.ReviewScenario, summary, body, false)
 	if !bytes.Equal(before, text) {
 		review.Outdate(tree.ReviewScenario, "the scenario changed after this run; run it again")
 	}
 	return 0, o.writeReview(review, out)
+}
+
+// dryTree shows the plan and what a fetch would send, and the steps of the
+// test when records were fetched before; it sends nothing and writes only
+// the review.
+func (o *treeOptions) dryTree(s *spec.Spec, t *tree.Tree, review *tree.ReviewDoc, treeBody string, out io.Writer) (int, error) {
+	fmt.Fprintf(out, "dry run: nothing sent, no data or test written\n\n%s\n", tree.PlanText(t))
+	plan := tree.FetchPlan(t)
+	fmt.Fprintf(out, "the fetch would send (templates; values from the records above):\n")
+	for _, l := range plan {
+		fmt.Fprintf(out, "  %s\n", l)
+	}
+	treeBody += "\n### The fetch would send (dry run)\n\nTemplates; the values come from the records above.\n\n```\n" + strings.Join(plan, "\n") + "\n```\n"
+	sum := "dry run: " + fmt.Sprint(len(plan)) + " requests (templates), nothing sent"
+	review.Set(tree.ReviewTree, sum, treeBody, false)
+	dataPath := o.next(treeDataFile)
+	if _, err := os.Stat(dataPath); err == nil {
+		data, _, err := tree.LoadData(dataPath, t)
+		if err != nil {
+			return 1, err
+		}
+		review.SetPlan(tree.PlanSection(t, data))
+		built, err := tree.Build(s, t, data)
+		if err != nil {
+			return 1, err
+		}
+		fmt.Fprintf(out, "\nthe test of the records fetched before (%s), not written:\n", dataPath)
+		for _, st := range built.Scenario.Steps {
+			fmt.Fprintf(out, "  %-32s %-40s → %d\n", st.ID, st.Call, st.Expect)
+		}
+	}
+	fmt.Fprintf(out, "\nnext: change tree.yaml (order, tree, writes) and run it again; then fetch with -base-url\n")
+	return 0, o.writeReview(review, out)
+}
+
+// testHead heads the test file.
+func testHead(file string) string {
+	return " Generated by \"apitest-gen tree\" from " + filepath.Base(file) + " and " + treeDataFile + ".\n" +
+		" Do not edit: change tree.yaml and run apitest-gen tree again.\n" +
+		" It rebuilds the records in an empty instance (apitest.RunScenario, \"apitest-gen tree run\");\n" +
+		" \"apitest-gen tree run -update\" writes the answers next to the steps."
+}
+
+// keepAnswers are the answers of an earlier test for the steps the new one
+// still has.
+func keepAnswers(old *scenario.Snapshot, sc *scenario.Scenario) *scenario.Snapshot {
+	keep := *old
+	keep.Steps = nil
+	for _, sh := range old.Steps {
+		if sc.Step(sh.ID) != nil {
+			keep.Steps = append(keep.Steps, sh)
+		}
+	}
+	return &keep
 }
 
 // review loads tree-review_gen.md of an earlier step.
@@ -391,15 +486,24 @@ func splitList(s string) []string {
 // treeRun runs the scenario against an empty instance.
 func treeRun(o *treeOptions, out io.Writer) (int, error) {
 	if o.scenario == "" {
-		o.scenario = o.next(treeScenarioFile)
+		o.scenario = o.next(treeTestFile)
 	}
-	if o.golden == "" {
-		o.golden = o.next(treeGoldenFile)
+	if o.dryRun {
+		sc, err := scenario.Load(o.scenario)
+		if err != nil {
+			return 2, err
+		}
+		fmt.Fprintf(out, "dry run: nothing sent\n%s: %d steps", o.scenario, len(sc.Steps))
+		if sc.Golden != nil {
+			fmt.Fprintf(out, ", answers of %s", sc.Golden.Created)
+		}
+		fmt.Fprintln(out)
+		for _, st := range sc.Steps {
+			fmt.Fprintf(out, "  %-32s %-40s → %d\n", st.ID, st.Call, st.Expect)
+		}
+		return 0, nil
 	}
-	cfg := apitest.ScenarioConfig{Settings: o.settings, Scenario: o.scenario, Update: o.update, Unique: o.uniq}
-	if _, err := os.Stat(o.golden); err == nil || o.update {
-		cfg.Golden = o.golden
-	}
+	cfg := apitest.ScenarioConfig{Settings: o.settings, Scenario: o.scenario, Update: o.update, Unique: o.uniq, Golden: o.golden}
 	cfg.SpecPath = o.spec
 	cfg.BaseURL = o.baseURL
 	cfg.AllowRemoteWrites = o.remote
@@ -430,10 +534,9 @@ func treeRun(o *treeOptions, out io.Writer) (int, error) {
 	if o.baseURL == "" && o.settings == "" {
 		return 2, errors.New("-base-url is required: the empty instance the scenario runs against")
 	}
+	// every step for the review, and for the examples of -update
 	var exchanges []apitest.StepExchange
-	if o.update && !o.noExamples {
-		cfg.OnStep = func(ex apitest.StepExchange) { exchanges = append(exchanges, ex) }
-	}
+	cfg.OnStep = func(ex apitest.StepExchange) { exchanges = append(exchanges, ex) }
 	res, err := apitest.RunScenarioStandalone(context.Background(), cfg, apitest.StandaloneOptions{Out: out, Run: o.run, Skip: o.skip})
 	if err != nil {
 		return 2, err
@@ -449,24 +552,48 @@ func treeRun(o *treeOptions, out io.Writer) (int, error) {
 		review.Spec = cfg.SpecPath
 	}
 	sum, body, failed := tree.RunSection(res, cfg.BaseURL, o.uniq)
+	red := redact.New(nil)
+	red.AddSecret(tok)
+	red.AddSecret(forbidden)
+	runLog := make([]tree.Exchange, 0, len(exchanges))
+	for _, ex := range exchanges {
+		what := ex.ID
+		if !ex.Passed {
+			what += fmt.Sprintf(" (%s: %s)", ex.Outcome, ex.Message)
+		}
+		runLog = append(runLog, tree.Exchange{For: what, Method: ex.Method, Target: ex.Target, Request: ex.Body, HasRequest: ex.HasBody,
+			Status: ex.Status, Answer: ex.ResponseBody, Ms: ex.Duration.Milliseconds()})
+	}
 	if o.run != "" || o.skip != "" {
 		body = fmt.Sprintf("Only a part of the steps: -run %q -skip %q.\n\n", o.run, o.skip) + body
 	}
-	if cfg.Golden != "" && !o.update {
-		body += "\nCompared with the golden snapshot " + cfg.Golden + ".\n"
+	if !o.update {
+		switch {
+		case cfg.Golden != "":
+			body += "\nCompared with the golden snapshot " + cfg.Golden + ".\n"
+		case hasAnswers(o.scenario):
+			body += "\nCompared with the answers in " + o.scenario + ".\n"
+		default:
+			body += "\nNo answers yet: status, schema and checks only; run -update to write them.\n"
+		}
 	}
+	body += tree.RequestsBlock("Requests of the run", runLog, red)
 	review.Set(tree.ReviewRun, sum, body, failed)
 	if res.Failed {
 		if o.update {
-			fmt.Fprintf(out, "golden snapshot and examples not written: steps failed\n")
-			review.Set(tree.ReviewUpdate, "not written: steps failed", "Golden snapshot and examples not written: steps failed (section 4).\n", true)
+			fmt.Fprintf(out, "answers and examples not written: steps failed\n")
+			review.Set(tree.ReviewUpdate, "not written: steps failed", "Answers and examples not written: steps failed (section 4).\n", true)
 		}
 		return 1, o.writeReview(review, out)
 	}
 	if o.update {
-		fmt.Fprintf(out, "  written %s\n", o.golden)
-		body := fmt.Sprintf("Golden snapshot written: %s. Review it as a git diff; a later run without -update compares with it.\n", o.golden)
-		sum := "golden written"
+		where := o.golden
+		if where == "" {
+			where = o.scenario
+		}
+		fmt.Fprintf(out, "  answers written into %s\n", where)
+		body := fmt.Sprintf("Answers written into %s. Review them as a git diff; a later run without -update compares with them.\n", where)
+		sum := "answers written"
 		if !o.noExamples {
 			specPath := o.spec
 			if specPath == "" {
@@ -485,6 +612,12 @@ func treeRun(o *treeOptions, out io.Writer) (int, error) {
 		review.Set(tree.ReviewUpdate, sum, body, false)
 	}
 	return 0, o.writeReview(review, out)
+}
+
+// hasAnswers reports whether a test file holds the answers of a run.
+func hasAnswers(path string) bool {
+	sc, err := scenario.Load(path)
+	return err == nil && sc.Golden != nil
 }
 
 // writeTreeExamples writes the answers of a passed run into the spec, in
