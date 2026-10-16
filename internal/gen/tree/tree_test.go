@@ -1499,3 +1499,60 @@ func TestCheckLeadingDot(t *testing.T) {
 		t.Errorf("no problem: %v", problems)
 	}
 }
+
+// TestReviewTimeline: each step keeps its lines in the order they ran; the
+// Markdown has one line per step (a fetch only the failed requests), the
+// page the bodies; a later run reads the lines of the page back and keeps
+// those it does not write. Nothing is open on load, and a body cannot end
+// the data script.
+func TestReviewTimeline(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tree-review_gen.md")
+	d := LoadReview(path)
+	d.Set(ReviewFetch, "2 requests", "fetched", false)
+	d.SetTimeline(ReviewFetch, FetchTimeline([]Exchange{
+		{For: "docks under planets1", Method: "GET", Target: "/planets/mars/docks", Status: 200, Answer: []any{map[string]any{"id": 7, "note": "</script><b>x</b>"}}},
+		{For: "ships under docks1", Method: "GET", Target: "/docks/7/ships", Status: 404},
+	}, nil))
+	d.Set(ReviewRun, "FAILED: 2 steps", "ran", true)
+	d.SetTimeline(ReviewRun, []Entry{
+		{Step: "docks1.create", Method: "POST", Target: "/planets/mars/docks", Status: 201, Expect: 201, HasRequest: true, Request: map[string]any{"name": "North"}},
+		{Step: "docks1.read", Method: "GET", Target: "/docks/7", Status: 500, Expect: 200, Failed: true, Result: "FAILED: status 500"},
+	})
+	md, page := d.Render(), d.RenderHTML()
+	for _, want := range []string{
+		"### Requests in the order sent (2, 1 failed)", "| 2 | ships under docks1 | GET /docks/7/ships | 404 ✗ |",
+		"<details open><summary>Steps in the order they ran (2, 1 did not pass)", "| 1 | docks1.create | POST /planets/mars/docks | 201 ✓ |",
+		"| 2 | docks1.read | GET /docks/7 | 500 ✗ (expected 200) |", "[tree-review_gen.html](tree-review_gen.html)",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("markdown lacks %q:\n%s", want, md)
+		}
+	}
+	if strings.Contains(md, "/planets/mars/docks | 200") || strings.Contains(md, "North") {
+		t.Errorf("markdown with a request that passed or a body:\n%s", md)
+	}
+	if strings.Contains(page, "</script><b>") || strings.Contains(page, `class="step" id="run" open`) || !strings.Contains(page, `\u003c/script\u003e`) {
+		t.Errorf("page: the body must stay in the data, nothing open:\n%s", page)
+	}
+	if err := os.WriteFile(path, []byte(md), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(HTMLPath(path), []byte(page), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// a later run writes the run again: the fetch stays, the old lines of
+	// the run are replaced, the Markdown has them once
+	again := LoadReview(path)
+	if got := again.Timeline(ReviewFetch); len(got) != 2 || got[1].Step != "ships under docks1" || !got[1].Failed {
+		t.Fatalf("fetch read back: %+v", got)
+	}
+	again.Set(ReviewRun, "PASSED: 1 step", "ran", false)
+	again.SetTimeline(ReviewRun, []Entry{{Step: "docks1.create", Method: "POST", Target: "/planets/mars/docks", Status: 201}})
+	md = again.Render()
+	if strings.Count(md, "Requests in the order sent") != 1 || strings.Contains(md, "docks1.read") || !strings.Contains(md, "Steps in the order they ran (1, 0 did not pass)") {
+		t.Errorf("second run:\n%s", md)
+	}
+	if strings.Count(again.RenderHTML(), `"step":"docks1.read"`) != 0 {
+		t.Error("the lines of the run before stay on the page")
+	}
+}

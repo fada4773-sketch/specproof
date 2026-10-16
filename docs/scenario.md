@@ -58,7 +58,8 @@ starport/
     │   ├── tree.yaml                 # yours: which records, how they hang together
     │   ├── tree-data_gen.yaml        # generated: the records fetched (data of the stage)
     │   ├── tree-test_gen.yaml        # generated: the steps that rebuild them, and the answers of "tree run -update"
-    │   ├── tree-review_gen.md        # generated: next command, plan, a section per step, every request
+    │   ├── tree-review_gen.md        # generated: next command, plan, a section per step, one line per request and step
+    │   ├── tree-review_gen.html      # generated: every request and step with its bodies, in the order it ran
     │   ├── tree_test.go              # yours, optional: the same test in go test
     │   └── out/                      # reports, not committed
     └── regression/
@@ -72,6 +73,7 @@ starport/
 | `tree-data_gen.yaml` | `tree -base-url` | `tree` (to build again without fetching) | only if the data of that instance may be in git |
 | `tree-test_gen.yaml` | `tree` (the steps; the answers stay), `tree run -update` (the answers) | `tree run`, `RunScenario` | yes |
 | `tree-review_gen.md` | every step: `tree`, `tree -base-url`, `tree run`, `tree run -update` | you | yes |
+| `tree-review_gen.html` | the same steps | you (a browser); the next step reads its timelines back | like `tree-data_gen.yaml`: it holds the answers of the stage |
 | `regression-sample.yaml` | `regression init`, then you | `regression pre` | yes |
 | `regression/out/*` | `regression pre`, `post`, `diff` | `regression post`, the pipeline | no: real data of a stage |
 
@@ -84,18 +86,30 @@ the **plan** (the order with the sources of the bodies, and the tree with
 the records of the last fetch, the writes of each node and where its body
 comes from), then a status table (open, done, failed, outdated). The
 sections follow folded (`<details>`); a failed or outdated one is open.
-The sections of fetch and run end with **every request** they sent,
-folded: what it was for (node under a record, require, prefer, step),
-method, target, status, duration, the body sent and the answer in full;
-headers are not listed, tokens and secret fields are masked.
+Each section ends with its **timeline**, one line per request or step in
+the order it ran, without bodies: the fetch the requests that failed (and
+how many it sent), the test its steps in the order they will run with
+their checks, decisions and gaps, the run every step with status, time
+and result (a step that did not pass marked ✗), `-update` the steps whose
+answers became examples, in the order they ran.
+
+**The page.** `tree-review_gen.html`, next to it, is one self-contained
+file with every line of every step, in the same order: a click on a line
+opens the body sent and the answer as a tree in which every object and
+list folds (built when opened, long lists 100 at a time), so a fetch of
+thousands of requests stays fast. On load everything is closed; search
+(step, path, result) and "only failed" narrow the lines. Headers are not
+listed, tokens and secret fields are masked. Each run writes the page
+anew and keeps the timelines of the steps it did not run (it reads them
+back from the page).
 
 | Section | Written by | Holds |
 |---|---|---|
 | 1. Tree | `tree` (every run) | scope, the nodes with pick, where, require and writes, the params without value and who uses them, `ignore`, the changes of this run, what to check before the fetch; the problems when tree.yaml is wrong; with `-dry-run` the requests the fetch would send |
-| 2. Fetch | `tree -base-url` | the records per node with their keys, the notes of the fetch, records of nodes the tree no longer has, every request |
-| 3. Test | `tree` with records | the steps by kind, the seed the empty instance must hold, decisions, gaps and hints; the problems when the records do not fit `order` |
-| 4. Run | `tree run` | the verdict, the counts, every step that did not pass, every request |
-| 5. Update | `tree run -update` | the answers and the examples written, or why not |
+| 2. Fetch | `tree -base-url` | the records per node with their keys, the notes of the fetch, records of nodes the tree no longer has, the requests that failed in the order sent |
+| 3. Test | `tree` with records | the steps by kind, the seed the empty instance must hold, decisions and gaps outside the steps; the problems when the records do not fit `order`; every step in the order it will run, with its decisions and gaps |
+| 4. Run | `tree run` | the verdict, the counts, the steps that did not pass in the order they ran; every step in that order |
+| 5. Update | `tree run -update` | the answers and the examples written, or why not; the steps that gave the examples, in the order they ran |
 
 A step that changes what a later section was built from marks that section
 **outdated**: a tree proposed anew or merged with changes marks fetch,
@@ -787,7 +801,11 @@ first request and answer, and the read after a delete as named example
 under 404. Without `-update`, it compares every answer with the answers of
 the file if it has them: status, schema of the spec, the body as a subset
 of the kept one, the compared headers and the checks of the steps; a step
-without answer then fails (write them again with `-update`). Building the
+without answer then fails (write them again with `-update`). A saved value
+takes the type of the field it is filled into, in a body and in a kept
+answer: an id saved from a `Location` header is text, an integer field gets
+the number. The timeline of the run lists each step once; with `-update`
+the review says that every read was sent twice. Building the
 test again (`tree`) keeps the answers of the steps it still has. Exit code
 0 passed, 1 failed, 2 wrong usage.
 

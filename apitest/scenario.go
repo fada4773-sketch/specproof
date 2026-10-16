@@ -877,6 +877,7 @@ func (s *scenarioRunner) prepareStep(ctx context.Context, st *scenario.Step, c *
 			v = scenario.Clone(s.sent[st.BodyFrom])
 		} else {
 			v, _ = scenario.Fill(st.Body, s.vars)
+			v = coerceSchema(scenario.Clone(v), requestSchema(c))
 		}
 		v = s.makeUnique(st, c, v)
 		v = spec.Normalize(v)
@@ -938,6 +939,79 @@ func coerceParam(v any, p *openapi3.Parameter) any {
 		}
 	}
 	return v
+}
+
+// coerceSchema converts the scalars of a filled value into the types of its
+// schema, as coerceParam does for a parameter: a saved value is text when
+// it came from a header (the id of a Location), the field may be a number.
+func coerceSchema(v any, sch *openapi3.Schema) any {
+	if sch == nil {
+		return v
+	}
+	switch x := v.(type) {
+	case map[string]any:
+		for k, c := range x {
+			x[k] = coerceSchema(c, schemaProperty(sch, k))
+		}
+		return x
+	case []any:
+		if sch.Items == nil || sch.Items.Value == nil {
+			return x
+		}
+		for i, c := range x {
+			x[i] = coerceSchema(c, sch.Items.Value)
+		}
+		return x
+	}
+	switch {
+	case sch.Type.Is("string"):
+		if n, ok := v.(json.Number); ok {
+			return n.String()
+		}
+	case sch.Type.Is("integer") || sch.Type.Is("number"):
+		if str, ok := v.(string); ok {
+			if _, err := strconv.ParseFloat(str, 64); err == nil {
+				return json.Number(str)
+			}
+		}
+	}
+	return v
+}
+
+// schemaProperty is the schema of property k, also in allOf, oneOf and
+// anyOf; nil without.
+func schemaProperty(s *openapi3.Schema, k string) *openapi3.Schema {
+	if s == nil {
+		return nil
+	}
+	if ref := s.Properties[k]; ref != nil && ref.Value != nil {
+		return ref.Value
+	}
+	for _, refs := range []openapi3.SchemaRefs{s.AllOf, s.OneOf, s.AnyOf} {
+		for _, ref := range refs {
+			if ref != nil && ref.Value != nil {
+				if p := schemaProperty(ref.Value, k); p != nil {
+					return p
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// requestSchema is the schema of the body a case sends, nil without.
+func requestSchema(c *cases.Case) *openapi3.Schema {
+	if c == nil || c.Op == nil || c.Op.Op == nil || c.Op.Op.RequestBody == nil || c.Op.Op.RequestBody.Value == nil {
+		return nil
+	}
+	mt := c.MediaType
+	if mt == "" {
+		mt = "application/json"
+	}
+	if media := c.Op.Op.RequestBody.Value.Content.Get(mt); media != nil && media.Schema != nil {
+		return media.Schema.Value
+	}
+	return nil
 }
 
 func encodeStepBody(mt string, v any) ([]byte, error) {
@@ -1098,10 +1172,11 @@ func (s *scenarioRunner) compareGolden(st *scenario.Step, c *cases.Case, o *outc
 	if sh.HasBody && mode != compare.ModeSchema {
 		want, _ := scenario.Fill(s.uniqueValues(sh.Body), s.vars)
 		ignore := append(r.ignore(c), sh.Volatile...)
-		diffs = append(diffs, compare.Values(spec.Normalize(want), o.decoded, compare.Options{
+		schema := compare.Schema(c.Expect.Response, o.resp.Header.Get("Content-Type"))
+		diffs = append(diffs, compare.Values(spec.Normalize(coerceSchema(scenario.Clone(want), schema)), o.decoded, compare.Options{
 			Mode:       mode,
 			Ignore:     ignore,
-			Schema:     compare.Schema(c.Expect.Response, o.resp.Header.Get("Content-Type")),
+			Schema:     schema,
 			Unordered:  true,
 			IgnoreCase: r.cfg.CaseInsensitive,
 		})...)

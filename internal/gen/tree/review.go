@@ -3,9 +3,9 @@ package tree
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
-	"sort"
 	"strings"
 
 	"github.com/fada4773-sketch/specproof/apitest"
@@ -41,6 +41,10 @@ type ReviewDoc struct {
 	fresh                   map[string]bool
 	// plan is the plan on top: order, tree, writes, sources (PlanSection)
 	plan string
+	// timelines are the lines of each step in the order they ran; the page
+	// (tree-review_gen.html) shows them with their bodies and keeps them
+	timelines map[string][]Entry
+	page      string
 }
 
 type reviewSection struct {
@@ -57,7 +61,8 @@ var sectionRE = regexp.MustCompile(`<!-- tree:(\w+) \| ([^\n]*?) \| ([^\n]*?) \|
 // LoadReview reads the review of an earlier run; a missing file (or one
 // of an older form) gives an empty review.
 func LoadReview(path string) *ReviewDoc {
-	d := &ReviewDoc{sections: map[string]*reviewSection{}, fresh: map[string]bool{}}
+	d := &ReviewDoc{sections: map[string]*reviewSection{}, fresh: map[string]bool{}, timelines: map[string][]Entry{}, page: filepath.Base(HTMLPath(path))}
+	d.loadTimelines(HTMLPath(path))
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return d
@@ -124,6 +129,9 @@ func (d *ReviewDoc) Render() string {
 		fmt.Fprintf(&b, " · %s\n", d.File)
 	}
 	fmt.Fprintf(&b, "\n**Next:** %s\n", d.next())
+	if len(d.timelines) > 0 {
+		fmt.Fprintf(&b, "\nEvery request and step with its bodies, in the order it ran: [%s](%s)\n", d.page, d.page)
+	}
 	if d.plan != "" {
 		fmt.Fprintf(&b, "\n## Plan\n\n<!-- tree:plan -->\n%s\n<!-- /tree:plan -->\n", d.plan)
 	}
@@ -169,7 +177,9 @@ func (d *ReviewDoc) Render() string {
 			}
 		}
 		b.WriteString(body)
-		fmt.Fprintf(&b, "\n<!-- /tree:%s -->\n\n</details>\n", s)
+		// the timeline stands after the end mark: the page keeps it, a
+		// later run writes it anew
+		fmt.Fprintf(&b, "\n<!-- /tree:%s -->\n%s\n</details>\n", s, timelineMD(s, d.timelines[s], d.page))
 	}
 	return b.String()
 }
@@ -508,13 +518,28 @@ func ScenarioSection(built *Built) (string, string) {
 			fmt.Fprintf(&b, "| %s | %s | %s |\n", r.ID, cell(r.Request), cell(KeyText(r.Value, keyOf(r.Node))))
 		}
 	}
-	if len(built.Notes) > 0 {
-		notes := append([]Note(nil), built.Notes...)
-		sort.SliceStable(notes, func(i, j int) bool { return notes[i].Step < notes[j].Step })
-		fmt.Fprintf(&b, "\n### Decisions and gaps (%d)\n\n| Step | What | Why |\n|---|---|---|\n", len(notes))
-		for _, n := range notes {
+	// the notes of a step stand at that step in the timeline; the others
+	// (a node, a create that did not run) here, in the order they came
+	ids := map[string]bool{}
+	if built.Scenario != nil {
+		for _, st := range built.Scenario.Steps {
+			ids[st.ID] = true
+		}
+	}
+	var other []Note
+	for _, n := range built.Notes {
+		if !ids[n.Step] {
+			other = append(other, n)
+		}
+	}
+	if len(other) > 0 {
+		fmt.Fprintf(&b, "\n### Decisions and gaps outside the steps (%d)\n\n| Where | What | Why |\n|---|---|---|\n", len(other))
+		for _, n := range other {
 			fmt.Fprintf(&b, "| %s | %s | %s |\n", cell(n.Step), cell(n.What), cell(n.Why))
 		}
+	}
+	if len(other) < len(built.Notes) {
+		fmt.Fprintf(&b, "\n%d decisions and gaps stand at their step below.\n", len(built.Notes)-len(other))
 	}
 	return summary, b.String()
 }
@@ -569,10 +594,12 @@ func RunSection(res *apitest.Result, baseURL string, unique bool) (string, strin
 		}
 	}
 	if len(bad) > 0 {
-		fmt.Fprintf(&b, "\n### Steps that did not pass (%d)\n\n| Step | Status | Message |\n|---|---|---|\n", len(bad))
+		// in the order they ran; the timeline below has status and message
+		var names []string
 		for _, c := range bad {
-			fmt.Fprintf(&b, "| %s | %s | %s |\n", cell(c.Name), c.Status, cell(c.Message))
+			names = append(names, c.Name)
 		}
+		fmt.Fprintf(&b, "\nDid not pass (%d), in the order they ran: %s.\n", len(bad), strings.Join(names, ", "))
 	}
 	if res.Report != "" {
 		fmt.Fprintf(&b, "\nReport: %s\n", res.Report)

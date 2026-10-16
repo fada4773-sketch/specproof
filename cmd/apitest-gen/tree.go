@@ -534,8 +534,8 @@ func treeMain(o *treeOptions, out io.Writer) (int, error) {
 		if o.only != "" {
 			body = "Only " + o.only + " and what hangs below it was fetched again; the other records are from before.\n\n" + body
 		}
-		body += tree.RequestsBlock("Requests of the fetch", data.Log, red)
 		review.Set(tree.ReviewFetch, summary, body, false)
+		review.SetTimeline(tree.ReviewFetch, tree.FetchTimeline(data.Log, red))
 	default:
 		if _, err := os.Stat(dataPath); err != nil {
 			fmt.Fprintf(out, "no records yet: fetch them with -base-url <instance>\n")
@@ -565,6 +565,7 @@ func treeMain(o *treeOptions, out io.Writer) (int, error) {
 				body += "- " + p + "\n"
 			}
 			review.Set(tree.ReviewScenario, fmt.Sprintf("%d problems: fix tree.yaml", len(fe.Problems)), body, true)
+			review.SetTimeline(tree.ReviewScenario, nil)
 			if werr := o.writeReview(review, out); werr != nil {
 				return 1, werr
 			}
@@ -607,6 +608,7 @@ func treeMain(o *treeOptions, out io.Writer) (int, error) {
 	}
 	summary, body = tree.ScenarioSection(built)
 	review.Set(tree.ReviewScenario, summary, body, false)
+	review.SetTimeline(tree.ReviewScenario, tree.TestTimeline(built))
 	if !bytes.Equal(before, text) {
 		review.Outdate(tree.ReviewScenario, "the scenario changed after this run; run it again")
 	}
@@ -682,10 +684,15 @@ func (o *treeOptions) review(version string) *tree.ReviewDoc {
 
 // writeReview writes tree-review_gen.md with the sections of this run.
 func (o *treeOptions) writeReview(r *tree.ReviewDoc, out io.Writer) error {
-	if err := scenario.WriteFile(o.next(treeReviewFile), []byte(r.Render())); err != nil {
+	path := o.next(treeReviewFile)
+	if err := scenario.WriteFile(path, []byte(r.Render())); err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "  %s: the review, with the next step\n", o.next(treeReviewFile))
+	if err := scenario.WriteFile(tree.HTMLPath(path), []byte(r.RenderHTML())); err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "  %s: the review, with the next step\n", path)
+	fmt.Fprintf(out, "  %s: every request and step with its bodies, in the order it ran\n", tree.HTMLPath(path))
 	return nil
 }
 
@@ -772,17 +779,27 @@ func treeRun(o *treeOptions, out io.Writer) (int, error) {
 	red := redact.New(nil)
 	red.AddSecret(tok)
 	red.AddSecret(forbidden)
-	runLog := make([]tree.Exchange, 0, len(exchanges))
+	// the steps as they ran: the review lists them in this order
+	timeline := make([]tree.Entry, 0, len(exchanges))
 	for _, ex := range exchanges {
-		what := ex.ID
+		e := tree.Entry{Step: ex.ID, Method: ex.Method, Target: red.String(ex.Target), Status: ex.Status, Ms: ex.Duration.Milliseconds(),
+			Failed: !ex.Passed, HasRequest: ex.HasBody}
 		if !ex.Passed {
-			what += fmt.Sprintf(" (%s: %s)", ex.Outcome, ex.Message)
+			e.Result = red.String(fmt.Sprintf("%s: %s", ex.Outcome, ex.Message))
 		}
-		runLog = append(runLog, tree.Exchange{For: what, Method: ex.Method, Target: ex.Target, Request: ex.Body, HasRequest: ex.HasBody,
-			Status: ex.Status, Answer: ex.ResponseBody, Ms: ex.Duration.Milliseconds()})
+		if ex.HasBody {
+			e.Request = red.Value(ex.Body)
+		}
+		if ex.ResponseBody != nil {
+			e.Answer = red.Value(ex.ResponseBody)
+		}
+		timeline = append(timeline, e)
 	}
 	if o.run != "" || o.skip != "" {
 		body = fmt.Sprintf("Only a part of the steps: -run %q -skip %q.\n\n", o.run, o.skip) + body
+	}
+	if o.update {
+		body += "\nWith -update every read was sent twice, the second right after the step: what differs is volatile and not compared later. The timeline lists each step once.\n"
 	}
 	if !o.update {
 		switch {
@@ -794,8 +811,8 @@ func treeRun(o *treeOptions, out io.Writer) (int, error) {
 			body += "\nNo answers yet: status, schema and checks only; run -update to write them.\n"
 		}
 	}
-	body += tree.RequestsBlock("Requests of the run", runLog, red)
 	review.Set(tree.ReviewRun, sum, body, failed)
+	review.SetTimeline(tree.ReviewRun, timeline)
 	if res.Failed {
 		if o.update {
 			fmt.Fprintf(out, "answers and examples not written: steps failed\n")
@@ -816,15 +833,17 @@ func treeRun(o *treeOptions, out io.Writer) (int, error) {
 			if specPath == "" {
 				specPath = cfg.SpecPath
 			}
-			msg, err := writeTreeExamples(specPath, o.scenario, exchanges)
+			msg, examples, err := writeTreeExamples(specPath, o.scenario, exchanges)
 			if err != nil {
 				return 1, err
 			}
+			review.SetTimeline(tree.ReviewUpdate, examples)
 			fmt.Fprintf(out, "  %s: %s\n", specPath, msg)
 			body += fmt.Sprintf("\nExamples of the spec %s: %s.\n", specPath, msg)
 			sum += "; " + msg
 		} else {
 			body += "\nExamples not written (-no-examples).\n"
+			review.SetTimeline(tree.ReviewUpdate, nil)
 		}
 		review.Set(tree.ReviewUpdate, sum, body, false)
 	}
@@ -838,46 +857,48 @@ func hasAnswers(path string) bool {
 }
 
 // writeTreeExamples writes the answers of a passed run into the spec, in
-// place.
-func writeTreeExamples(specPath, scenarioPath string, run []apitest.StepExchange) (string, error) {
+// place; the timeline says which step gave which example, in the order
+// they ran.
+func writeTreeExamples(specPath, scenarioPath string, run []apitest.StepExchange) (string, []tree.Entry, error) {
 	if specPath == "" {
-		return "no spec given (-spec): examples not written", nil
+		return "no spec given (-spec): examples not written", nil, nil
 	}
 	s, err := spec.Load(context.Background(), specPath)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	sc, err := scenario.Load(scenarioPath)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	doc, err := yamldoc.Load(specPath)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	res, err := tree.Examples(s, doc, sc, run)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
+	timeline := tree.ExampleTimeline(s, sc, run)
 	if len(res.Problems) > 0 {
 		var parts []string
 		for _, p := range res.Problems {
 			parts = append(parts, p.Where+": "+p.Message)
 		}
-		return fmt.Sprintf("examples not written (%s)", strings.Join(parts, "; ")), nil
+		return fmt.Sprintf("examples not written (%s)", strings.Join(parts, "; ")), nil, nil
 	}
 	if !res.SpecChanged {
-		return "every example is up to date", nil
+		return "every example is up to date", timeline, nil
 	}
 	tmp, _, err := stageSpec(doc, specPath)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if err := commitSpec(tmp, specPath); err != nil {
 		os.Remove(tmp)
-		return "", err
+		return "", nil, err
 	}
-	return fmt.Sprintf("%d examples and %d schema examples written", res.Examples, res.SchemaExamples), nil
+	return fmt.Sprintf("%d examples and %d schema examples written", res.Examples, res.SchemaExamples), timeline, nil
 }
 
 // summary writes the counts of a run.

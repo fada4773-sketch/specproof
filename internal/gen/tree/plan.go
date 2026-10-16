@@ -4,8 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-
-	"github.com/fada4773-sketch/specproof/internal/redact"
 )
 
 // PlanSection is the plan on top of the review: the order of the creates
@@ -79,50 +77,6 @@ func PlanSection(t *Tree, d *Data) string {
 	}
 	walk(t.Roots, 0)
 	return b.String()
-}
-
-// RequestsBlock lists requests with their bodies, folded: what each was
-// for, method, target, status, duration, the body sent and the answer,
-// secrets masked.
-func RequestsBlock(title string, log []Exchange, red *redact.Redactor) string {
-	if len(log) == 0 {
-		return ""
-	}
-	if red == nil {
-		red = redact.New(nil)
-	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "\n<details><summary>%s (%d)</summary>\n\n", title, len(log))
-	for i, ex := range log {
-		status := fmt.Sprint(ex.Status)
-		if ex.Error != "" {
-			status = "no answer: " + red.String(ex.Error)
-		}
-		fmt.Fprintf(&b, "#### %d. %s %s → %s (%d ms)", i+1, ex.Method, red.String(ex.Target), status, ex.Ms)
-		if ex.For != "" {
-			fmt.Fprintf(&b, " · %s", ex.For)
-		}
-		b.WriteString("\n\n")
-		if ex.HasRequest {
-			b.WriteString("request\n\n" + jsonBlock(red.Value(ex.Request)))
-		}
-		if ex.Answer != nil {
-			b.WriteString("answer\n\n" + jsonBlock(red.Value(ex.Answer)))
-		}
-	}
-	b.WriteString("</details>\n")
-	return b.String()
-}
-
-func jsonBlock(v any) string {
-	if s, ok := v.(string); ok {
-		return "```\n" + strings.TrimSpace(s) + "\n```\n\n"
-	}
-	out, err := json.MarshalIndent(v, "", "  ")
-	if err != nil {
-		return "```\n" + fmt.Sprint(v) + "\n```\n\n"
-	}
-	return "```json\n" + string(out) + "\n```\n\n"
 }
 
 // PlanText is the plan for the terminal: the order, and the tree with the

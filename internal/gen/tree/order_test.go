@@ -1,6 +1,7 @@
 package tree
 
 import (
+	"encoding/json"
 	"errors"
 	"slices"
 	"strings"
@@ -396,5 +397,50 @@ func TestOrderMergeRelated(t *testing.T) {
 	}
 	if problems := Check(s, parse(t, string(b))); len(problems) > 0 {
 		t.Errorf("check after merge: %v\n%s", problems, b)
+	}
+}
+
+// TestSameRecordOnce: a record read by two nodes of its resource whose key
+// lists differ ([/id] and [/id, /name]) is one record: created once; a
+// create with the same request and body as one before is noted.
+func TestSameRecordOnce(t *testing.T) {
+	s := loadStarport(t)
+	_, base := stage(t)
+	file := strings.NewReplacer("    off: true\n", "",
+		"              shipPilot: GET /pilots/{pilotId} pilotId=.pilotId\n",
+		"              shipPilot:\n                call: GET /pilots/{pilotId}\n                path: {pilotId: .pilotId}\n                key: [/id, /name]\n").Replace(orderTree)
+	tr, d := fetch(t, s, file, base)
+	built, err := Build(s, tr, d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bodies := map[string]string{}
+	for _, st := range built.Scenario.Steps {
+		if st.Call != "POST /pilots" {
+			continue
+		}
+		b, _ := json.Marshal(st.Body)
+		if other, dup := bodies[string(b)]; dup {
+			t.Errorf("%s and %s create the same pilot: %s", other, st.ID, b)
+		}
+		bodies[string(b)] = st.ID
+	}
+	if len(bodies) == 0 {
+		t.Fatal("no pilot created")
+	}
+	for _, n := range built.Notes {
+		if strings.HasPrefix(n.What, "same request and body") {
+			t.Errorf("note: %+v", n)
+		}
+	}
+	// two creates that send the same: the second is noted
+	b := &builder{out: &Built{}, steps: []*scenario.Step{
+		{ID: "pilots1.create", Call: "POST /pilots", Body: map[string]any{"name": "Grace"}, HasBody: true},
+		{ID: "pilots2.create", Call: "POST /pilots", Body: map[string]any{"name": "Grace"}, HasBody: true},
+		{ID: "pilots3.create", Call: "POST /pilots", Body: map[string]any{"name": "Ada"}, HasBody: true},
+	}}
+	b.sameCreates()
+	if len(b.out.Notes) != 1 || b.out.Notes[0].Step != "pilots2.create" || b.out.Notes[0].What != "same request and body as pilots1.create" {
+		t.Errorf("notes: %+v", b.out.Notes)
 	}
 }

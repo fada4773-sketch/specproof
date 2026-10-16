@@ -129,7 +129,24 @@ func TestTreeProposeFetchRun(t *testing.T) {
 	}
 	review("### Seed", "mars", "| 1. Tree (tree.yaml) | done | up to date with the spec", "| 2. Fetch (tree-data_gen.yaml) | done |",
 		"| 3. Test (tree-test_gen.yaml) | done |", "### Records per node", "tree run -spec",
-		"## Plan", "order: ", "<summary>Requests of the fetch (", "#### 1. GET /")
+		"## Plan", "order: ", "### Requests in the order sent (", "Bodies of every request: [tree-review_gen.html]",
+		"<summary>Steps in the order they run (", "| 1 | ")
+	// the page: every request with its bodies, in the order sent
+	page := filepath.Join(dir, "tree-review_gen.html")
+	html := func(parts ...string) string {
+		t.Helper()
+		b, err := os.ReadFile(page)
+		if err != nil {
+			t.Fatalf("tree-review_gen.html: %v", err)
+		}
+		for _, p := range parts {
+			if !strings.Contains(string(b), p) {
+				t.Errorf("tree-review_gen.html lacks %q", p)
+			}
+		}
+		return string(b)
+	}
+	html(`<script id="review-data" type="application/json">`, `"fetch":[{"step":"`, `"scenario":[{"step":"`, "<details class=\"step\" id=\"fetch\">")
 	// 3. build again without fetching
 	code, out, _ = cli("tree", "-spec", specPath, "-file", file)
 	if code != 0 || !strings.Contains(out, "fetched before") {
@@ -146,7 +163,13 @@ func TestTreeProposeFetchRun(t *testing.T) {
 		t.Errorf("answers not written into the test: %v", err)
 	}
 	review("| 4. Run (tree run) | done | PASSED", "| 5. Update (tree run -update) | done | answers written", "examples", "### Seed", "**Next:** done",
-		"<summary>Requests of the run (", "request\n\n```json")
+		"Steps in the order they ran (", "| 1 | ", "Examples written, in the order their steps ran (")
+	// the run in the order it ran, the fetch of before kept; nothing open
+	// on load; no token
+	got := html(`"run":[{"step":"`, `"fetch":[{"step":"`, `"hasRequest":true`)
+	if strings.Contains(got, starportToken) || strings.Contains(got, "<details class=\"step\" id=\"run\" open") {
+		t.Error("the page shows the token, or opens a step on load")
+	}
 	if b, _ := os.ReadFile(filepath.Join(dir, "tree-review_gen.md")); strings.Contains(string(b), starportToken) {
 		t.Error("the review must not show the token")
 	}
@@ -174,7 +197,7 @@ func TestTreeProposeFetchRun(t *testing.T) {
 	if code != 1 || !strings.Contains(out, "FAIL") {
 		t.Errorf("a stage is no empty instance: %d\n%s", code, out)
 	}
-	review("| 4. Run (tree run) | failed | FAILED", "### Steps that did not pass", "| 5. Update (tree run -update) | done |", "**Next:** fix the failed steps")
+	review("| 4. Run (tree run) | failed | FAILED", "Did not pass (", "<details open><summary>Steps in the order they ran (", "| 5. Update (tree run -update) | done |", "**Next:** fix the failed steps")
 }
 
 func TestTreeUsage(t *testing.T) {

@@ -23,56 +23,7 @@ import (
 // under 404). Authentication steps get no example; apitest builds those
 // cases itself. A step whose request does not fit the schema is left out.
 func Examples(s *spec.Spec, doc *yamldoc.Doc, sc *scenario.Scenario, run []apitest.StepExchange) (*record.Result, error) {
-	type entry struct {
-		op   *spec.Operation
-		ex   apitest.StepExchange
-		name string
-	}
-	var entries []*entry
-	perOp := map[string][]*entry{}
-	v := spec.NewValidator()
-	statusSeen := map[string]bool{}
-	for _, ex := range run {
-		st := sc.Step(ex.ID)
-		if st == nil || !ex.Passed || st.Token != "" {
-			continue
-		}
-		op := s.Op(ex.OperationID)
-		if op == nil {
-			continue
-		}
-		key := fmt.Sprintf("%s %d", op.ID, ex.Status)
-		if statusSeen[key] {
-			continue
-		}
-		if !fits(v, op, ex) {
-			continue
-		}
-		statusSeen[key] = true
-		e := &entry{op: op, ex: ex}
-		if ex.Status >= 400 {
-			e.name = variant(ex.ID)
-		}
-		entries = append(entries, e)
-		perOp[op.ID] = append(perOp[op.ID], e)
-	}
-	for _, list := range perOp {
-		if len(list) < 2 {
-			continue
-		}
-		used := map[string]bool{}
-		for _, e := range list {
-			if e.name == "" {
-				e.name = cases.DefaultExample
-			}
-			base, n := e.name, 2
-			for used[e.name] {
-				e.name = fmt.Sprintf("%s-%d", base, n)
-				n++
-			}
-			used[e.name] = true
-		}
-	}
+	entries := pickExamples(s, sc, run)
 	tags := map[string][]any{}
 	var order []string
 	for _, e := range entries {
@@ -149,4 +100,79 @@ func fits(v *spec.Validator, op *spec.Operation, ex apitest.StepExchange) bool {
 		}
 	}
 	return true
+}
+
+// example is a step of a run that gives an example: its operation and the
+// name of the example (empty: the operation's only one).
+type example struct {
+	op   *spec.Operation
+	ex   apitest.StepExchange
+	name string
+}
+
+// pickExamples are the steps that give the examples, in the order they
+// ran: per operation and status the first step that passed with the
+// default token and fits the schema; names when an operation gets several.
+func pickExamples(s *spec.Spec, sc *scenario.Scenario, run []apitest.StepExchange) []*example {
+	var entries []*example
+	perOp := map[string][]*example{}
+	v := spec.NewValidator()
+	statusSeen := map[string]bool{}
+	for _, ex := range run {
+		st := sc.Step(ex.ID)
+		if st == nil || !ex.Passed || st.Token != "" {
+			continue
+		}
+		op := s.Op(ex.OperationID)
+		if op == nil {
+			continue
+		}
+		key := fmt.Sprintf("%s %d", op.ID, ex.Status)
+		if statusSeen[key] {
+			continue
+		}
+		if !fits(v, op, ex) {
+			continue
+		}
+		statusSeen[key] = true
+		e := &example{op: op, ex: ex}
+		if ex.Status >= 400 {
+			e.name = variant(ex.ID)
+		}
+		entries = append(entries, e)
+		perOp[op.ID] = append(perOp[op.ID], e)
+	}
+	for _, list := range perOp {
+		if len(list) < 2 {
+			continue
+		}
+		used := map[string]bool{}
+		for _, e := range list {
+			if e.name == "" {
+				e.name = cases.DefaultExample
+			}
+			base, n := e.name, 2
+			for used[e.name] {
+				e.name = fmt.Sprintf("%s-%d", base, n)
+				n++
+			}
+			used[e.name] = true
+		}
+	}
+	return entries
+}
+
+// ExampleTimeline is the timeline of -update: the steps whose answers
+// became examples of the spec, in the order they ran, with the example.
+func ExampleTimeline(s *spec.Spec, sc *scenario.Scenario, run []apitest.StepExchange) []Entry {
+	out := []Entry{}
+	for _, e := range pickExamples(s, sc, run) {
+		name := e.name
+		if name == "" {
+			name = "the example"
+		}
+		out = append(out, Entry{Step: e.ex.ID, Method: e.op.Method, Target: e.op.Path, Status: e.ex.Status,
+			Result: fmt.Sprintf("%s of %s, answer %d", name, e.op.ID, e.ex.Status)})
+	}
+	return out
 }

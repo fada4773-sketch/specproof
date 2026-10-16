@@ -136,6 +136,7 @@ func Build(s *spec.Spec, t *Tree, d *Data) (*Built, error) {
 	b.unauthorized()
 	b.deletes(order)
 	b.afterSaves()
+	b.sameCreates()
 	if len(b.problems) > 0 {
 		return nil, &FindingError{Problems: b.problems, Fixes: b.fixes}
 	}
@@ -488,32 +489,102 @@ func (b *builder) entity(r *Record) *Record {
 	return r
 }
 
-// entities finds the records that stand for others and the records the
-// scenario creates, with the names of their keys.
-func (b *builder) entities() {
-	// per kind and key the records that are the same; the first of a node
-	// that can create stands for them (a garden found by a search stands
-	// behind the garden of its moon), else the first
-	groups := map[string][]*Record{}
-	var order []string
+// sameCreates notes creates that send the same request and body as an
+// earlier one: two records of the stage with the same values (a field the
+// API keeps unique fails then), or one record read by nodes whose keys do
+// not match.
+func (b *builder) sameCreates() {
+	seen := map[string]string{}
+	for _, st := range b.steps {
+		if !strings.HasSuffix(st.ID, "."+WriteCreate) {
+			continue
+		}
+		body, _ := json.Marshal(st.Body)
+		path, _ := json.Marshal(st.Path)
+		k := st.Call + " " + string(path) + " " + string(body)
+		if first, dup := seen[k]; dup {
+			b.note(st.ID, "same request and body as "+first,
+				"two records of the stage with the same values, or one record read by two nodes whose key lists share no field; check the key of their nodes, or pick other records")
+			continue
+		}
+		seen[k] = st.ID
+	}
+}
+
+// sameRecords groups the records that are one record of the instance: of
+// one kind (resource, else node), equal in the keys both their nodes name.
+// Nodes of one resource may name different keys ([/id] and [/id, /isbn]):
+// the keys they share decide, so one book read by both is created once.
+func (b *builder) sameRecords() (map[string][]*Record, []string) {
+	type rec struct {
+		r    *Record
+		kind string
+	}
+	var list []rec
+	keysOf := map[string][][]string{} // per kind the key lists of its nodes
 	for _, r := range b.d.Records {
-		if r.Node.IsRequire || b.isView(r) {
+		if r.Node.IsRequire || b.isView(r) || KeyText(r.Value, keyOf(r.Node)) == "" {
 			continue
 		}
 		kind := r.Node.Name
 		if res := b.resourceOf(r.Node); res != nil {
 			kind = res.Name
 		}
-		key := KeyText(r.Value, keyOf(r.Node))
-		if key == "" {
-			continue
+		list = append(list, rec{r, kind})
+		k := keyOf(r.Node)
+		if !slices.ContainsFunc(keysOf[kind], func(x []string) bool { return slices.Equal(x, k) }) {
+			keysOf[kind] = append(keysOf[kind], k)
 		}
-		k := kind + "\x00" + key
+	}
+	// union of the records that agree in a shared key list
+	parent := make([]int, len(list))
+	for i := range parent {
+		parent[i] = i
+	}
+	var find func(int) int
+	find = func(i int) int {
+		if parent[i] != i {
+			parent[i] = find(parent[i])
+		}
+		return parent[i]
+	}
+	first := map[string]int{}
+	for i, x := range list {
+		own := keyOf(x.r.Node)
+		for _, other := range keysOf[x.kind] {
+			shared := slices.DeleteFunc(slices.Clone(own), func(p string) bool { return !slices.Contains(other, p) })
+			text := KeyText(x.r.Value, shared)
+			if len(shared) == 0 || text == "" {
+				continue
+			}
+			k := x.kind + "\x00" + strings.Join(shared, ",") + "\x00" + text
+			if j, ok := first[k]; ok {
+				parent[find(i)] = find(j)
+			} else {
+				first[k] = i
+			}
+		}
+	}
+	groups := map[string][]*Record{}
+	var order []string
+	for i, x := range list {
+		k := fmt.Sprint(find(i))
 		if groups[k] == nil {
 			order = append(order, k)
 		}
-		groups[k] = append(groups[k], r)
+		groups[k] = append(groups[k], x.r)
 	}
+	// order: the groups as their first records come
+	return groups, order
+}
+
+// entities finds the records that stand for others and the records the
+// scenario creates, with the names of their keys.
+func (b *builder) entities() {
+	// per kind and key the records that are the same; the first of a node
+	// that can create stands for them (a garden found by a search stands
+	// behind the garden of its moon), else the first
+	groups, order := b.sameRecords()
 	// several nodes with a create of their own hold the same records (the
 	// beds of a garden by id and by code): they take turns, so every
 	// create runs; else a node that borrows a create, else the first

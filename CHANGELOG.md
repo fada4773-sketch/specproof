@@ -218,6 +218,28 @@ contain breaking changes, which are listed here.
     it there once (it stood there again with each new `order`), and a
     merge no longer takes sources of the proposal whose node hangs
     elsewhere in the file.
+  - The review of `apitest-gen tree` stays small: each section of
+    `tree-review_gen.md` ends with its timeline, one line per request or
+    step in the order it ran (the fetch only the failed requests; the
+    test its steps in the order they will run, with the decisions and
+    gaps of each; the run every step, a failed one marked; `-update` the
+    steps that gave the examples). The bodies moved to
+    `tree-review_gen.html`: one self-contained page, every line opens its
+    request and answer as a tree in which every object and list folds,
+    built when opened (long lists 100 at a time), closed on load, with
+    search and "only failed"; each run keeps the timelines of the steps
+    it did not run.
+  - Scenario mode: a saved value takes the type of the field it is filled
+    into, in a request body and in the kept answer of the golden snapshot
+    (as parameters already did). An id saved from a `Location` header is
+    text; compared with an integer field that is not `readOnly`
+    (`shipId` of a log) a run after `-update` failed with
+    `EXAMPLE_MISMATCH`, and a body sent it as a string.
+  - `apitest-gen tree`: one record read by two nodes of its resource whose
+    `key` lists differ (`[/id]` and `[/id, /name]`) was created twice,
+    with the same body; the keys both nodes name now decide. A create
+    that still sends the same request and body as an earlier one is noted
+    at its step.
   - Token flags for both: `-token`, `-token-env`, `-forbidden-token`,
     `-forbidden-token-env`, `-header`. The settings file of a run is
     optional (spec, base URL, health, tokens, headers, report, unique).
