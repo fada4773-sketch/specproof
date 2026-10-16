@@ -148,7 +148,8 @@ func TestParseProblems(t *testing.T) {
 }
 
 func TestWhere(t *testing.T) {
-	rec := map[string]any{"year": 1974, "name": "North", "status": "OPEN", "route": map[string]any{"origin": "mars"}, "gone": nil}
+	rec := map[string]any{"year": 1974, "name": "North", "status": "OPEN", "route": map[string]any{"origin": "mars"}, "gone": nil,
+		"docks": []any{}, "label2": "", "cargo": map[string]any{}}
 	for _, c := range []struct {
 		field string
 		test  any
@@ -160,6 +161,9 @@ func TestWhere(t *testing.T) {
 		{"status", "!=CLOSED", true}, {"status", []any{"OPEN", "RESERVED"}, true}, {"status", []any{"X"}, false},
 		{"route.origin", "mars", true}, {"route.Origin", "mars", true}, {"name", "South", false}, {"year", 1974, true},
 		{"label", ">=1", false}, {"label", []any{"x"}, false}, {"name", ">M", true},
+		// empty is not present: a child that reads it reads nothing
+		{"docks", "present", false}, {"label2", "present", false}, {"cargo", "present", false},
+		{"docks", "absent", true}, {"label2", "absent", true}, {"docks", nil, true}, {"route", "present", true},
 	} {
 		if got := (Clause{Field: c.field, Test: c.test}).holds(rec); got != c.want {
 			t.Errorf("%s %v: got %v", c.field, c.test, got)
@@ -1432,5 +1436,35 @@ func TestKebab(t *testing.T) {
 		if got := kebab(in); got != want {
 			t.Errorf("%q: %q, want %q", in, got, want)
 		}
+	}
+}
+
+// TestFetchMessages: the notes of a fetch say what is wrong and how to fix
+// it: a path value that is an empty list, a field the record lacks (with
+// its fields, and the leading dot before a node name), a node with no
+// record to read from.
+func TestFetchMessages(t *testing.T) {
+	s := loadStarport(t)
+	docks := &Node{Name: "docks"}
+	ships := &Node{Name: "ships", Call: "GET /docks/{dockId}/ships", Path: map[string]any{"dockId": ".shipIds"}, Parent: docks}
+	scope := func(name string) bool { return name == "docks" || name == "ships" }
+	f := &fetcher{t: &Tree{}, scope: scope, data: &Data{}}
+	dock := &Record{ID: "docks1", Node: docks, Value: map[string]any{"id": 7, "name": "North", "shipIds": []any{}}}
+	_, err := f.requests(ships, lookupOp(s, ships.Call), dock)
+	if err == nil || !strings.Contains(err.Error(), "path dockId = .shipIds is an empty list") || !strings.Contains(err.Error(), "where: {shipIds: present}") {
+		t.Errorf("an empty list: %v", err)
+	}
+	none := func(string) *Record { return nil }
+	_, err = resolveFetch(".docks.id", dock, f.t, scope, none)
+	if err == nil || !strings.Contains(err.Error(), "its fields: id, name, shipIds") || !strings.Contains(err.Error(), "write docks.id without the leading dot") {
+		t.Errorf("a leading dot: %v", err)
+	}
+	_, err = resolveFetch(".code", dock, f.t, scope, none)
+	if err == nil || !strings.Contains(err.Error(), "reads the record the node runs under (docks)") {
+		t.Errorf("a missing field: %v", err)
+	}
+	_, err = resolveFetch("ships.id", dock, f.t, scope, none)
+	if err == nil || !strings.Contains(err.Error(), "fix: put the node ships above this one or earlier in the tree") {
+		t.Errorf("no record: %v", err)
 	}
 }

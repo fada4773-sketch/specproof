@@ -619,6 +619,9 @@ func (f *fetcher) requests(n *Node, op *spec.Operation, parent *Record) ([]reque
 		}
 	}
 	if pathList != "" {
+		if len(path[pathList].([]any)) == 0 {
+			return nil, emptyListError(n, pathList)
+		}
 		var out []request
 		for _, v := range path[pathList].([]any) {
 			p := maps.Clone(path)
@@ -658,6 +661,18 @@ func (f *fetcher) requests(n *Node, op *spec.Operation, parent *Record) ([]reque
 		out = append(out, request{path: target, query: q, header: header, body: body, hasBody: n.HasBody})
 	}
 	return out, nil
+}
+
+// emptyListError explains a path value that is an empty list: the node
+// sends nothing there and takes no record, so the records that need one of
+// its records (a source in order) cannot be built.
+func emptyListError(n *Node, param string) error {
+	src := fmt.Sprint(n.Path[param])
+	msg := fmt.Sprintf("path %s = %s is an empty list here: nothing was sent, so %s has no record below this one", param, src, n.Name)
+	if ref, ok := ParseRef(n.Path[param], nil); ok && ref.Node == "" && n.Parent != nil && ref.Field != "" {
+		return fmt.Errorf("%s\n  fix: let only records with values through at %s:\n         where: {%s: present}", msg, n.Parent.Name, ref.Field)
+	}
+	return errors.New(msg)
 }
 
 // isPlainList reports whether a value of the file is a literal list (one
@@ -735,13 +750,48 @@ func resolveFetch(v any, at *Record, t *Tree, scope func(string) bool, first fun
 		}
 	}
 	if rec == nil {
-		return nil, fmt.Errorf("%s: no record to read it from", ref)
+		return nil, fmt.Errorf("%s: no record of %s to read it from: %s is not above this node and has no record fetched before it\n"+
+			"  fix: put the node %s above this one or earlier in the tree, or give the value in params ($name)", ref, ref.Node, ref.Node, ref.Node)
 	}
 	val, ok := rec.Get(ref.Field)
 	if !ok {
-		return nil, fmt.Errorf("%s: %s has no field %q", ref, rec.ID, ref.Field)
+		return nil, missingField(ref, rec, scope)
 	}
 	return val, nil
+}
+
+// missingField explains a reference to a field a record lacks: the fields
+// it has, and the likely slip of a leading dot before a node name
+// (".planets.code" reads the field planets of the record itself).
+func missingField(ref Ref, rec *Record, scope func(string) bool) error {
+	msg := fmt.Sprintf("%s: the record %s has no field %q", ref, rec.ID, ref.Field)
+	if names := fieldNames(rec); len(names) > 0 {
+		msg += " (its fields: " + strings.Join(names, ", ") + ")"
+	}
+	first, rest, nested := strings.Cut(ref.Field, ".")
+	switch {
+	case ref.Node == "" && nested && scope != nil && scope(first):
+		return fmt.Errorf("%s\n  fix: %q is a node; write %s.%s without the leading dot (.field reads the record the node runs under, <node>.field the record of that node)",
+			msg, first, first, rest)
+	case ref.Node == "":
+		return fmt.Errorf("%s\n  fix: .field reads the record the node runs under (%s); name one of its fields, or <node>.field for the record of another node", msg, rec.Node.Name)
+	}
+	return fmt.Errorf("%s\n  fix: name one of its fields, or a node whose records have %q", msg, ref.Field)
+}
+
+// fieldNames are the top fields of a record and its saved values, sorted.
+func fieldNames(rec *Record) []string {
+	var out []string
+	if m, ok := rec.Value.(map[string]any); ok {
+		out = slices.Collect(maps.Keys(m))
+	}
+	for k := range rec.Saved {
+		if !slices.Contains(out, k) {
+			out = append(out, k)
+		}
+	}
+	slices.Sort(out)
+	return out
 }
 
 // Ancestor returns the record of the node with the name: r itself or a

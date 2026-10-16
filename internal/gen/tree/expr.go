@@ -252,7 +252,8 @@ func (n *Node) HoldsWith(rec any, fill func(any) any) bool {
 type noValue struct{}
 
 // holds tests one clause: present, absent, a value, one of a list, or a
-// comparison (">=1950", "<10", "!=OPEN").
+// comparison (">=1950", "<10", "!=OPEN"). An empty list, text or object is
+// not present: a child that reads it would read nothing.
 func (c Clause) holds(rec any) bool {
 	v, ok := Field(rec, c.Field)
 	if ok && v == nil {
@@ -262,9 +263,9 @@ func (c Clause) holds(rec any) bool {
 	case string:
 		switch t {
 		case "present":
-			return ok
+			return ok && !empty(v)
 		case "absent":
-			return !ok
+			return !ok || empty(v)
 		}
 		for _, op := range []string{">=", "<=", "!=", ">", "<"} {
 			if strings.HasPrefix(t, op) {
@@ -283,11 +284,24 @@ func (c Clause) holds(rec any) bool {
 		}
 		return false
 	case nil:
-		return !ok
+		return !ok || empty(v)
 	case noValue:
 		return false
 	}
 	return ok && text(v) == text(c.Test)
+}
+
+// empty reports whether a value holds nothing: "", [] or {}.
+func empty(v any) bool {
+	switch x := v.(type) {
+	case string:
+		return x == ""
+	case []any:
+		return len(x) == 0
+	case map[string]any:
+		return len(x) == 0
+	}
+	return false
 }
 
 // compare compares numerically when both sides are numbers, else as text

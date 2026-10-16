@@ -164,8 +164,31 @@ func TestOrderStrictBuild(t *testing.T) {
 	gone := parse(t, strings.Replace(orderTree, "              shipPilot: GET /pilots/{pilotId} pilotId=.pilotId\n",
 		"              shipPilot: GET /pilots/{pilotId} pilotId=.pilotId\n              crew: GET /pilots/{pilotId} pilotId=.pilotId\n", 1))
 	gone.Order[2].Values = map[string]any{"pilotId": "crew.id"}
-	if _, err := Build(s, gone, d); err == nil || !strings.Contains(err.Error(), "has no record of crew below or above it") {
+	_, err = Build(s, gone, d)
+	if err == nil || !strings.Contains(err.Error(), "have no record of crew below them") || !strings.Contains(err.Error(), "why: the data holds no record of crew at all") {
 		t.Errorf("a missing source: %v", err)
+	}
+	if err != nil && strings.Count(err.Error(), "line 5:") != 1 {
+		t.Errorf("one problem names all records: %v", err)
+	}
+	// records of the source, but none below one ship: the where to add
+	var ship *Record
+	for _, r := range d.Records {
+		if r.Node.Name == "ships" {
+			ship = r
+			break
+		}
+	}
+	lack := &Data{Source: d.Source}
+	for _, r := range d.Records {
+		if r.Node.Name != "shipPilot" || r.Parent != ship {
+			lack.Records = append(lack.Records, r)
+		}
+	}
+	_, err = Build(s, tr, lack)
+	if err == nil || !strings.Contains(err.Error(), "the record "+ship.ID+" has no record of shipPilot below it") ||
+		!strings.Contains(err.Error(), "at ships add where: {pilotId: present}") {
+		t.Errorf("a ship without its pilot: %v", err)
 	}
 }
 

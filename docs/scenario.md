@@ -320,7 +320,7 @@ name. A prefer no fetched record holds is noted.
 | `page` | `param` (page number or offset), `size: {name: n}`, `max` pages (default 1), `start`, `step`, `next` (JSON pointer of a cursor in the answer), `in: body` (with `param` a JSON pointer into the body) |
 | `pick` | a number (at random, seeded), `{first: n}`, `all`, or a list of keys (by the first key) |
 | `min` | in `require`: the answer must list at least this many elements (that hold its `where`) |
-| `where` | conditions on fields, all must hold: `present`, `absent`, a value, a list (one of), `>=`, `<=`, `>`, `<`, `!=` (numbers, else text: ISO dates compare); `any:` holds alternatives. A value may be a reference: `id: docks.pilotId` (or `.pilotId`) holds for the record the dock names, a reference to a list for one of its values |
+| `where` | conditions on fields, all must hold: `present` (there and not empty: not null, `""`, `[]` or `{}`), `absent` (missing, null or empty), a value, a list (one of), `>=`, `<=`, `>`, `<`, `!=` (numbers, else text: ISO dates compare); `any:` holds alternatives. A value may be a reference: `id: docks.pilotId` (or `.pilotId`) holds for the record the dock names, a reference to a list for one of its values |
 | `require` | named requests per candidate (`.field` is the candidate); each must answer 2xx and pass its own `where` |
 | `candidates` | how many candidates `require` checks at most |
 | `key` | JSON pointers that identify a record (default `/id`); records are matched by them |
@@ -618,11 +618,25 @@ sent. Per node and record above it:
 5. run the child nodes for each record taken.
 
 A path value that is a reference to a list (`dockCode=.docks`) sends one
-request per value. The same request is sent once. A request that fails is noted, and its
+request per value; an empty list sends none, and the note says which
+`where` lets only records with values through. The same request is sent once. A request that fails is noted, and its
 branch is left out; the fetch goes on. When `budget` is used up, the rest
 is not fetched. A node without records, candidates `where` or `require`
 left out, keys `pick` names that are not there, and every failed request
 are printed and listed in the review.
+
+A problem or note names what is wrong, then `why:` and `fix:` lines with
+the change to make:
+
+```
+line 24: order: ships: {pilotId: shipPilot.id}: the record ships1 has no record of shipPilot below it, so pilotId of the body has no value
+  why: the fetch took no record of shipPilot under it (the notes of the fetch say why: an empty list, a failed request, where or require left all out)
+  fix: let only ships records with a record of shipPilot through: at ships add where: {pilotId: present} (or require shipPilot with min: 1), then fetch again (-node ships)
+   or: name another source for pilotId in this line of order, or remove {pilotId: …} there
+```
+
+A reference to a field the record lacks lists the fields it has; `.docks.id`
+(a leading dot before a node name) gets the hint to write `docks.id`.
 
 ### The scenario
 
@@ -1014,7 +1028,7 @@ apitest-gen regression post -spec <openapi.yaml> -base-url <url> [tokens] [-out 
 apitest-gen regression diff -pre <snapshot> -post <snapshot> [-out dir] [-sample <file>] [-fail-on …] [-ignore …] [-junit <file>]
 ```
 
-`apitest-gen tree help` and `apitest-gen regression help` list all flags.
+`apitest-gen tree -help` (also `help`, `-h`, `--help`) explains the whole syntax of `tree.yaml` and lists all flags; `apitest-gen regression help` lists its flags.
 
 ## Limits
 

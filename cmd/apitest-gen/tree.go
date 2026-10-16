@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -64,8 +65,162 @@ Usage:
              into it and the examples into the spec instead; both write
              their section into tree-review_gen.md. Exit code 1 if a step
              fails (for CI).
-
+` + treeSyntax + `
 Flags:
+`
+
+// treeSyntax explains tree.yaml for -help.
+const treeSyntax = `
+THE TREE FILE (tree.yaml)
+
+A node is one request and the records it answers with. The records are
+filtered (where, require), picked (pick), and every child node (each) runs
+once per picked record. write says how the test creates, changes and
+deletes a record of the node in an empty instance.
+
+  order:                          # the plan of the test (see ORDER)
+    - pilots
+    - docks
+    - ships: {pilotId: shipPilot.id}
+  params:                         # values no record gives, read as $name
+    season: summer
+  where:                          # for every record of a resource, at every node
+    Dock.status: [OPEN, RESERVED]
+  prefer:                         # picked first, the rest filled with others
+    Dock.name: [North]
+  scope:                          # what the generator proposes
+    tags: [Dock, Ship]            #   only these tags (all without)
+    exclude: {tags: [Admin], ops: [runMaintenance]}   # * matches any text
+    deps: false                   #   true: also reads of other tags that give needed values
+  seed: 1                         # random picks repeat with the same seed
+  budget: 2000                    # a fetch sends at most this many requests
+  tree:
+    planets:
+      call: GET /planets
+      pick: [mars]
+      key: [/code]
+      write: {create: none}       # the instance holds the planets (seed)
+      each:
+        docks:
+          call: GET /planets/{code}/docks
+          path: {code: .code}     # .code: the planet this node runs under
+          where: {status: OPEN}
+          pick: 2
+          key: [/id]
+          write:
+            create: POST /planets/{code}/docks
+            update: PUT /docks/{dockId}
+            delete: DELETE /docks/{dockId}
+          each:
+            dock: GET /docks/{dockId} dockId=.id     # short form: one line
+            ships:
+              call: GET /docks/{dockId}/ships
+              path: {dockId: .id}
+              pick: all
+              write:
+                create: POST /docks/{dockId}/ships
+              each:
+                shipPilot: GET /pilots/{pilotId} pilotId=.pilotId
+    pilots:
+      call: GET /pilots
+      pick: 3
+      write: {create: POST /pilots}
+  ignore:                         # operations never proposed again
+    - GET /health
+
+VALUES (in path, query, header, body, write, order, params)
+
+  .field          a field of the record the node runs under (in a write:
+                  of the record itself); a dot path: route.originId, items.0.id
+  node.field      a field of the record of that node above, else of the
+                  first record of a node fetched before (a root further up)
+  $name           the value of params; a node whose $name has no value is
+                  left out of the fetch
+  '{{a}}-{{b}}'   a text composed of references (quote it in YAML)
+  anything else   sent as it is; a list as a query value sends one request
+                  per value; a reference to a list in a path does the same
+
+  Mind the dot: .docks.id reads the field "docks" of the record itself;
+  docks.id reads the record of the node docks.
+
+KEYS OF A NODE
+
+  call            METHOD /path or the operationId; a node only reads: GET,
+                  or a POST with read: true
+  path, query, header   parameter values: {name: value}
+  body            the body of a POST with read: true
+  read            true: this POST only reads (a search); the fetch sends it
+  pick            3 (at random, by seed) | {first: 3} | all | [mars, venus]
+                  (records whose first key has these values)
+  where           conditions on fields; all must hold:
+                    status: OPEN              equal
+                    status: [OPEN, RESERVED]  one of them
+                    capacity: ">=5"           also <=, >, <, != (numbers,
+                                              else text: ISO dates compare)
+                    pilotId: present          there and not empty: not
+                                              null, "", [] or {}
+                    pilotId: absent           missing, null or empty
+                    any: {name: present, label: present}   one must hold
+  require         named requests per candidate, each must answer 2xx (and
+                  pass its own where); min: n = its list holds n at least
+                    require:
+                      ships:
+                        call: GET /docks/{dockId}/ships
+                        path: {dockId: .id}
+                        min: 1
+                  (a path with {…} in a one-line {…} mapping is no valid
+                  YAML: write such a mapping as a block)
+  candidates      require checks at most this many candidates
+  key             JSON pointers that identify a record (default [/id])
+  save            values of the answer under a name: {etag: header ETag},
+                  {no: /number}
+  items           JSON pointer of the list in the answer (/content)
+  page            {param: page, size: {pageSize: 50}, max: 3}; also start,
+                  step, next (pointer of a cursor), in: body
+  each            the child nodes
+  off             true: the node and its children are not fetched
+
+KEYS OF write
+
+  create          POST /path, or none: the API cannot create it (seed)
+  update, patch, delete   the request; variants by another key:
+                  update-by-name: PUT /docks/name/{name} name=.name
+  <any other name>   an action: open: POST /docks/{dockId}/open
+  A write in long form takes:
+    call, path, query, header   the request (short: POST /path p=value)
+    body          sent as it is, or "from <node>": built from that record
+    change        update/patch: {field: value}, or auto (one field changed)
+    expect        the status (default: the lowest documented 2xx)
+    save          values of the answer, read later as $name
+    onSeed        true: an update, patch or action also runs on a record
+                  of the seed
+    off           true: not used
+  A write leaves out what follows from its node: the path values the node
+  reads with, the key of the record, body from the node itself.
+
+ORDER
+
+  order names every node with a create, in the order the test creates
+  them; deletes run the other way round, at the end.
+    - docks                         the create of docks runs here
+    - ships: {pilotId: shipPilot.id}   the body field pilotId takes the key
+                                    of the record of shipPilot below each
+                                    ship (or of a node above it)
+    - docks.update                  a step at this place: read, list,
+                                    update, patch, a variant, an action
+  The first run writes order; later runs add new creates, marked
+  "# new: check its place". Every run checks it before anything is sent.
+
+MESSAGES
+
+  A problem names the line of tree.yaml, then "why:" and "fix:" lines:
+    line 5: order: ships: {pilotId: shipPilot.id}: the record ships1 has no
+    record of shipPilot below it, so pilotId of the body has no value
+      why: the fetch took no record of shipPilot under it (…)
+      fix: … at ships add where: {pilotId: present} …, then fetch again (-node ships)
+  The notes of a fetch (printed and in tree-review_gen.md) say why a node
+  took no records: a failed request, an empty list, where or require.
+  docs/scenario.md has the full reference.
 `
 
 // tokenFlags are the token flags of tree and regression.
@@ -120,7 +275,7 @@ type treeOptions struct {
 }
 
 func treeCommand(args []string, stdout, stderr io.Writer) int {
-	if len(args) > 0 && (args[0] == "help" || args[0] == "-h") {
+	if len(args) > 0 && args[0] == "help" || slices.ContainsFunc(args, isHelpFlag) {
 		fmt.Fprint(stdout, treeUsage)
 		fs, _ := treeFlags("tree", stdout)
 		fs.PrintDefaults()
@@ -155,6 +310,12 @@ func treeCommand(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "apitest-gen %s: %v\n", treeName(sub), err)
 	}
 	return code
+}
+
+// isHelpFlag reports whether an argument asks for the help: -h, -help,
+// --help.
+func isHelpFlag(a string) bool {
+	return a == "-h" || a == "-help" || a == "--help" || a == "--h"
 }
 
 func treeName(sub string) string {

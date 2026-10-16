@@ -190,6 +190,18 @@ func TestTreeUsage(t *testing.T) {
 	if code, out, _ := cli("tree", "help"); code != 0 || !strings.Contains(out, "tree run") || !strings.Contains(out, "-update") {
 		t.Errorf("help: %d %s", code, out)
 	}
+	// -help, also after run and other flags, explains the whole file
+	for _, args := range [][]string{{"tree", "-help"}, {"tree", "--help"}, {"tree", "-h"}, {"tree", "run", "-help"}, {"tree", "-spec", "x.yaml", "-help"}} {
+		code, out, _ := cli(args...)
+		if code != 0 {
+			t.Errorf("%v: code %d", args, code)
+		}
+		for _, want := range []string{"THE TREE FILE", "KEYS OF A NODE", "KEYS OF write", "ORDER", "VALUES", "present", "Flags of run:"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("%v: no %q", args, want)
+			}
+		}
+	}
 	// a broken tree file
 	if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
 		t.Fatal(err)
