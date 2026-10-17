@@ -65,8 +65,12 @@ type builder struct {
 	deps     map[*Record][]*Record
 	ids      map[string]int
 	sent     map[string]bool
-	steps    []*scenario.Step
-	scope    func(string) bool
+	// sending are the fields sentValue is resolving: a create whose path
+	// takes the field from the record itself (PUT /docks/{dockId}
+	// dockId=.dockId) would ask for it again and again
+	sending map[sentField]bool
+	steps   []*scenario.Step
+	scope   func(string) bool
 	// writeSaved are the names writes save ($receiptNo reads them in the
 	// scenario); stage holds the value of params for each, used when no
 	// write that saves it runs.
@@ -108,7 +112,7 @@ func Build(s *spec.Spec, t *Tree, d *Data) (*Built, error) {
 		s: s, t: t, d: d, m: model.Detect(s, nil), out: &Built{},
 		canon: map[*Record]*Record{}, created: map[*Record]bool{}, keyVar: map[*Record]map[string]string{},
 		byValue: map[string][]keyRef{}, etag: map[*Record]string{}, createID: map[*Record]string{},
-		readID: map[*Record]string{}, deps: map[*Record][]*Record{}, ids: map[string]int{}, sent: map[string]bool{},
+		readID: map[*Record]string{}, deps: map[*Record][]*Record{}, ids: map[string]int{}, sent: map[string]bool{}, sending: map[sentField]bool{},
 		scope: t.names(), writeSaved: map[string]bool{}, stage: map[string]any{}, strict: t.Strict(),
 		slotOf: map[*scenario.Step]string{}, changes: map[*scenario.Step]*Record{}, reader: map[*scenario.Step]*Record{},
 	}
@@ -381,6 +385,12 @@ func (b *builder) noSourceRecord(ids []string, e *OrderEntry, field string, ref 
 	return msg + f.change(), f
 }
 
+// sentField is a field of a record whose sent value is being resolved.
+type sentField struct {
+	r     *Record
+	field string
+}
+
 // sentValue is the value the create of a record sent in a field when order
 // gives its source (the pilotId of a ship: the pilot's placeholder).
 func (b *builder) sentValue(r *Record, field string) (any, bool) {
@@ -393,7 +403,14 @@ func (b *builder) sentValue(r *Record, field string) (any, bool) {
 		return nil, false
 	}
 	// a path value of the create named like the field (the moonId of a
-	// garden created at /moons/{moonId}/gardens)
+	// garden created at /moons/{moonId}/gardens); one that reads the field
+	// of the record itself is the record's own value
+	key := sentField{e, strings.ToLower(field)}
+	if b.sending[key] {
+		return nil, false
+	}
+	b.sending[key] = true
+	defer delete(b.sending, key)
 	if w, _ := b.createOf(e.Node); w != nil {
 		for p, v := range w.Path {
 			if strings.EqualFold(p, field) {

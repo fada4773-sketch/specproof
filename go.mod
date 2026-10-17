@@ -2,6 +2,8 @@ module github.com/fada4773-sketch/specproof
 
 go 1.26
 
+toolchain go1.27.2
+
 require (
 	github.com/brianvoe/gofakeit/v7 v7.17.1
 	github.com/dlclark/regexp2 v1.12.0

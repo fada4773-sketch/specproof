@@ -121,23 +121,24 @@ func TestParseProblems(t *testing.T) {
 		"tree: {a: {path: {}}}":                 "call is missing",
 		"tree: {a: {call: GET /a, color: red}}": `unknown key "color"`,
 		"tree: {a: {call: GET /a, pick: zero}}": "a number, all",
-		"tree: {a: {call: GET /a, pick: {x: 1}}}":                 "a number, all",
-		"tree: {a: {call: GET /a, items: content}}":               "JSON pointer",
-		"tree: {a: {call: GET /a, key: [id]}}":                    "no JSON pointer",
-		"tree: {a: {call: GET /a, save: {x: id}}}":                "JSON pointer (/id)",
-		"tree: {a: {call: GET /a, read: maybe}}":                  "true or false",
-		"tree: {a: {call: GET /a, candidates: 0}}":                "positive number",
-		"tree: {a: {call: GET /a, page: {max: 2}}}":               "page.param is missing",
-		"tree: {a: {call: GET /a, page: {param: p, in: header}}}": "query or body",
-		"tree: {a: {call: GET /a, write: {remove: none}}}":        `only create can be none`,
-		"tree: {a: {call: GET /a, write: {create: {expect: 1}}}}": "HTTP status",
-		"tree: {a: {call: GET /a, write: {create: {path: {}}}}}":  "call is missing",
-		"tree: {a: GET /a x}":                                     "is no name=value",
-		"tree: {a: get a/b}":                                      "METHOD /path",
-		"tree: {a: GET /a, b: {call: GET /b, each: {a: GET /c}}}": "used twice",
-		"tree: {'a b': GET /a}":                                   "letters, digits",
-		"tree: {a: {call: GET /a, where: [1]}}":                   "mapping of fields",
-		"ignore: x":                                               "list of operations",
+		"tree: {a: {call: GET /a, pick: {x: 1}}}":                        "a number, all",
+		"tree: {a: {call: GET /a, items: content}}":                      "JSON pointer",
+		"tree: {a: {call: GET /a, key: [id]}}":                           "no JSON pointer",
+		"tree: {a: {call: GET /a, save: {x: id}}}":                       "JSON pointer (/id)",
+		"tree: {a: {call: GET /a, read: maybe}}":                         "true or false",
+		"tree: {a: {call: GET /a, candidates: 0}}":                       "positive number",
+		"tree: {a: {call: GET /a, page: {max: 2}}}":                      "page.param is missing",
+		"tree: {a: {call: GET /a, page: {param: p, in: header}}}":        "query or body",
+		"tree: {a: {call: GET /a, write: {remove: none}}}":               `only create can be none`,
+		"tree: {a: {call: GET /a, write: {create: none, onSeed: true}}}": "onSeed belongs to one write, not to write; move it below the write (a.write.update.onSeed)",
+		"tree: {a: {call: GET /a, write: {create: {expect: 1}}}}":        "HTTP status",
+		"tree: {a: {call: GET /a, write: {create: {path: {}}}}}":         "call is missing",
+		"tree: {a: GET /a x}":                                            "is no name=value",
+		"tree: {a: get a/b}":                                             "METHOD /path",
+		"tree: {a: GET /a, b: {call: GET /b, each: {a: GET /c}}}":        "used twice",
+		"tree: {'a b': GET /a}":                                          "letters, digits",
+		"tree: {a: {call: GET /a, where: [1]}}":                          "mapping of fields",
+		"ignore: x":                                                      "list of operations",
 	} {
 		_, err := Parse([]byte(text))
 		if err == nil || !strings.Contains(err.Error(), want) {
@@ -742,6 +743,33 @@ tree:
 	d2.Records[1].Value.(map[string]any)["id"] = 5
 	if _, err := Build(s, tr2, d2); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestBuildCreateReadsItsOwnField: a create whose path takes a field of the
+// record itself sends the record's value; the build ends.
+func TestBuildCreateReadsItsOwnField(t *testing.T) {
+	s := loadStarport(t)
+	tr := parse(t, `
+order:
+  - docks
+tree:
+  docks:
+    call: GET /planets/{code}/docks
+    path: {code: mars}
+    key: [/id]
+    write:
+      create: PUT /docks/{dockId} dockId=.dockId
+`)
+	d := &Data{Records: []*Record{{ID: "docks1", Node: tr.Node("docks"), Request: "GET /x",
+		Value: map[string]any{"id": 5, "dockId": "D-5", "name": "North", "capacity": 4}}}}
+	b, err := Build(s, tr, d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	i := slices.IndexFunc(b.Scenario.Steps, func(st *scenario.Step) bool { return st.Call == "PUT /docks/{dockId}" })
+	if i < 0 || b.Scenario.Steps[i].Path["dockId"] != "D-5" {
+		t.Errorf("the create sends the dock's own dockId: %+v", b.Scenario.Steps)
 	}
 }
 

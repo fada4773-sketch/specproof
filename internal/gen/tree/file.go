@@ -748,6 +748,19 @@ func (p *parser) where(v *yaml.Node, name string) (all, anyOf []Clause) {
 
 var writeKeys = []string{"call", "path", "query", "header", "body", "change", "expect", "save", "onSeed", "off"}
 
+// writeForm reports whether v reads as a write: a request, an operationId
+// or a mapping with a call. An action named like a key of a write (save,
+// change …) is one; onSeed: true is not.
+func writeForm(v *yaml.Node) bool {
+	switch v.Kind {
+	case yaml.ScalarNode:
+		return v.ShortTag() == "!!str" && v.Value != "" && (Method(v.Value) != "" || !strings.Contains(v.Value, " "))
+	case yaml.MappingNode:
+		return valueOf(v, "call") != nil
+	}
+	return false
+}
+
 func (p *parser) writes(v *yaml.Node, name string) map[string]*Write {
 	if v.Kind != yaml.MappingNode {
 		p.errf(v, "%s.write must be a mapping (create, update, patch, delete)", name)
@@ -758,6 +771,10 @@ func (p *parser) writes(v *yaml.Node, name string) map[string]*Write {
 		k, val := v.Content[i], v.Content[i+1]
 		if !nameForm(k.Value) {
 			p.errf(k, "%s.write: %q: create, update, patch, delete (also update-by-<key> …), or the name of an action (letters, digits, _ and -)", name, k.Value)
+			continue
+		}
+		if slices.Contains(writeKeys, k.Value) && !writeForm(val) {
+			p.errf(k, "%s.write.%s: %s belongs to one write, not to write; move it below the write (%s.write.update.%s)", name, k.Value, k.Value, name, k.Value)
 			continue
 		}
 		w := &Write{Kind: k.Value, Line: k.Line, value: val}
