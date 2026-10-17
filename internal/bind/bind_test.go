@@ -245,3 +245,33 @@ func TestHeuristicAcrossGroups(t *testing.T) {
 		t.Errorf("gateId: %+v", b)
 	}
 }
+
+// x-apitest-bind: false binds a parameter to nothing: neither a link nor
+// the heuristic gives it a value, so the case sends its example.
+func TestBindFalse(t *testing.T) {
+	s := load(t, "bind.yaml")
+	for _, c := range [][2]string{{"getAuthor", "authorId"}, {"getBook", "bookId"}} {
+		for _, p := range s.Op(c[0]).Params {
+			if p.Name == c[1] {
+				if p.Extensions == nil {
+					p.Extensions = map[string]any{}
+				}
+				p.Extensions["x-apitest-bind"] = false
+			}
+		}
+	}
+	set, err := Resolve(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range [][2]string{{"getAuthor", "authorId"}, {"getBook", "bookId"}} {
+		if b := bindingOf(t, s, set, c[0], c[1]); b != nil {
+			t.Errorf("%s.%s is bound: %+v", c[0], c[1], b)
+		}
+	}
+	for _, f := range set.Findings {
+		if strings.Contains(f.Where, "getAuthor") {
+			t.Errorf("finding for a parameter bound to nothing: %+v", f)
+		}
+	}
+}

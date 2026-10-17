@@ -2,7 +2,8 @@
 // response (FR-PARAM-01 rank 1, FR-PARAM-03/05/06) and extracts those values.
 //
 // Sources, in order of precedence:
-//  1. x-apitest-bind at the parameter,
+//  1. x-apitest-bind at the parameter (false: the parameter is bound to
+//     nothing and keeps its example),
 //  2. OpenAPI links in a 2xx response of the producing operation,
 //  3. a heuristic for path parameters within the same resource group.
 package bind
@@ -91,7 +92,10 @@ func (b *Binding) CrossGroup() bool {
 
 // Set holds all bindings of a spec.
 type Set struct {
-	byParam  map[string]*Binding
+	byParam map[string]*Binding
+	// off are the parameters with x-apitest-bind: false; no link and no
+	// heuristic binds them.
+	off      map[string]bool
 	Findings []spec.Finding
 }
 
@@ -130,7 +134,7 @@ func (set *Set) By(op *spec.Operation) []*Binding {
 // Resolve determines the bindings of all operations. Errors in explicit
 // declarations are returned before any request is sent (NFR-08).
 func Resolve(s *spec.Spec) (*Set, error) {
-	set := &Set{byParam: map[string]*Binding{}}
+	set := &Set{byParam: map[string]*Binding{}, off: map[string]bool{}}
 	var errs []string
 
 	// 1. x-apitest-bind
@@ -138,6 +142,10 @@ func Resolve(s *spec.Spec) (*Set, error) {
 		for _, p := range op.Params {
 			raw, ok := p.Extensions["x-apitest-bind"]
 			if !ok {
+				continue
+			}
+			if raw == false {
+				set.off[paramKey(op.ID, p)] = true
 				continue
 			}
 			b, err := explicit(s, op, p, raw)
@@ -171,7 +179,7 @@ func Resolve(s *spec.Spec) (*Set, error) {
 	// 3. heuristic for path parameters without explicit binding
 	for _, op := range s.Ops {
 		for _, p := range op.Params {
-			if p.In != openapi3.ParameterInPath || set.byParam[paramKey(op.ID, p)] != nil {
+			if p.In != openapi3.ParameterInPath || set.byParam[paramKey(op.ID, p)] != nil || set.off[paramKey(op.ID, p)] {
 				continue
 			}
 			if b := heuristic(s, op, p, func(producer *spec.Operation) bool { return set.acceptable(producer, op) }); b != nil {
@@ -255,7 +263,7 @@ func (set *Set) dependsOn(op, target *spec.Operation) bool {
 func explicit(s *spec.Spec, op *spec.Operation, p *openapi3.Parameter, raw any) (*Binding, error) {
 	m, ok := raw.(map[string]any)
 	if !ok {
-		return nil, fmt.Errorf("expected an object with from and pointer or header")
+		return nil, fmt.Errorf("expected an object with from and pointer or header, or false")
 	}
 	from, _ := m["from"].(string)
 	if from == "" {
@@ -322,7 +330,7 @@ func (set *Set) addLink(s *spec.Spec, producer *spec.Operation, code, name strin
 			continue
 		}
 		key := paramKey(consumer.ID, p)
-		if set.byParam[key] != nil {
+		if set.byParam[key] != nil || set.off[key] {
 			continue // x-apitest-bind or an earlier link wins
 		}
 		set.byParam[key] = &Binding{Consumer: consumer, Param: p, Producer: producer, Source: src, Kind: Link}

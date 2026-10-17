@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/getkin/kin-openapi/openapi3"
 	"gopkg.in/yaml.v3"
 
 	"github.com/fada4773-sketch/specproof/apitest"
@@ -42,7 +43,8 @@ type starport struct {
 	sent     []string
 	// location answers a POST of a ship with a Location header only
 	location bool
-	// code adds the header X-Ship-Code to the answer of a POST of a ship
+	// code adds the headers X-Ship-Code, X-Ship-Id and Location to the
+	// answer of a POST of a ship, which keeps its body
 	code bool
 }
 
@@ -113,6 +115,8 @@ func (sp *starport) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			table[id] = body
 			if segs[0] == "ships" && sp.code {
 				w.Header().Set("X-Ship-Code", fmt.Sprintf("SHIP-%d", id))
+				w.Header().Set("X-Ship-Id", strconv.Itoa(id))
+				w.Header().Set("Location", fmt.Sprintf("/ships/%d", id))
 			}
 			if segs[0] == "ships" && sp.location {
 				w.Header().Set("Location", fmt.Sprintf("/ships/%d", id))
@@ -1488,6 +1492,79 @@ func TestBindSource(t *testing.T) {
 		if _, ok := saveSource(from); ok {
 			t.Errorf("saveSource(%q) converts", from)
 		}
+	}
+}
+
+// A value saved from a header becomes x-apitest-bind with that header at
+// the parameter that uses it; apitest then reads the header of a fresh
+// instance and passes. A header value is text: in an integer body field it
+// is sent as a number.
+func TestRecordHeaderBinding(t *testing.T) {
+	for _, header := range []string{"Location", "X-Ship-Id"} {
+		t.Run(header, func(t *testing.T) {
+			specPath, filePath := workspace(t)
+			analyse(t, specPath, filePath)
+			edit(t, filePath, func(f *File) {
+				_ = yamldoc.SetNode(step(t, f, "POST /ships").node, keySave, valueNode(map[string]any{"shipId": "header " + header}))
+			})
+			sp := newStarport()
+			sp.code = true
+			srv := httptest.NewServer(sp)
+			defer srv.Close()
+			res := record(t, specPath, filePath, srv)
+			if len(res.Problems) > 0 || strings.Contains(notes(res.Notes), CodeSchema) {
+				t.Fatalf("problems:\n%s\nnotes:\n%s", notes(res.Problems), notes(res.Notes))
+			}
+			if !strings.Contains(read(t, specPath), "x-apitest-bind: {from: createShip, header: "+header+"}") {
+				t.Errorf("spec:\n%s", read(t, specPath))
+			}
+			if id := sp.bookings[1]["shipId"]; id != json.Number("1") {
+				t.Errorf("booking sent shipId %#v, want the number 1", id)
+			}
+			fresh := newStarport()
+			fresh.code = true
+			fsrv := httptest.NewServer(fresh)
+			defer fsrv.Close()
+			apitest.Run(t, apitest.Config{SpecPath: specPath, BaseURL: fsrv.URL, Tags: []string{"Dock", "Ship", "Booking"}, DeleteLast: true, DisableReports: true})
+		})
+	}
+	// an answer without the body the spec documents is reported
+	specPath, filePath := workspace(t)
+	analyse(t, specPath, filePath)
+	edit(t, filePath, func(f *File) {
+		_ = yamldoc.SetNode(step(t, f, "POST /ships").node, keySave, valueNode(map[string]any{"shipId": "header Location"}))
+	})
+	sp := newStarport()
+	sp.location = true
+	srv := httptest.NewServer(sp)
+	defer srv.Close()
+	res := record(t, specPath, filePath, srv)
+	if !strings.Contains(notes(res.Notes), "RESPONSE_SCHEMA line 38 POST /ships: the answer 201 has no body, but the spec documents application/json") {
+		t.Errorf("notes:\n%s", notes(res.Notes))
+	}
+}
+
+func TestCoerceNode(t *testing.T) {
+	var schema openapi3.Schema
+	if err := json.Unmarshal([]byte(`{"allOf": [{"type": "object", "properties": {"id": {"type": "integer"}, "tags": {"type": "array", "items": {"type": "string"}}}}],
+		"properties": {"ratio": {"type": "number"}, "code": {"type": "string"}, "name": {"type": "integer"}}}`), &schema); err != nil {
+		t.Fatal(err)
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal([]byte("{id: '7', ratio: '0.5', code: 12, tags: [1, x], name: Ada, other: '3'}"), &doc); err != nil {
+		t.Fatal(err)
+	}
+	in := doc.Content[0]
+	out := coerceNode(in, &schema, 0)
+	got := text(decode(out))
+	if want := `{"code":"12","id":7,"name":"Ada","other":"3","ratio":0.5,"tags":["1","x"]}`; got != want {
+		t.Errorf("coerced %s, want %s", got, want)
+	}
+	if text(decode(in)) != `{"code":12,"id":"7","name":"Ada","other":"3","ratio":"0.5","tags":[1,"x"]}` {
+		t.Errorf("the input changed: %s", text(decode(in)))
+	}
+	if same := coerceNode(out, &schema, 0); same != out {
+		t.Error("a body without change is copied")
 	}
 }
 

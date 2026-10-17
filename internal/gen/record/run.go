@@ -274,6 +274,9 @@ func (st *Step) request(vars map[string]any) (*request, []string) {
 	if st.Body != nil {
 		n, miss := fill(st.Body, vars)
 		missing = append(missing, miss...)
+		if m := requestMedia(st.Op); m != nil && m.Schema != nil {
+			n = coerceNode(n, m.Schema.Value, 0)
+		}
 		r.body, r.hasBody, r.bodyNode = decode(n), true, n
 	}
 	return r, missing

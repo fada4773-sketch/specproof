@@ -34,6 +34,8 @@ contain breaking changes, which are listed here.
 
 ### Features
 
+- `x-apitest-bind: false` binds a parameter to nothing: no link and no
+  heuristic gives it a value, the case sends its example.
 - `apitest-gen record`: an optional mapping `vars` at the top of the
   record file gives fixed values a name for every entry (`{{bookId}}`); a
   value may combine the ones above it (`key: "{{bookId}}-{{bookCode}}"`),
@@ -354,6 +356,19 @@ contain breaking changes, which are listed here.
 
 ### Fixed
 
+- `apitest-gen record`: a guessed binding is written as the record file
+  says instead of freezing apitest's guess. A parameter whose value an
+  entry saves gets `x-apitest-bind` to that entry's operation (also when
+  apitest guessed another one, e.g. `body /id` of a POST of the same tag
+  whose key is in a header); a fixed value (written in the entry or from
+  `vars`) gets `x-apitest-bind: false`.
+- `apitest-gen record`: a value saved from a header (always text) is sent
+  as a number in a body field of type `integer` or `number`, and a number
+  in a `string` field as text; before, `shipId: '{{shipId}}'` sent `"1"`
+  and the answer violated the schema.
+- `apitest-gen record`: an answer without body for a response that
+  documents a JSON body is reported (`RESPONSE_SCHEMA`) instead of being
+  passed over silently.
 - `apitest-gen record -analyse` no longer proposes a `Tags` order that
   apitest refuses ("Config.Tags lists … before …, but … depends on …
   through bindings"): the bindings of path parameters come first, and a body

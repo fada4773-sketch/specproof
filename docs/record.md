@@ -201,7 +201,7 @@ depend on set to `repeat` too.
 |---|---|
 | `/id`, `/items/0/code` | a JSON pointer into the answer body |
 | `/` | the whole answer body |
-| `header Location` | a header of the answer; `Location` gives its last path segment, like apitest; any other header (`header X-Request-Id`) gives its value as text |
+| `header Location` | a header of the answer; `Location` gives its last path segment, like apitest; any other header (`header X-Request-Id`) gives its value as text. In a body field of type `integer` or `number` the text is sent as a number. |
 | `request /code` | a JSON pointer into the body this entry sent, after its placeholders were filled in |
 | `request /` | the whole body sent |
 | `request path dockId` | the value of a path parameter sent |
@@ -466,14 +466,27 @@ components:
       x-apitest-bind: {from: createDock, pointer: /id}
 ```
 
-The source is the `save` of the record file when the same operation saves
-the value (`header Location`, `request /code` become `header: Location`,
-`pointer: /code, source: request`). Otherwise it is the guess, checked
-against the stored answer of the producer: an explicit binding reads only
-that one place, while the guess also tries the `Location` header and the
+The record file decides where the value comes from, not the guess:
+
+| The entry's value for the parameter | Written |
+|---|---|
+| `'{{name}}'` saved by an entry above (`/id`, `header X-Ship-Id`, `request /code`) | a binding to the operation of that entry, whichever operation apitest guessed: `{from: createPilot, pointer: /id}`, `{from: createShip, header: X-Ship-Id}`, `{from: createPilot, pointer: /code, source: request}` |
+| a fixed value: written in the entry (`id: 7`) or from `vars` | `x-apitest-bind: false`: apitest binds nothing and sends the example |
+| a saved value whose source a binding cannot name (`/`, `request path dockId`) of another operation | `x-apitest-bind: false`, the recorded value is the example |
+| none of these (no entry, or an ignored one) | the guess, checked against the stored answer of the producer |
+
+A guess apitest makes from a POST of the same tag can be wrong: a POST
+that answers `{id: 101, …}` (a ticket) and the key of its record in the
+header `X-Ship-Id` makes apitest guess `body /id` for every `{id}` of the
+tag. With `save: {shipId: header X-Ship-Id}` at the POST and the values
+of the other entries from their own sources, `record` writes the right
+binding at each parameter. The `BIND` note shows what apitest guessed
+before.
+
+The check against the stored answer: an explicit binding reads only that
+one place, while the guess also tries the `Location` header and the
 request body, so `record` takes the place the stored answer has the value
-at. If the record file takes the value from another operation than apitest
-guesses, the guess is kept and a `BIND` note shows both. A parameter several
+at. A parameter several
 operations share (at the path, or a `$ref`) gets the binding once when all
 of them take the value from the same place, else each operation its own copy.
 

@@ -41,7 +41,7 @@ type Problem struct {
 var fixes = map[string]string{
 	KindNotBuildable:  "give the case the value it lacks: an example in the spec, a default or enum in the schema, Config.Params (\"$apitest\" or the values of the defaults file), or skip it with x-apitest-skip",
 	KindExampleSchema: "change the example or the schema so they agree; apitest fails the case otherwise",
-	KindBinding:       "x-apitest-bind needs {from: <operationId>, pointer: /field} (or header: Location, source: request); a link needs the operationId and the parameters of an existing operation",
+	KindBinding:       "x-apitest-bind needs {from: <operationId>, pointer: /field} (or header: Location, source: request), or false; a link needs the operationId and the parameters of an existing operation",
 	KindCases:         "the cases cannot be built; fix the spec at the place named",
 	KindHeuristic:     "declare where the value comes from: x-apitest-bind: {from: <operationId>, pointer: /field} at the parameter, or a link in the 2xx response of the producer; \"apitest-gen record\" writes it for the bindings it can check",
 	KindValidation:    "the spec breaks a rule of OpenAPI; fix it at the place named",

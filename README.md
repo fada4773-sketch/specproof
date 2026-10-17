@@ -302,7 +302,7 @@ apitest.Run(t, apitest.Config{
 
 3. Without either, a heuristic looks for the producing POST of the same tag: the collection in front of the parameter (`POST /workflows` for `/workflows/{workflowId}` and `/workflows/by-id/{workflowId}`), a POST named after the resource (`POST /workflow` for `workflowCode`), or a POST whose body has a field with the parameter's name. From that POST it takes a response field with the parameter's name, otherwise `id`, otherwise the `Location` header, otherwise the field from the sent body. Field names match case-insensitively (`WorkflowId` in the body, `workflowId` in the path). Each heuristic resolution is listed as a spec finding, so you can make it explicit. If a heuristic source turns out empty (the producer succeeded, but its body has no such field) and `Config.Params` has a value for the parameter, that value is used with a warning instead of skipping the dependent cases.
 
-Headers work too: `x-apitest-bind: { from: createOrganization, header: Location }` takes the last path segment of `Location: /v1/organizations/a0ee…`. If the producer fails, the dependent cases are `SKIPPED` with the cause instead of failing on their own. When a PUT changes a bound key, the following cases use the value that was actually stored.
+`x-apitest-bind: false` switches a guess off: the parameter is bound to nothing and sends its example (a fixed key from seed data). Headers work too: `x-apitest-bind: { from: createOrganization, header: Location }` takes the last path segment of `Location: /v1/organizations/a0ee…`. If the producer fails, the dependent cases are `SKIPPED` with the cause instead of failing on their own. When a PUT changes a bound key, the following cases use the value that was actually stored.
 
 Across tags the heuristic only uses a POST named after the resource (`POST /organizations` for `organizationId`), and never a binding that would create a cycle between cases or tags; anything else across tags must be explicit (`x-apitest-bind` or `links`). Bindings also decide the order of the groups: if deployments reference organizations, all organization cases run first, and `deleteOrganization` runs after `deleteDeployment`.
 
@@ -579,7 +579,7 @@ All extensions are optional. A spec without any extension works as long as it ha
 | Extension | Where | Meaning |
 |---|---|---|
 | `x-apitest-skip: "<reason>"` | operation, named example | Skip the case; the reason is shown in the report. |
-| `x-apitest-bind: {from, pointer \| header}` | parameter | Take the value from an earlier response. |
+| `x-apitest-bind: {from, pointer \| header}` | parameter | Take the value from an earlier response; `false` binds the parameter to nothing (no link, no guess), it keeps its example. |
 | `x-apitest-compare: schema \| subset \| exact` | operation, response, example | Override the comparison mode. |
 | `x-apitest-ignore: [<pointer or field>]` | operation, response | Exclude fields from value comparison. |
 | `x-apitest-compare-unordered: true` | response, array schema | Compare arrays independent of order. |

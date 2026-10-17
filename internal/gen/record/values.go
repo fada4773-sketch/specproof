@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -261,6 +262,95 @@ func coerce(v any, s *openapi3.Schema) any {
 		}
 	}
 	return spec.Normalize(v)
+}
+
+// coerceNode returns a filled-in body whose texts and numbers have the
+// type the schema declares at their place: a value saved from a header
+// ("1") in an integer field becomes 1, a number in a string field a text.
+// Nodes without change are shared, changed ones are copies.
+func coerceNode(n *yaml.Node, s *openapi3.Schema, depth int) *yaml.Node {
+	if n == nil || s == nil || depth > 32 {
+		return n
+	}
+	switch n.Kind {
+	case yaml.ScalarNode:
+		switch value.Type(s) {
+		case "integer", "number":
+			if n.Tag != "!!str" {
+				break
+			}
+			tag := ""
+			if _, err := strconv.ParseInt(n.Value, 10, 64); err == nil {
+				tag = "!!int"
+			} else if _, err := strconv.ParseFloat(n.Value, 64); err == nil && value.Type(s) == "number" {
+				tag = "!!float"
+			}
+			if tag != "" {
+				c := *n
+				c.Tag, c.Style = tag, 0
+				return &c
+			}
+		case "string":
+			if n.Tag == "!!int" || n.Tag == "!!float" {
+				c := *n
+				c.Tag, c.Style = "!!str", yaml.SingleQuotedStyle
+				return &c
+			}
+		}
+	case yaml.MappingNode, yaml.SequenceNode:
+		var c *yaml.Node
+		for i, child := range n.Content {
+			var sub *openapi3.Schema
+			switch {
+			case n.Kind == yaml.SequenceNode:
+				if s.Items != nil {
+					sub = s.Items.Value
+				}
+			case i%2 == 0:
+				continue
+			default:
+				sub = propertySchema(s, n.Content[i-1].Value, 0)
+			}
+			x := coerceNode(child, sub, depth+1)
+			if x == child {
+				continue
+			}
+			if c == nil {
+				cp := *n
+				cp.Content = slices.Clone(n.Content)
+				c = &cp
+			}
+			c.Content[i] = x
+		}
+		if c != nil {
+			return c
+		}
+	}
+	return n
+}
+
+// propertySchema is the schema of a property of an object schema, looked
+// up through allOf, oneOf and anyOf; nil if none declares it.
+func propertySchema(s *openapi3.Schema, name string, depth int) *openapi3.Schema {
+	if s == nil || depth > 32 {
+		return nil
+	}
+	if p := s.Properties[name]; p != nil {
+		return p.Value
+	}
+	for _, parts := range [][]*openapi3.SchemaRef{s.AllOf, s.OneOf, s.AnyOf} {
+		for _, part := range parts {
+			if part != nil {
+				if p := propertySchema(part.Value, name, depth+1); p != nil {
+					return p
+				}
+			}
+		}
+	}
+	if ap := s.AdditionalProperties.Schema; ap != nil {
+		return ap.Value
+	}
+	return nil
 }
 
 // listOf is the list in an answer: the answer itself if it is a list, else

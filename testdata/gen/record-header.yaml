@@ -1,0 +1,100 @@
+openapi: 3.0.3
+info:
+  title: Starport with keys in headers
+  version: "1.0"
+# createShip answers with a ticket in the body (id) and the key of the ship
+# in the header X-Ship-Id. apitest guesses every {id} of the tag Ship and
+# the {shipId} of Booking from createShip's body /id, which is wrong for
+# all of them.
+paths:
+  /pilots:
+    post:
+      operationId: createPilot
+      tags: [Pilot]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Named"
+      responses:
+        "201":
+          description: created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Record"
+  /ships:
+    post:
+      operationId: createShip
+      tags: [Ship]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Named"
+      responses:
+        "201":
+          description: accepted; the key of the ship is in X-Ship-Id
+          headers:
+            X-Ship-Id:
+              schema: {type: integer}
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Record"
+  /ship-pilots/{id}:
+    get:
+      operationId: getShipPilot
+      tags: [Ship]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: integer}}
+      responses:
+        "200":
+          description: the pilot
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Record"
+  /ship-docks/{id}:
+    get:
+      operationId: getShipDock
+      tags: [Ship]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: integer}}
+      responses:
+        "200":
+          description: a dock of the seed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Record"
+  /bookings/{shipId}:
+    get:
+      operationId: listShipBookings
+      tags: [Booking]
+      parameters:
+        - {name: shipId, in: path, required: true, schema: {type: integer}}
+      responses:
+        "200":
+          description: the bookings of a ship
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Record"
+components:
+  schemas:
+    Named:
+      type: object
+      required: [name]
+      properties:
+        name: {type: string}
+    Record:
+      type: object
+      required: [id, name]
+      properties:
+        id: {type: integer}
+        name: {type: string}

@@ -110,6 +110,9 @@ func (w *writer) step(st *Step, r *request, resp *Response, named bool, v *spec.
 		return
 	}
 	if resp.Body == nil {
+		if m := responseMedia(op, code); m != nil && m.Schema != nil {
+			w.res.note(CodeSchema, st.where(), "the answer %s has no body, but the spec documents %s for it; apitest will report it (save from a header works anyway)", code, m.Type)
+		}
 		return
 	}
 	pl := w.response(op, code)
