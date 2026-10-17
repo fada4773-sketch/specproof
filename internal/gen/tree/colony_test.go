@@ -249,8 +249,23 @@ func TestColonyStepByStep(t *testing.T) {
 	b2, _ := tr.Bytes()
 	out2 := string(b2)
 	again := parse(t, out2)
-	if problems := Check(s, again); len(problems) > 0 {
+	// the gardens name a person, which the test creates now: the check asks
+	// for the source, -fix adds the read of it below the gardens
+	if problems := Check(s, again); len(problems) != 1 || !strings.Contains(problems[0], "order: gardens.personId holds the id of a person the test creates") {
 		t.Fatalf("check: %v\n%s", problems, out2)
+	}
+	// and the persons move above the gardens, which take their key now
+	again, done, err := Repair(s, again)
+	if err != nil || len(done) != 2 || !strings.Contains(done[1], "move - persons above - gardens") {
+		t.Fatalf("-fix: %v %v", done, err)
+	}
+	if problems := Check(s, again); len(problems) > 0 {
+		b, _ := again.Bytes()
+		t.Fatalf("check after -fix: %v\n%s", problems, b)
+	}
+	if e := again.Entry("gardens"); e == nil || e.Values["personId"] != "gardenPerson.id" || again.Node("gardenPerson") == nil || again.Node("gardenPerson").Parent.Name != "gardens" {
+		b, _ := again.Bytes()
+		t.Errorf("the person of a garden below it, and its source:\n%s", b)
 	}
 	if !strings.Contains(out2, "tags: [Planet, Moon, Garden, Bed, Person]") || again.Node("persons") == nil {
 		t.Errorf("persons added:\n%s", out2)

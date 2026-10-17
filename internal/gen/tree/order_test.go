@@ -161,23 +161,35 @@ func TestOrderStrictBuild(t *testing.T) {
 	if res, log := runEmpty(t, built); res.Failed {
 		t.Fatalf("the scenario failed:\n%s", log)
 	}
-	// without the source the ship keeps the pilot of the stage: a hint
+	// without the source the ship would keep the pilot of the stage, which
+	// the empty instance does not have: the build stops and names it
 	plain := parse(t, strings.Replace(orderTree, "  - ships: {pilotId: shipPilot.id}\n", "  - ships\n", 1))
-	built, err = Build(s, plain, d)
-	if err != nil {
-		t.Fatal(err)
+	_, err = Build(s, plain, d)
+	if err == nil || !strings.Contains(err.Error(), "order: ships.pilotId holds the id of a pilot the test creates, but order gives it no source") ||
+		!strings.Contains(err.Error(), "- ships → - ships: {…, pilotId: shipPilot.id} (-fix does it)") {
+		t.Errorf("a ship without the source of its pilot: %v", err)
 	}
-	hint := false
-	for _, n := range built.Notes {
-		hint = hint || strings.Contains(n.Why, "give the source in order (pilotId: <node>.id)")
-	}
-	for _, st := range built.Scenario.Steps {
-		if st.Call == "POST /docks/{dockId}/ships" && strings.HasPrefix(text(st.Body.(map[string]any)["pilotId"]), "{{") {
-			t.Errorf("nothing is guessed with an order: %+v", st.Body)
+	// a ship without a pilot needs none
+	var lone []*Record
+	for _, r := range d.Records {
+		if r.Node.Name == "shipPilot" {
+			continue
 		}
+		if r.Node.Name == "ships" {
+			c := *r
+			v := map[string]any{}
+			for k, x := range r.Value.(map[string]any) {
+				if k != "pilotId" {
+					v[k] = x
+				}
+			}
+			c.Value = v
+			r = &c
+		}
+		lone = append(lone, r)
 	}
-	if !hint {
-		t.Errorf("the hint names the source: %+v", built.Notes)
+	if _, err := Build(s, tr, &Data{Source: d.Source, Records: lone}); err != nil && strings.Contains(err.Error(), "no record of shipPilot") {
+		t.Errorf("ships without a pilot: %v", err)
 	}
 	// a source no record has stops the build
 	gone := parse(t, strings.Replace(orderTree, "              shipPilot: GET /pilots/{pilotId} pilotId=.pilotId\n",
@@ -383,8 +395,9 @@ func TestOrderHeadOnce(t *testing.T) {
 }
 
 // TestOrderMergeRelated: a source of the proposal whose node hangs
-// elsewhere in the file (not below or above the created one) is left out,
-// so the order a merge writes passes the check.
+// elsewhere in the file (not below or above the created one) is left out;
+// the check then asks for the pilot of a ship (the pilots are created),
+// and -fix reads it below the ships.
 func TestOrderMergeRelated(t *testing.T) {
 	s := loadStarport(t)
 	file := strings.Replace(withoutOrder(orderTree), "              shipPilot: GET /pilots/{pilotId} pilotId=.pilotId\n", "", 1) +
@@ -395,8 +408,86 @@ func TestOrderMergeRelated(t *testing.T) {
 	if e := tr.Entry("ships"); e == nil || len(e.Values) > 0 {
 		t.Errorf("ships without the source:\n%s", b)
 	}
-	if problems := Check(s, parse(t, string(b))); len(problems) > 0 {
+	merged := parse(t, string(b))
+	problems := Check(s, merged)
+	if !slices.ContainsFunc(problems, func(p string) bool {
+		return strings.Contains(p, "order: ships.pilotId holds the id of a pilot the test creates, but order gives it no source") &&
+			strings.Contains(p, "add below ships the node pilot: GET /pilots/{pilotId} pilotId=.pilotId, and - ships: {…, pilotId: pilot.id}; then fetch again with -node ships (-fix does it)")
+	}) {
 		t.Errorf("check after merge: %v\n%s", problems, b)
+	}
+	fixed, _, err := Repair(s, merged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ = fixed.Bytes()
+	if e := fixed.Entry("ships"); e == nil || e.Values["pilotId"] != "pilot.id" || fixed.Node("pilot") == nil || fixed.Node("pilot").Parent.Name != "ships" {
+		t.Errorf("the pilot below the ships:\n%s", b)
+	}
+}
+
+// TestReferenceCheck: with an order, values the test would take from the
+// stage although it creates the record they name are problems, with the
+// change: a body field without a source (the node below that reads it, or
+// a new one), a source of another resource, a path value that is a key of
+// the stage. -fix makes them, and the file has no problem after it.
+func TestReferenceCheck(t *testing.T) {
+	s := loadStarport(t)
+	for name, c := range map[string]struct {
+		from, to, want, change string
+		drop                   string // a line removed too
+		fixed                  bool
+	}{
+		"source below": {"  - ships: {pilotId: shipPilot.id}\n", "  - ships\n",
+			"order: ships.pilotId holds the id of a pilot the test creates, but order gives it no source",
+			"- ships → - ships: {…, pilotId: shipPilot.id}", "", true},
+		"no node below": {"  - ships: {pilotId: shipPilot.id}\n", "  - ships\n",
+			"order: ships.pilotId holds the id of a pilot the test creates, but order gives it no source",
+			"add below ships the node pilot: GET /pilots/{pilotId} pilotId=.pilotId, and - ships: {…, pilotId: pilot.id}; then fetch again with -node ships",
+			"              shipPilot: GET /pilots/{pilotId} pilotId=.pilotId\n", true},
+		"key of the stage": {"            write:\n              create: POST /docks/{dockId}/ships dockId=docks.id\n",
+			"            write:\n              create: POST /docks/{dockId}/ships dockId=docks.id\n              delete: DELETE /ships/{shipId} shipId=7\n",
+			"ships.write.delete: {shipId} = 7 is the id of a ship of the stage, but the test creates the ship records",
+			"shipId=7 → shipId=.id", "", true},
+	} {
+		file := strings.Replace(orderTree, c.from, c.to, 1)
+		if c.drop != "" {
+			file = strings.Replace(file, c.drop, "", 1)
+		}
+		tr := parse(t, file)
+		problems := Check(s, tr)
+		if !slices.ContainsFunc(problems, func(p string) bool { return strings.Contains(p, c.want) && strings.Contains(p, c.change) }) {
+			t.Errorf("%s: want %q and %q, got %v", name, c.want, c.change, problems)
+		}
+		fixed, done, err := Repair(s, tr)
+		if err != nil {
+			t.Errorf("%s: -fix: %v", name, err)
+			continue
+		}
+		if left := Check(s, fixed); c.fixed && (len(done) == 0 || len(left) > 0) {
+			b, _ := fixed.Bytes()
+			t.Errorf("%s: -fix made %v, left %v\n%s", name, done, left, b)
+		}
+	}
+	// a source that reads another resource: the right node below names it
+	wrong := strings.NewReplacer(
+		"              shipPilot: GET /pilots/{pilotId} pilotId=.pilotId\n",
+		"              shipPilot: GET /pilots/{pilotId} pilotId=.pilotId\n              shipDock: GET /docks/{dockId} dockId=.dockId\n",
+		"{pilotId: shipPilot.id}", "{pilotId: shipDock.id}").Replace(orderTree)
+	tr := parse(t, wrong)
+	problems := Check(s, tr)
+	if !slices.ContainsFunc(problems, func(p string) bool {
+		return strings.Contains(p, "order: ships.pilotId holds the id of a pilot the test creates, but shipDock reads Dock records") &&
+			strings.Contains(p, "pilotId: shipDock.id → pilotId: shipPilot.id (-fix does it)")
+	}) {
+		t.Errorf("another resource: %v", problems)
+	}
+	if fixed, _, err := Repair(s, tr); err != nil || fixed.Entry("ships").Values["pilotId"] != "shipPilot.id" {
+		t.Errorf("-fix: %v %v", err, fixed.Entry("ships").Values)
+	}
+	// without order nothing is checked: apitest-gen finds the values itself
+	if problems := Check(s, parse(t, withoutOrder(strings.Replace(orderTree, "  - ships: {pilotId: shipPilot.id}\n", "  - ships\n", 1)))); len(problems) > 0 {
+		t.Errorf("no order: %v", problems)
 	}
 }
 

@@ -767,7 +767,11 @@ func (m *merger) addWrites(p, e *Node) {
 
 // mapping returns the value of a node as a mapping, turning the short form
 // into {call: …}.
-func (m *merger) mapping(n *Node) *yaml.Node {
+func (m *merger) mapping(n *Node) *yaml.Node { return nodeMapping(n) }
+
+// nodeMapping returns the value of a node as a mapping, turning the short
+// form into {call: …}.
+func nodeMapping(n *Node) *yaml.Node {
 	if n.value.Kind == yaml.MappingNode {
 		return n.value
 	}

@@ -160,9 +160,21 @@ contain breaking changes, which are listed here.
     the records or the body lack) and stops with the line and the reason.
     With `order` the test follows it strictly: creates in its order, body
     values only from `body from` and its sources (also for updates and
-    patches), no guessing; a value of the stage that is the key of a
-    created record stays and the review names the source to add; records
-    that do not fit stop the build. Files without `order` work as before.
+    patches), no guessing; records that do not fit stop the build. Files
+    without `order` work as before.
+    **Keys of the stage are found before the fetch:** a body field of a
+    create that holds the key of a record the test creates (`pilotId` of a
+    ship, the test creates pilots) needs a source in `order`, else the
+    create would send the key of the stage, which the empty instance does
+    not have; `-fix` names the node below that reads it or the node above
+    of that resource, or adds the read below
+    (`pilot: GET /pilots/{pilotId} pilotId=.pilotId`) and names it (then
+    fetch again with `-node`). Also named, with fix: a source that reads
+    another resource, and a path value of a node or write that is a value
+    of the stage (`shipId=7`, `$shipId`) where the path takes the key of a
+    created record. The proposal and a merge that writes `order` add the
+    sources they find, also of a node above. A record whose field is empty
+    needs no source.
     `order` places reads, lists, updates, patches and actions too
     (`- docks.update`, `- shipPilot.read`, `- docks.list`): those steps
     run at that place, the steps not named after the list as before. The

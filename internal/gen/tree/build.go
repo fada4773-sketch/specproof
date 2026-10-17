@@ -277,6 +277,10 @@ func (b *builder) sourceOf(r *Record, e *OrderEntry, field string) ([]any, bool)
 		}
 	}
 	if len(from) == 0 {
+		if v, found := b.entity(r).Get(field); !found || empty(v) {
+			// the record names no such record: nothing to take
+			return nil, false
+		}
 		b.noSource(r, e, field, ref)
 		return nil, false
 	}

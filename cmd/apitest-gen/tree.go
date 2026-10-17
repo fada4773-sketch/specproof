@@ -209,7 +209,10 @@ ORDER
     - docks.update                  a step at this place: read, list,
                                     update, patch, a variant, an action
   The first run writes order; later runs add new creates, marked
-  "# new: check its place". Every run checks it before anything is sent.
+  "# new: check its place". Every run checks it before anything is sent,
+  also that a body field holding the key of a record the test creates
+  (pilotId, when the test creates pilots) has a source: without one the
+  create sends the key of the stage, which the empty instance lacks.
 
 MESSAGES
 

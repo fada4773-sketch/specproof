@@ -560,8 +560,23 @@ func proposeOrder(s *spec.Spec, m *model.Model, t *Tree, values map[string]map[s
 		}
 	})
 	index := map[*Node]int{}
+	created := createdResources(s, m, t)
 	for i, n := range nodes {
 		index[n] = i
+		// the sources of the fields that name a record the test creates,
+		// from a node below or above (the check asks for them)
+		w, op := ownCreate(s, n)
+		for _, need := range refNeeds(s, m, t, n, w, op, created) {
+			if need.source == "" {
+				continue
+			}
+			if values[n.Name] == nil {
+				values[n.Name] = map[string]any{}
+			}
+			if _, _, has := foldEntry(values[n.Name], need.field); !has {
+				values[n.Name][need.field] = need.source
+			}
+		}
 	}
 	needs := make([][]int, len(nodes))
 	for i, n := range nodes {

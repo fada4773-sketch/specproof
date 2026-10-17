@@ -448,7 +448,27 @@ marked `# new: check its place`, and the run says so.
 - a step line names a step the node has, and comes after the creates of
   its records and of the records above them (`order: docks.update comes
   before docks, but it needs the records docks creates; move docks above
-  docks.update`).
+  docks.update`);
+- a body field of a create that holds the key of a record the test
+  creates (the `pilotId` of a ship, when the test creates pilots) has a
+  source: else the create would send the key of the stage, which the
+  record has not in the empty instance (`order: ships.pilotId holds the id
+  of a pilot the test creates, but order gives it no source`). The fix
+  names the node below that reads the pilot by `.pilotId`, or a node above
+  of that resource; without one it adds the read below the ships
+  (`pilot: GET /pilots/{pilotId} pilotId=.pilotId`) and names it, then
+  fetch again with `-node ships`;
+- a source of such a field reads records of that resource (`pilotId:
+  shipDock.id` is named, the fix takes the pilot below);
+- a path value that is a value of the stage (`shipId=7`, or `$shipId`
+  with a value in params) where the path takes the key of a record the
+  test creates: the fix names the record itself (`.id` in a write) or the
+  node above of that resource. A `$name` a write saves is no value of the
+  stage.
+
+Most problems end with `(-fix does it)`: `apitest-gen tree … -fix` makes
+the change in `tree.yaml`, one after the other, until none is left that
+it can make.
 
 When the test is built, a step that takes a value a later step saves
 stops the build with the lines to swap.
@@ -459,9 +479,11 @@ the create and for its updates and patches; a field of a created record
 that its create set (from a source, or from its path: the moon of a
 garden created at `/moons/{moonId}/gardens`) has that value in later
 steps. Nothing is guessed: a value of the stage that is the key of a
-record the test creates stays as it is, and the review names it as a
-hint with the source to add. Records that do not fit the plan (no record
-of the source node below a created one) stop the build with the reason.
+record the test creates stays as it is; where the check above cannot see
+it, the review names it as a hint with the source to add. Records that do
+not fit the plan (no record of the source node below a created one)
+stop the build with the reason; a record whose field is empty (a ship
+without a pilot) needs no source.
 Without `order` (files of an earlier version, until the next run adds
 it) apitest-gen orders the creates and finds the values itself.
 
