@@ -175,6 +175,23 @@ contain breaking changes, which are listed here.
     created record. The proposal and a merge that writes `order` add the
     sources they find, also of a node above. A record whose field is empty
     needs no source.
+    **Scope checked against the whole file:** a node, write or require
+    whose request `exclude` names (also one added later) is named; `-fix`
+    sets `off: true` with the reason (a require is removed). The reads
+    `-fix` adds respect the scope (the read by key, else the list with a
+    where on the key); with no read in scope the create of those records
+    goes off (seed). `-fix` also removes a line of `order` without node, a
+    source naming a missing node or one that is not fetched, and a `where`
+    kept for a node that is gone or not fetched; a change that comes back
+    under new names stops. **Merge:** the read of the record another one
+    names hangs below it even when the file reads that request elsewhere
+    (it was mapped to that node, the source and the where were lost and the
+    merged file failed its own check), under a free name (two nodes of one
+    name broke the file before); new `scope` and `params` sections go below
+    `order`, so the explanation at the top no longer moves on every run.
+    **Where at the top:** a record whose create takes a value of a record
+    that `where` leaves out is left out too (the next candidate is taken,
+    noted), instead of stopping the build.
     `order` places reads, lists, updates, patches and actions too
     (`- docks.update`, `- shipPilot.read`, `- docks.list`): those steps
     run at that place, the steps not named after the list as before. The

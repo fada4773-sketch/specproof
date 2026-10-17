@@ -48,6 +48,7 @@ const maxFixes = 200
 // changes made ("line 23: order: move docks above ships").
 func Repair(s *spec.Spec, t *Tree) (*Tree, []string, error) {
 	var done []string
+	same := map[string]int{}
 	for range maxFixes {
 		fixes := Fixes(s, t)
 		if len(fixes) == 0 {
@@ -60,6 +61,11 @@ func Repair(s *spec.Spec, t *Tree) (*Tree, []string, error) {
 		if slices.Contains(done, made) {
 			// the change did not solve the problem: stop, Check names it
 			return next, done, nil
+		}
+		if same[digits.ReplaceAllString(made, "#")]++; same[digits.ReplaceAllString(made, "#")] > 3 {
+			// the same change again and again under new names (a node
+			// added that does not solve it): stop, Check names it
+			return t, done, nil
 		}
 		done = append(done, made)
 		t = next
@@ -99,6 +105,9 @@ func applyFix(t *Tree, f Fix) (*Tree, string, error) {
 	// a file with problems left is read all the same: Check names them
 	return next, made, nil
 }
+
+// digits are the numbers of a change: its lines, the number of a new name.
+var digits = regexp.MustCompile(`\d+`)
 
 // lineRe reads the line number at the start of a problem.
 var lineRe = regexp.MustCompile(`^line (\d+):`)

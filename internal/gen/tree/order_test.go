@@ -1,6 +1,7 @@
 package tree
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"slices"
@@ -8,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/fada4773-sketch/specproof/internal/scenario"
+	"github.com/fada4773-sketch/specproof/internal/spec"
 )
 
 // orderTree is a Starport tree with an order: pilots, docks, then ships,
@@ -98,7 +100,8 @@ func TestOrderCheck(t *testing.T) {
 			"order: ships comes before docks, but the create of ships takes a value of docks", "change line 5: move - docks above - ships (line 4)", true},
 		"the source's create too": {"  - pilots\n  - docks\n  - ships: {pilotId: shipPilot.id}\n", "  - docks\n  - ships: {pilotId: shipPilot.id}\n  - pilots\n",
 			"order: ships comes before pilots, but the create of ships takes a value of shipPilot (created like pilots)", "move - pilots above - ships", true},
-		"no node":       {"  - pilots\n", "  - pilots\n  - moons\n", "order: moons is no node of the tree", "remove the line, or name a node", false},
+		"no node":       {"  - pilots\n", "  - pilots\n  - moons\n", "order: moons is no node of the tree", "remove the line (- moons) (-fix does it)", true},
+		"gone source":   {"{pilotId: shipPilot.id}", "{pilotId: crew.id}", "order: ships.pilotId: crew.id is no reference to a node", "remove pilotId: crew.id (no such node) (-fix does it)", true},
 		"other case":    {"  - pilots\n", "  - Pilots\n", "order: Pilots is no node of the tree", "Pilots → pilots", true},
 		"twice":         {"  - pilots\n", "  - pilots\n  - pilots\n", "order: pilots is listed twice", "remove the line (- pilots)", true},
 		"no create":     {"  - pilots\n", "  - pilots\n  - planets\n", "order: planets creates nothing", "remove the line (- planets)", true},
@@ -394,10 +397,11 @@ func TestOrderHeadOnce(t *testing.T) {
 	}
 }
 
-// TestOrderMergeRelated: a source of the proposal whose node hangs
-// elsewhere in the file (not below or above the created one) is left out;
-// the check then asks for the pilot of a ship (the pilots are created),
-// and -fix reads it below the ships.
+// TestOrderMergeRelated: the read of the pilot a ship names hangs below the
+// ships, also when the file reads pilots with that call elsewhere (a root
+// of its own): the merge adds it there, under a name of its own, with the
+// source in order and the where kept for it. The root that reads a pilot
+// of the stage is named (no fix: no node above it reads pilots).
 func TestOrderMergeRelated(t *testing.T) {
 	s := loadStarport(t)
 	file := strings.Replace(withoutOrder(orderTree), "              shipPilot: GET /pilots/{pilotId} pilotId=.pilotId\n", "", 1) +
@@ -405,25 +409,62 @@ func TestOrderMergeRelated(t *testing.T) {
 	tr := parse(t, file)
 	Merge(s, tr, Propose(s), "1.0")
 	b, _ := tr.Bytes()
-	if e := tr.Entry("ships"); e == nil || len(e.Values) > 0 {
-		t.Errorf("ships without the source:\n%s", b)
-	}
 	merged := parse(t, string(b))
-	problems := Check(s, merged)
-	if !slices.ContainsFunc(problems, func(p string) bool {
-		return strings.Contains(p, "order: ships.pilotId holds the id of a pilot the test creates, but order gives it no source") &&
-			strings.Contains(p, "add below ships the node pilot: GET /pilots/{pilotId} pilotId=.pilotId, and - ships: {…, pilotId: pilot.id}; then fetch again with -node ships (-fix does it)")
-	}) {
-		t.Errorf("check after merge: %v\n%s", problems, b)
+	if e := merged.Entry("ships"); e == nil || e.Values["pilotId"] != "shipPilot2.id" {
+		t.Errorf("ships with the source below them:\n%s", b)
 	}
-	fixed, _, err := Repair(s, merged)
-	if err != nil {
-		t.Fatal(err)
-	}
-	b, _ = fixed.Bytes()
-	if e := fixed.Entry("ships"); e == nil || e.Values["pilotId"] != "pilot.id" || fixed.Node("pilot") == nil || fixed.Node("pilot").Parent.Name != "ships" {
+	if n := merged.Node("shipPilot2"); n == nil || n.Parent == nil || n.Parent.Name != "ships" || n.Path["pilotId"] != ".pilotId" {
 		t.Errorf("the pilot below the ships:\n%s", b)
 	}
+	problems := Check(s, merged)
+	if len(problems) != 1 || !strings.Contains(problems[0], "shipPilot: {pilotId} = 7 is the id of a pilot of the stage") {
+		t.Errorf("check after merge: %v\n%s", problems, b)
+	}
+}
+
+// TestMergeIntoEmpty: a file with only params, where and scope (no tree
+// yet) gets by the merge what a proposal gives: it passes the check as
+// the proposal does, with every scope.
+func TestMergeIntoEmpty(t *testing.T) {
+	for name, path := range map[string]string{"starport": starportSpec, "colony": colonySpec} {
+		s, err := spec.Load(context.Background(), path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, sc := range []Scope{{}, {Deps: true}, {ExcludeOps: []string{"getPilot"}}, {ExcludeTags: []string{"Dock"}, Deps: true}, {ExcludeOps: []string{"getPerson"}}} {
+			file := "params:\n  reportNo: R-1\n" + scopeSection(sc)
+			tr := parse(t, file)
+			Merge(s, tr, ProposeScope(s, tr.Scope), "1.0")
+			b, _ := tr.Bytes()
+			merged := parse(t, string(b))
+			fresh, _ := ProposeScope(s, sc).Encode()
+			want := Check(s, parse(t, string(fresh)))
+			if got := Check(s, merged); len(got) > len(want) {
+				t.Errorf("%s %+v: the merge has problems the proposal has not: %v\n%s", name, sc, got, b)
+			}
+		}
+	}
+}
+
+// scopeSection is the scope section of a file.
+func scopeSection(sc Scope) string {
+	if len(sc.ExcludeTags)+len(sc.ExcludeOps) == 0 && !sc.Deps {
+		return ""
+	}
+	out := "scope:\n"
+	if len(sc.ExcludeTags)+len(sc.ExcludeOps) > 0 {
+		out += "  exclude:\n"
+		if len(sc.ExcludeTags) > 0 {
+			out += "    tags: [" + strings.Join(sc.ExcludeTags, ", ") + "]\n"
+		}
+		if len(sc.ExcludeOps) > 0 {
+			out += "    ops: [" + strings.Join(sc.ExcludeOps, ", ") + "]\n"
+		}
+	}
+	if sc.Deps {
+		out += "  deps: true\n"
+	}
+	return out
 }
 
 // TestReferenceCheck: with an order, values the test would take from the

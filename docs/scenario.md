@@ -163,6 +163,12 @@ node that gives it (`$name` → `persons.name`) and removes the entry, as
 long as you did not set a value. `-with-deps` (`deps: true`) takes the
 lists of such tags in at once. `-node <name>` fetches one node and what
 hangs below it again and keeps the other records of the fetch before.
+A read of the record another one names (the person of a garden) hangs
+below that record, also when the file reads the same request elsewhere;
+a merge adds it there, under a free name. An exclusion added later
+(`-exclude-tags`, `-exclude-ops`) is checked against the whole file: what
+it excludes is named, and `-fix` sets it off (see the checks of
+[order](#order-the-plan-of-the-test)).
 
 `-dry-run` sends nothing, also with `-base-url`, and writes neither data
 nor test: it proposes or merges `tree.yaml` as usual (so you can edit it),
@@ -286,9 +292,14 @@ is sent as it is. A list as a query value
 
 **Where for the whole file.** A `where` at the top of `tree.yaml` (next
 to `scope` and `params`) holds for every record of a resource, at every
-node that reads one: the lists, the searches, the reads of one record and
-the `require` of other nodes (persons that require gardens count only the
-gardens that hold it). The key is `Resource.field`, or a mapping per
+node that reads one, on every level: the lists, the searches, the reads
+of one record, the records a field names (the person of a garden) and the
+`require` of other nodes (persons that require gardens count only the
+gardens that hold it). A record whose create takes a value of a record
+the `where` leaves out goes too, the next candidate is taken (with
+`Person.name: [Ada]` and `- gardens: {personId: gardenPerson.id}` a
+garden of another person cannot be rebuilt; the review says "1 without a
+record of gardenPerson"). The key is `Resource.field`, or a mapping per
 resource; the tests are those of a node's `where`:
 
 ```yaml
@@ -464,11 +475,35 @@ marked `# new: check its place`, and the run says so.
   with a value in params) where the path takes the key of a record the
   test creates: the fix names the record itself (`.id` in a write) or the
   node above of that resource. A `$name` a write saves is no value of the
-  stage.
+  stage;
+- a line of a node the tree no longer has, and a source that names one
+  (`pilotId: crew.id`): the fix removes them, the check then names the
+  new source;
+- a source on a node that is not fetched (off, or excluded by scope): the
+  fix takes a node that is fetched, or removes it when the field names no
+  record the test creates.
+
+The reads `-fix` adds respect the scope: the read by the key when the
+scope allows it, else the list of the resource with a where on the key
+(`pilot: GET /pilots` with `where: {id: ships.pilotId}`). When the scope
+allows no read of these records at all, the test cannot take the one a
+record names: the fix sets `off: true` at their create (the instance must
+hold them, as seed), or you take a read of them out of `scope.exclude`.
+
+**Checked against the scope.** `exclude` (tags and operations) holds for
+the whole file, also for nodes written before the exclusion (a merge
+leaves the file's nodes alone): a node whose request is excluded, a
+write and a require are named, and the fix sets `off: true` with the
+reason as comment (a require is removed). A `where` the generator added
+for a node that reads the field (`pilotId: present # shipPilot reads it`)
+goes when that node is gone or not fetched: it would only leave records
+out. Tags only narrow what is proposed; a read of another tag in the
+file (deps, or added by hand) is no problem.
 
 Most problems end with `(-fix does it)`: `apitest-gen tree … -fix` makes
 the change in `tree.yaml`, one after the other, until none is left that
-it can make.
+it can make. A change that comes back under new names (a node added that
+does not solve it) stops after a few rounds; the check names what is left.
 
 When the test is built, a step that takes a value a later step saves
 stops the build with the lines to swap.

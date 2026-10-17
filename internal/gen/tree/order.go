@@ -320,7 +320,8 @@ func checkOrder(s *spec.Spec, t *Tree) ([]string, []Fix) {
 		seen[e.Key()] = i
 		n := t.Node(e.Node)
 		if n == nil || n.IsRequire {
-			f := Fix{Line: e.Line, Change: "remove the line, or name a node of the tree"}
+			// a node removed from the tree: its line goes
+			f := Fix{Line: e.Line, Change: "remove the line (- " + e.Key() + ")", apply: removeOrderLine(e.Line)}
 			if like := nodeLike(t, e.Node); like != "" {
 				f = Fix{Line: e.Line, Change: e.Node + " → " + like, apply: renameOrderLine(e.Line, like)}
 			}
@@ -369,8 +370,12 @@ func checkOrder(s *spec.Spec, t *Tree) ([]string, []Fix) {
 			}
 			ref, ok := ParseRef(e.Values[field], t.names())
 			if !ok || ref.Node == "" {
-				fix(Fix{Line: e.Line, Change: fmt.Sprintf("%s: %v → %s: <node>.<field> (a node below or above %s)", field, e.Values[field], field, e.Node)},
-					"order: %s.%s: %v is no reference to a node", e.Node, field, e.Values[field])
+				f := Fix{Line: e.Line, Change: fmt.Sprintf("%s: %v → %s: <node>.<field> (a node below or above %s)", field, e.Values[field], field, e.Node)}
+				if unknownNodeRef(t, e.Values[field]) {
+					// the node is gone: the source goes, the check names a new one
+					f = Fix{Line: e.Line, Change: fmt.Sprintf("remove %s: %v (no such node)", field, e.Values[field]), apply: setOrderSource(e.Line, field, "")}
+				}
+				fix(f, "order: %s.%s: %v is no reference to a node", e.Node, field, e.Values[field])
 				continue
 			}
 			src := t.Node(ref.Node)

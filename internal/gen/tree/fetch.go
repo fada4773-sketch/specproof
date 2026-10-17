@@ -315,10 +315,10 @@ func (f *fetcher) node(ctx context.Context, n *Node, parent *Record) error {
 	if checks == 0 {
 		checks = len(ordered)
 	}
-	var picked []cand
-	requireOut := 0
+	picked, requireOut, sourceOut := 0, 0, map[string]int{}
+	sources := f.sourcesOf(n)
 	for i, c := range ordered {
-		if len(picked) >= limit {
+		if picked >= limit {
 			break
 		}
 		if len(n.Require) > 0 {
@@ -334,11 +334,25 @@ func (f *fetcher) node(ctx context.Context, n *Node, parent *Record) error {
 				continue
 			}
 		}
-		picked = append(picked, c)
+		before, notes, counts := len(f.data.Records), len(f.data.Notes), maps.Clone(f.count)
+		rec, err := f.take(ctx, n, c, parent)
+		if err != nil {
+			return err
+		}
+		// a record whose create takes a value of a record below it that
+		// the fetch left out (by where, at the node or at the top of the
+		// file) cannot be rebuilt: it goes with its notes, the next
+		// candidate is taken
+		if gone := f.lacking(rec, sources, before); gone != "" {
+			f.data.Records, f.data.Notes, f.count = f.data.Records[:before], f.data.Notes[:notes], counts
+			sourceOut[gone]++
+			continue
+		}
+		picked++
 	}
 	// fewer records than asked for is noted when it is not just the data:
 	// none at all, or candidates left out by where or require
-	if !single && len(picked) < want && (len(picked) == 0 || whereOut > 0 || requireOut > 0) {
+	if !single && picked < want && (picked == 0 || whereOut > 0 || requireOut > 0 || len(sourceOut) > 0) {
 		var why []string
 		if whereOut > 0 {
 			why = append(why, fmt.Sprintf("%d left out by where", whereOut))
@@ -346,33 +360,89 @@ func (f *fetcher) node(ctx context.Context, n *Node, parent *Record) error {
 		if requireOut > 0 {
 			why = append(why, fmt.Sprintf("%d by require", requireOut))
 		}
-		f.note("%s: %d of %d picked from %d candidates%s", where(n, parent), len(picked), want, total, paren(why))
-	}
-	for _, c := range picked {
-		f.count[n]++
-		rec := &Record{ID: fmt.Sprintf("%s%d", n.Name, f.count[n]), Node: n, Parent: parent, Value: c.value, Request: c.target}
-		if len(n.Save) > 0 {
-			rec.Saved = map[string]any{}
-			for name, src := range n.Save {
-				if h, ok := strings.CutPrefix(src, "header "); ok {
-					if v := c.header.Get(h); v != "" {
-						rec.Saved[name] = v
-					}
-					continue
-				}
-				if v, ok := Pointer(c.value, src); ok {
-					rec.Saved[name] = v
-				}
-			}
+		for _, name := range sortedKeys(sourceOut) {
+			why = append(why, fmt.Sprintf("%d without a record of %s (the source of order: left out by where)", sourceOut[name], name))
 		}
-		f.data.Records = append(f.data.Records, rec)
-		for _, child := range n.Each {
-			if err := f.node(ctx, child, rec); err != nil {
-				return err
-			}
-		}
+		f.note("%s: %d of %d picked from %d candidates%s", where(n, parent), picked, want, total, paren(why))
 	}
 	return nil
+}
+
+// take keeps a candidate as a record of n and fetches the nodes below it.
+func (f *fetcher) take(ctx context.Context, n *Node, c cand, parent *Record) (*Record, error) {
+	f.count[n]++
+	rec := &Record{ID: fmt.Sprintf("%s%d", n.Name, f.count[n]), Node: n, Parent: parent, Value: c.value, Request: c.target}
+	if len(n.Save) > 0 {
+		rec.Saved = map[string]any{}
+		for name, src := range n.Save {
+			if h, ok := strings.CutPrefix(src, "header "); ok {
+				if v := c.header.Get(h); v != "" {
+					rec.Saved[name] = v
+				}
+				continue
+			}
+			if v, ok := Pointer(c.value, src); ok {
+				rec.Saved[name] = v
+			}
+		}
+	}
+	f.data.Records = append(f.data.Records, rec)
+	for _, child := range n.Each {
+		if err := f.node(ctx, child, rec); err != nil {
+			return rec, err
+		}
+	}
+	return rec, nil
+}
+
+// source is a node below n that order names as the source of a field of
+// the body that creates n's records (shipPilot for the pilotId of a ship).
+type source struct {
+	node  *Node
+	field string
+}
+
+// sourcesOf are the sources of order below n, for the create its records
+// are rebuilt with.
+func (f *fetcher) sourcesOf(n *Node) []source {
+	if !f.t.HasOrder {
+		return nil
+	}
+	owner := createOwner(f.s, modelOf(f.s), f.t, n)
+	if owner == nil {
+		return nil
+	}
+	e := f.t.Entry(owner.Name)
+	if e == nil {
+		return nil
+	}
+	var out []source
+	for _, field := range sortedKeys(e.Values) {
+		ref, ok := ParseRef(e.Values[field], f.scope)
+		if !ok || ref.Node == "" {
+			continue
+		}
+		if c := f.t.Node(ref.Node); c != nil && c.Parent == n && c.Enabled() {
+			out = append(out, source{node: c, field: field})
+		}
+	}
+	return out
+}
+
+// lacking is the source of order a record has no record of below it,
+// although it names one (the field is not empty); "" when none lacks.
+// from is the index of the record in the records of the fetch.
+func (f *fetcher) lacking(rec *Record, sources []source, from int) string {
+	for _, src := range sources {
+		if v, ok := rec.Get(src.field); !ok || empty(v) {
+			continue
+		}
+		found := slices.ContainsFunc(f.data.Records[from:], func(r *Record) bool { return r.Parent == rec && r.Node == src.node })
+		if !found {
+			return src.node.Name
+		}
+	}
+	return ""
 }
 
 // unsetParams lists the "$name" values of a node (and of its requires) that

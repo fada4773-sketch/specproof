@@ -213,6 +213,8 @@ ORDER
   also that a body field holding the key of a record the test creates
   (pilotId, when the test creates pilots) has a source: without one the
   create sends the key of the stage, which the empty instance lacks.
+  scope.exclude holds for the whole file, also for nodes written before:
+  what it excludes is named, -fix sets off: true.
 
 MESSAGES
 

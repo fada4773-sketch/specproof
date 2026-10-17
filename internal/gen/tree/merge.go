@@ -68,7 +68,9 @@ type merger struct {
 	at       map[*Node]*Node // proposal node → node of the file
 	byName   map[string]*Node
 	// kept are nodes whose values are values of the file already
-	kept  map[*Node]bool
+	kept map[*Node]bool
+	// from is the proposal node a node being added was stripped from
+	from  map[*Node]*Node
 	model *model.Model
 	// legacy are values of the unplaced section: parameter → value
 	legacy  map[string]any
@@ -181,13 +183,7 @@ func (m *merger) params() {
 				}
 			}
 		} else {
-			// at the top, below the head of the file
-			key := paramsKey()
-			if len(root.Content) > 0 && root.Content[0].HeadComment != "" {
-				key.HeadComment = root.Content[0].HeadComment + "\n\n" + key.HeadComment
-				root.Content[0].HeadComment = ""
-			}
-			root.Content = append([]*yaml.Node{key, section}, root.Content...)
+			insertSection(root, paramsKey(), section, "order", "scope", "where", "prefer")
 		}
 	}
 	for _, name := range missing {
@@ -310,6 +306,49 @@ func (m *merger) changed(where, format string, args ...any) {
 	m.changes = append(m.changes, Change{Where: where, What: fmt.Sprintf(format, args...)})
 }
 
+// bound reports whether a proposal node reads the record its parent refers
+// to and the parent depends on it: a where of the parent kept for it
+// ("shipPilot reads it"), a source of order, or a where of its own on a
+// field of the parent (the pilot of a dock from the pilots).
+func (m *merger) bound(p *Node) bool {
+	if p.Parent == nil {
+		return false
+	}
+	for _, c := range p.Parent.Where {
+		if c.Note == p.Name+" reads it" {
+			return true
+		}
+	}
+	for _, e := range m.proposal.Order {
+		for _, v := range e.Values {
+			if ref, ok := ParseRef(v, m.proposal.names()); ok && ref.Node == p.Name && e.Node == p.Parent.Name {
+				return true
+			}
+		}
+	}
+	for _, c := range p.Where {
+		if str, ok := c.Test.(string); ok && strings.HasPrefix(str, p.Parent.Name+".") {
+			return true
+		}
+	}
+	return false
+}
+
+// findUnder is the node of the file below under with the call of a
+// proposal node, nil without.
+func (m *merger) findUnder(p *Node, under *Node) *Node {
+	op := lookupOp(m.s, p.Call)
+	if op == nil {
+		return nil
+	}
+	for _, c := range under.Each {
+		if o := lookupOp(m.s, c.Call); o != nil && o.ID == op.ID && !c.IsRequire {
+			return c
+		}
+	}
+	return nil
+}
+
 // find is the node of the file with the call of a proposal node: below the
 // node its parent maps to, else anywhere in the tree.
 func (m *merger) find(p *Node, under *Node) *Node {
@@ -349,6 +388,12 @@ func (m *merger) proposed(list []*Node, parent *Node) {
 		var into *Node
 		if parent != nil {
 			into = m.at[parent]
+		}
+		if m.knows(p.Call) && into != nil && m.bound(p) && m.findUnder(p, into) == nil {
+			// the record its parent refers to: below that parent, even if the
+			// call reads other records elsewhere in the file
+			m.addChild(into, p)
+			continue
 		}
 		if m.knows(p.Call) {
 			if e := m.find(p, into); e != nil {
@@ -633,11 +678,20 @@ func (m *merger) strip(p *Node, root bool) *Node {
 		m.rename(c.Path, p.Comment, root)
 		m.rename(c.Query, p.Comment, root)
 	}
+	c.Where = slices.Clone(p.Where)
 	for _, e := range p.Each {
-		if !m.knows(e.Call) {
-			c.Each = append(c.Each, m.strip(e, false))
+		// a child its parent depends on comes along, also with a call the
+		// file reads elsewhere
+		if !m.knows(e.Call) || m.bound(e) {
+			x := m.strip(e, false)
+			x.Parent = &c
+			c.Each = append(c.Each, x)
 		}
 	}
+	if m.from == nil {
+		m.from = map[*Node]*Node{}
+	}
+	m.from[&c] = p
 	if len(p.Write) > 0 {
 		c.Write = map[string]*Write{}
 		for k, w := range p.Write {
@@ -684,10 +738,83 @@ func (m *merger) newNote(n *Node) {
 	}
 }
 
+// nameTree gives the nodes of a subtree being added names the file does
+// not have yet, and follows each new name in the subtree: the where kept
+// for a child ("shipPilot reads it"), a where or value that reads a node
+// of it ("ships.pilotId").
+func (m *merger) nameTree(c *Node) {
+	used := map[string]bool{}
+	m.t.Walk(func(n *Node) { used[n.Name] = true })
+	renamed := map[string]string{}
+	var name func(x *Node)
+	name = func(x *Node) {
+		if used[x.Name] {
+			old := x.Name
+			for i := 2; ; i++ {
+				if try := fmt.Sprintf("%s%d", old, i); !used[try] {
+					x.Name = try
+					break
+				}
+			}
+			renamed[old] = x.Name
+		}
+		used[x.Name] = true
+		for _, e := range x.Each {
+			name(e)
+		}
+	}
+	name(c)
+	if len(renamed) == 0 {
+		return
+	}
+	follow := func(v any) any {
+		str, ok := v.(string)
+		if !ok {
+			return v
+		}
+		if n, rest, ok := strings.Cut(str, "."); ok && renamed[n] != "" {
+			return renamed[n] + "." + rest
+		}
+		return v
+	}
+	var walk func(x *Node)
+	walk = func(x *Node) {
+		x.Where = slices.Clone(x.Where)
+		for i, cl := range x.Where {
+			if mm := readsItRe.FindStringSubmatch(cl.Note); mm != nil && renamed[mm[1]] != "" {
+				x.Where[i].Note = renamed[mm[1]] + " reads it"
+			}
+			x.Where[i].Test = follow(cl.Test)
+		}
+		for _, vals := range []map[string]any{x.Path, x.Query} {
+			for k, v := range vals {
+				vals[k] = follow(v)
+			}
+		}
+		for _, e := range x.Each {
+			walk(e)
+		}
+	}
+	walk(c)
+}
+
+// mapTree maps the proposal nodes of an added subtree to the nodes of the
+// file they became (after a reload).
+func (m *merger) mapTree(c *Node) {
+	if p := m.from[c]; p != nil {
+		if n := m.t.Node(c.Name); n != nil {
+			m.at[p] = n
+		}
+	}
+	for _, e := range c.Each {
+		m.mapTree(e)
+	}
+}
+
 func (m *merger) addRoot(p *Node) {
 	c := m.strip(p, true)
 	m.newNote(c)
-	c.Name = m.freeName(c.Name)
+	m.nameTree(c)
 	tree := m.section("tree")
 	if len(c.Path) == 0 && len(c.Query) == 0 {
 		// a root that needs no value comes first: the nodes of the file may
@@ -700,23 +827,48 @@ func (m *merger) addRoot(p *Node) {
 	m.changed(c.Name, "new root %s", c.Call)
 	m.reload()
 	m.at[p] = m.t.Node(c.Name)
+	m.mapTree(c)
 }
 
 func (m *merger) addChild(into *Node, p *Node) {
 	c := m.strip(p, false)
 	m.newNote(c)
-	c.Name = m.freeName(c.Name)
+	m.nameTree(c)
 	value := m.mapping(into)
 	each := valueOf(value, "each")
-	if each == nil {
+	switch {
+	case each == nil:
 		each = &yaml.Node{Kind: yaml.MappingNode}
 		value.Content = append(value.Content, scalar("each"), each)
+	case each.Kind == yaml.ScalarNode && each.Tag == "!!null":
+		each.Kind, each.Tag, each.Value = yaml.MappingNode, "", ""
 	}
 	each.Content = append(each.Content, scalar(c.Name), nodeYAML(c))
 	m.markTree(p)
 	m.changed(into.Name+"/"+c.Name, "new node %s", c.Call)
 	m.reload()
 	m.at[p] = m.t.Node(c.Name)
+	m.mapTree(c)
+	if c.Name != p.Name {
+		// the where its parent keeps for it names it as in the file
+		if parent := m.t.Node(into.Name); parent != nil {
+			renameReader(parent, p.Name, c.Name)
+		}
+	}
+}
+
+// renameReader follows a node's new name in the where its parent keeps for
+// it ("shipPilot reads it").
+func renameReader(parent *Node, from, to string) {
+	where := valueOf(parent.value, "where")
+	if where == nil {
+		return
+	}
+	for i := 1; i < len(where.Content); i += 2 {
+		if v := where.Content[i]; v.LineComment == comment(from+" reads it") {
+			v.LineComment = comment(to + " reads it")
+		}
+	}
 }
 
 // addWrites adds the write kinds of a proposal node the file's node lacks.
@@ -806,6 +958,28 @@ func (m *merger) section(key string) *yaml.Node {
 	return v
 }
 
+// insertSection adds a top-level section where a proposal has it: after
+// the last of the sections named in after that the file has (the
+// explanation above order stays the head of the file), else at the top,
+// below the head of the file.
+func insertSection(root *yaml.Node, key, val *yaml.Node, after ...string) {
+	at := -1
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		if slices.Contains(after, root.Content[i].Value) {
+			at = i + 2
+		}
+	}
+	if at > 0 {
+		root.Content = slices.Insert(root.Content, at, key, val)
+		return
+	}
+	if len(root.Content) > 0 && root.Content[0].HeadComment != "" {
+		key.HeadComment = root.Content[0].HeadComment + "\n\n" + key.HeadComment
+		root.Content[0].HeadComment = ""
+	}
+	root.Content = append([]*yaml.Node{key, val}, root.Content...)
+}
+
 func valueOf(m *yaml.Node, key string) *yaml.Node {
 	if m == nil || m.Kind != yaml.MappingNode {
 		return nil
@@ -816,20 +990,6 @@ func valueOf(m *yaml.Node, key string) *yaml.Node {
 		}
 	}
 	return nil
-}
-
-// freeName makes a name unique in the file.
-func (m *merger) freeName(name string) string {
-	used := map[string]bool{}
-	m.t.Walk(func(n *Node) { used[n.Name] = true })
-	if !used[name] {
-		return name
-	}
-	for i := 2; ; i++ {
-		if c := fmt.Sprintf("%s%d", name, i); !used[c] {
-			return c
-		}
-	}
 }
 
 // reload parses the edited document again, so nodes point at its YAML.

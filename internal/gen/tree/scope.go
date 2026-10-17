@@ -6,8 +6,6 @@ import (
 	"slices"
 	"strings"
 
-	"gopkg.in/yaml.v3"
-
 	"github.com/fada4773-sketch/specproof/internal/gen/model"
 	"github.com/fada4773-sketch/specproof/internal/spec"
 )
@@ -55,6 +53,25 @@ func (sc Scope) InScope(op *spec.Operation) bool {
 		return false
 	}
 	return !anyGlob(sc.ExcludeOps, op.ID, callOf(op))
+}
+
+// Excluded reports whether exclude names an operation, by a tag or by its
+// operationId or "METHOD /path"; tags only narrow what is proposed (a read
+// of another tag may stand in the file: deps, or added by hand).
+func (sc Scope) Excluded(op *spec.Operation) bool {
+	return anyGlob(sc.ExcludeTags, tagsOf(op)...) || anyGlob(sc.ExcludeOps, op.ID, callOf(op))
+}
+
+// excludedBy names what excludes an operation: "tag X" or "operation Y".
+func (sc Scope) excludedBy(op *spec.Operation) string {
+	for _, p := range sc.ExcludeTags {
+		for _, tag := range tagsOf(op) {
+			if glob(p, tag) {
+				return "tag " + tag
+			}
+		}
+	}
+	return "operation " + op.ID
 }
 
 func inScope(s *spec.Spec, sc Scope) []*spec.Operation {
@@ -156,11 +173,7 @@ func (t *Tree) AddScope(add Scope) []Change {
 	if !replaced {
 		key := scalar("scope")
 		key.HeadComment = scopeHead
-		if len(root.Content) > 0 && root.Content[0].HeadComment != "" {
-			key.HeadComment = root.Content[0].HeadComment + "\n\n" + scopeHead
-			root.Content[0].HeadComment = ""
-		}
-		root.Content = append([]*yaml.Node{key, v}, root.Content...)
+		insertSection(root, key, v, "order")
 	}
 	if nt, err := fromDoc(t.doc); err == nil {
 		*t = *nt

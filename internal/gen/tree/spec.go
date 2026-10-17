@@ -308,6 +308,12 @@ func check(s *spec.Spec, t *Tree) ([]string, []Fix) {
 	rp, rf := checkReferences(s, t)
 	problems = append(problems, rp...)
 	fixes = append(fixes, rf...)
+	sp, sf := checkScope(s, t)
+	problems = append(problems, sp...)
+	fixes = append(fixes, sf...)
+	wp, wf := checkStale(s, t)
+	problems = append(problems, wp...)
+	fixes = append(fixes, wf...)
 	sortProblems(problems)
 	slices.SortStableFunc(fixes, func(a, b Fix) int { return a.Line - b.Line })
 	return problems, fixes
