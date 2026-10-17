@@ -126,7 +126,8 @@ cleanup:
 
 ### Sections
 
-The top level holds sections, and each section holds a list of entries. `-analyse` names a
+The top level holds sections, and each section holds a list of entries
+(only `vars` is no section, see [Fixed values: vars](#fixed-values-vars)). `-analyse` names a
 section after the tag of its endpoints (`Dock`, `Ship`, …) and puts the
 DELETEs that run after all tags into a last section, `cleanup`. A section
 name is only a heading: which endpoint an entry calls comes from the entry
@@ -200,7 +201,7 @@ depend on set to `repeat` too.
 |---|---|
 | `/id`, `/items/0/code` | a JSON pointer into the answer body |
 | `/` | the whole answer body |
-| `header Location` | a header of the answer; `Location` gives its last path segment, like apitest |
+| `header Location` | a header of the answer; `Location` gives its last path segment, like apitest; any other header (`header X-Request-Id`) gives its value as text |
 | `request /code` | a JSON pointer into the body this entry sent, after its placeholders were filled in |
 | `request /` | the whole body sent |
 | `request path dockId` | the value of a path parameter sent |
@@ -227,6 +228,34 @@ A placeholder must be saved by an entry above it. A later `save` with
 the same name replaces the value for the entries after it. Without
 `-base-url`, the values come from the stored answers and from the requests
 in the file, so a run without instance fills in the same values.
+
+### Fixed values: vars
+
+An optional mapping `vars` at the top of the file gives values a name
+without any request. Every entry uses them as `{{name}}`, like a saved
+value. A value may combine the values above it:
+
+```yaml
+vars:
+  bookId: 10
+  bookCode: 20
+  key: "{{bookId}}-{{bookCode}}"     # "10-20"
+  size: "{{bookId}}"                 # 10, the number
+Dock:
+  - POST /docks:
+      body: {name: "Dock {{key}}", capacity: "{{size}}"}
+```
+
+- A value that is one placeholder and nothing else keeps its type
+  (`size` above is the number 10); a placeholder inside a text is written
+  as text (`key` is `"10-20"`).
+- A value uses only the values above it in `vars`, not the saved values of
+  the entries (`PLACEHOLDER` otherwise). Values may be numbers, texts,
+  lists or objects.
+- A `save` with the same name replaces the value for the entries after it.
+- `-analyse` keeps `vars` at the top, uses a value whose name matches a
+  parameter (`bookId` for `{bookId}`) where no earlier answer provides it,
+  and gives its own saved values other names (`dockId2`).
 
 ### Filtering a list
 
@@ -581,7 +610,7 @@ request the spec stays unchanged. Notes (`NOTE`) are information.
 | `DUPLICATE` | problem | An endpoint appears twice without names, a name is used twice, or a named entry has no place for a named example (no body, no parameter). | Give each entry of that endpoint its own `name`. |
 | `PARAMETER` | problem | A parameter the endpoint does not have, or a path or required query parameter without value. | Fix `path` / `query`. |
 | `BODY` | problem | A required body is missing, the endpoint takes no body, or no JSON body. | Fix `body`. |
-| `PLACEHOLDER` | problem | `{{name}}` that no entry above saves. | Add the `save`, or move the entry below the one that saves it. |
+| `PLACEHOLDER` | problem | `{{name}}` that no entry above saves and `vars` does not define, or a value of `vars` that uses a name not above it in `vars`. | Add the `save` or the value in `vars`, or move the entry below the one that saves it. |
 | `REQUEST_INVALID` | problem | A request violates its schema (shown with the JSON pointer and the rule). | Fix the value in the file. |
 | `NEEDS_INSTANCE` | problem | Entries are to be sent (`new`, `repeat`, `-refresh`) and no `-base-url` is given. | Start the instance and pass `-base-url`. |
 | `APPROVED_NO_ANSWER` | problem | An entry is `approved` but has no stored answer. | Set `status: repeat`. |

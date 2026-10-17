@@ -114,6 +114,14 @@ func lookup(s *spec.Spec, key string) *spec.Operation {
 func (f *File) bind(s *spec.Spec, res *Result) {
 	byOp := map[string][]*Step{}
 	saved := map[string]bool{}
+	for _, v := range f.Vars {
+		for _, n := range names(v.Value) {
+			if !saved[n] {
+				res.problem(CodePlaceholder, fmt.Sprintf("line %d vars %s", v.Line, v.Name), "{{%s}}: no value above it in vars is named %q; a value of vars uses only the ones above it", n, n)
+			}
+		}
+		saved[v.Name] = true
+	}
 	for _, st := range f.Steps {
 		st.Op = lookup(s, st.Key)
 		if st.Op == nil {
@@ -128,7 +136,7 @@ func (f *File) bind(s *spec.Spec, res *Result) {
 		}
 		for _, n := range st.uses() {
 			if !saved[n] {
-				res.problem(CodePlaceholder, st.where(), "{{%s}}: no entry above saves %q; add it to the \"save\" of the entry that creates it", n, n)
+				res.problem(CodePlaceholder, st.where(), "{{%s}}: no entry above saves %q and vars has no such value; add it to the \"save\" of the entry that creates it, or to vars", n, n)
 			}
 		}
 		for _, sv := range st.Save {

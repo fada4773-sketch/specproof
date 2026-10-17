@@ -69,7 +69,7 @@ func Run(ctx context.Context, in Input) (*Result, error) {
 	}
 	// the requests must fit the schema before anything is sent; a stored
 	// answer of an entry with filter is filtered (the filter may be new)
-	vars := map[string]any{}
+	vars := f.values()
 	for _, st := range f.Steps {
 		r, missing := st.request(vars)
 		if len(missing) == 0 && st.status() != StatusIgnore {
@@ -145,7 +145,7 @@ func (st *Step) refilter(vars map[string]any, res *Result) {
 // values of the others come from their stored answers. It stops sending
 // at the first request the instance rejects and reports whether none was.
 func send(ctx context.Context, in Input, res *Result, needs map[*Step]string, v *spec.Validator) bool {
-	vars := map[string]any{}
+	vars := in.File.values()
 	failed := false
 	for _, st := range in.File.Steps {
 		sr := StepResult{Step: st, Why: needs[st]}

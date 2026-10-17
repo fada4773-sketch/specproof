@@ -39,6 +39,8 @@ const DefaultFile = "examples.record.yaml"
 
 // header heads a new record file.
 const header = `Examples for apitest, written by "apitest-gen record".
+An optional "vars:" mapping at the top holds fixed values for all entries;
+a value may combine the ones above it: { bookId: 10, key: "{{bookId}}-x" }.
 Per tag the requests in the order they run, top to bottom. Each entry is
 "METHOD /path" (or the operationId) with:
   status:   new (send it), approved (sent, not sent again), repeat (send it
@@ -67,14 +69,26 @@ const (
 	keyResponse    = "response"
 	keyStatus      = "status"
 	keyHeaders     = "headers"
+	// keyVars is the top-level mapping of fixed values, not a section.
+	keyVars = "vars"
 )
 
 var entryKeys = []string{keyEntryStatus, keyName, keyPath, keyQuery, keyBody, keySave, keyFilter, keyIgnore, keyResponse}
 
 // File is a loaded record file.
 type File struct {
-	doc   *yamldoc.Doc
+	doc *yamldoc.Doc
+	// Vars are the fixed values of the "vars" mapping, in file order.
+	Vars  []Var
 	Steps []*Step
+}
+
+// Var is a fixed value of the "vars" mapping; its value may use the
+// values above it as "{{name}}".
+type Var struct {
+	Name  string
+	Value *yaml.Node
+	Line  int
 }
 
 // Step is one entry: a request and its answer.
@@ -194,6 +208,14 @@ func Parse(b []byte) (*File, error) {
 		if list.Kind == yaml.ScalarNode && list.Tag == "!!null" {
 			continue
 		}
+		if tag == keyVars {
+			vars, err := parseVars(list)
+			if err != nil {
+				return nil, err
+			}
+			f.Vars = vars
+			continue
+		}
 		if list.Kind != yaml.SequenceNode {
 			return nil, fmt.Errorf("line %d: tag %q must hold a list of entries (\"- POST /path: …\")", list.Line, tag)
 		}
@@ -206,6 +228,32 @@ func Parse(b []byte) (*File, error) {
 		}
 	}
 	return f, nil
+}
+
+func parseVars(n *yaml.Node) ([]Var, error) {
+	if n.Kind != yaml.MappingNode {
+		return nil, fmt.Errorf("line %d: vars must map names to values, e.g. { bookId: 10, key: \"{{bookId}}-A\" }", n.Line)
+	}
+	var out []Var
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		k := n.Content[i]
+		if !validName.MatchString(k.Value) {
+			return nil, fmt.Errorf("line %d: %q is no name for a value: letters, digits, _ and -", k.Line, k.Value)
+		}
+		out = append(out, Var{Name: k.Value, Value: n.Content[i+1], Line: k.Line})
+	}
+	return out, nil
+}
+
+// values are the fixed values of the vars, each filled in with the ones
+// above it; bind reports a name no var above defines.
+func (f *File) values() map[string]any {
+	vars := map[string]any{}
+	for _, v := range f.Vars {
+		n, _ := fill(v.Value, vars)
+		vars[v.Name] = decode(n)
+	}
+	return vars
 }
 
 func parseStep(tag string, item *yaml.Node) (*Step, error) {

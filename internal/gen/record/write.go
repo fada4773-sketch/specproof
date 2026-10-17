@@ -44,7 +44,7 @@ func (w *writer) write(f *File, v *spec.Validator) {
 	}
 	ignore := map[string][]string{}
 	var ops []*spec.Operation
-	vars := map[string]any{}
+	vars := f.values()
 	for _, st := range f.Steps {
 		named := st.Name != "" || count[st.Op.ID] > 1
 		r, _ := st.request(vars)

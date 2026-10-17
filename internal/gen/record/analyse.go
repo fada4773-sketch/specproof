@@ -69,6 +69,9 @@ func Analyse(s *spec.Spec, f *File, run defaults.Run, seed uint64) (*Analysis, e
 		}
 		an.Run = &better
 	}
+	for _, v := range f.Vars {
+		a.saved[v.Name] = keyVars
+	}
 	have := map[string]*Step{}
 	for _, st := range f.Steps {
 		if st.Op != nil {
@@ -375,6 +378,9 @@ type analyser struct {
 // entry builds the entry of a case.
 func (a *analyser) entry(c *cases.Case, section string) *Step {
 	op := c.Op
+	if section == keyVars {
+		section = "vars-tag" // the top-level "vars" holds the fixed values
+	}
 	st := &Step{Tag: section, Key: method(op), Op: op, node: &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}}
 	if c.Example != cases.DefaultExample {
 		st.Name = c.Example

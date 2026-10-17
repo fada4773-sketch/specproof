@@ -42,6 +42,8 @@ type starport struct {
 	sent     []string
 	// location answers a POST of a ship with a Location header only
 	location bool
+	// code adds the header X-Ship-Code to the answer of a POST of a ship
+	code bool
 }
 
 func newStarport() *starport {
@@ -109,6 +111,9 @@ func (sp *starport) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			id := sp.next[segs[0]]
 			body["id"] = id
 			table[id] = body
+			if segs[0] == "ships" && sp.code {
+				w.Header().Set("X-Ship-Code", fmt.Sprintf("SHIP-%d", id))
+			}
 			if segs[0] == "ships" && sp.location {
 				w.Header().Set("Location", fmt.Sprintf("/ships/%d", id))
 				w.WriteHeader(201)
@@ -688,6 +693,108 @@ Ship:
 	}
 }
 
+// A value saved from any header of the answer, not only Location, is kept
+// as sent and stored with the answer.
+func TestRecordSaveFromOtherHeader(t *testing.T) {
+	specPath, filePath := workspace(t)
+	file := `Dock:
+  - POST /docks:
+      body: {name: North, capacity: 4}
+      save: {dockId: /id}
+Ship:
+  - POST /ships:
+      body: {name: Comet, dockId: "{{dockId}}"}
+      save: {shipCode: header X-Ship-Code}
+Booking:
+  - POST /bookings:
+      body: {shipId: 1, route: {departure: "2027-01-15T08:00:00Z", originDockId: "{{dockId}}"}, crew: [{pilotName: "Ada of {{shipCode}}", role: CAPTAIN}]}
+`
+	if err := os.WriteFile(filePath, []byte(file), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sp := newStarport()
+	sp.code = true
+	srv := httptest.NewServer(sp)
+	defer srv.Close()
+	res := record(t, specPath, filePath, srv)
+	if len(res.Problems) > 0 {
+		t.Fatalf("problems:\n%s", notes(res.Problems))
+	}
+	if got := sp.bookings[1]["crew"].([]any)[0].(map[string]any)["pilotName"]; got != "Ada of SHIP-1" {
+		t.Errorf("pilotName %v, want Ada of SHIP-1", got)
+	}
+	if !strings.Contains(read(t, filePath), "headers: {X-Ship-Code: SHIP-1}") {
+		t.Errorf("record file:\n%s", read(t, filePath))
+	}
+}
+
+// vars at the top give fixed values to every entry; a value combines the
+// ones above it, and a whole placeholder keeps the type.
+func TestRecordVars(t *testing.T) {
+	specPath, filePath := workspace(t)
+	file := `vars:
+  capacity: 4
+  dockName: North
+  label: "{{dockName}}-{{capacity}}"
+  size: "{{capacity}}"
+Dock:
+  - POST /docks:
+      body: {name: "{{label}}", capacity: "{{size}}"}
+      save: {dockId: /id}
+  - GET /docks/{dockId}:
+      path: {dockId: "{{dockId}}"}
+`
+	if err := os.WriteFile(filePath, []byte(file), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sp := newStarport()
+	srv := httptest.NewServer(sp)
+	defer srv.Close()
+	res := record(t, specPath, filePath, srv)
+	if len(res.Problems) > 0 {
+		t.Fatalf("problems:\n%s", notes(res.Problems))
+	}
+	if d := sp.docks[1]; d["name"] != "North-4" || d["capacity"] != json.Number("4") {
+		t.Errorf("dock sent: %v", d)
+	}
+	text := read(t, filePath)
+	if !strings.HasPrefix(text, "vars:\n  capacity: 4\n") || !strings.Contains(text, `name: "{{label}}"`) {
+		t.Errorf("record file:\n%s", text)
+	}
+	if !strings.Contains(read(t, specPath), "name: North-4") {
+		t.Errorf("spec misses the filled-in name:\n%s", read(t, specPath))
+	}
+
+	if err := os.WriteFile(filePath, []byte(strings.Replace(file, "  dockName: North\n  label:", "  label: \"{{dockName}}-1\"\n  dockName: North\n  other:", 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res = record(t, specPath, filePath, nil)
+	if got := notes(res.Problems); !strings.Contains(got, "PLACEHOLDER line 3 vars label: {{dockName}}: no value above it in vars") {
+		t.Errorf("problems:\n%s", got)
+	}
+}
+
+// -analyse keeps vars at the top and does not take it for a section; a
+// saved name it adds does not collide with a value of vars.
+func TestAnalyseKeepsVars(t *testing.T) {
+	specPath, filePath := workspace(t)
+	if err := os.WriteFile(filePath, []byte("vars:\n  dockId: 7\n  label: \"dock-{{dockId}}\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	an := analyse(t, specPath, filePath)
+	if len(an.Added) != 9 {
+		t.Fatalf("added %d, notes:\n%s", len(an.Added), notes(an.Notes))
+	}
+	text := read(t, filePath)
+	if !strings.HasPrefix(text, "vars:\n  dockId: 7\n  label: \"dock-{{dockId}}\"\nDock:\n") || !strings.Contains(text, "save: {dockId2: /id}") {
+		t.Errorf("record file:\n%s", text)
+	}
+	f, err := Load(filePath)
+	if err != nil || len(f.Vars) != 2 || f.values()["label"] != "dock-7" {
+		t.Errorf("vars: %v %+v", err, f.Vars)
+	}
+}
+
 // CheckOrder reports an entry apitest runs before an entry above it, and the
 // cases the file lacks.
 func TestCheckOrder(t *testing.T) {
@@ -733,6 +840,8 @@ func TestParse(t *testing.T) {
 		{"status", "Dock:\n  - GET /docks:\n      response: {status: ok}\n", "must be an HTTP status"},
 		{"no status", "Dock:\n  - GET /docks:\n      response: {body: {}}\n", "has no status"},
 		{"response setting", "Dock:\n  - GET /docks:\n      response: {status: 200, time: 1}\n", `unknown setting "time" in the response`},
+		{"vars no mapping", "vars: [1]\nDock:\n", "vars must map names to values"},
+		{"vars name", "vars: {1x: 1}\nDock:\n", "no name for a value"},
 		{"broken", "Dock: [\n", "did not find"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1270,7 +1379,7 @@ func TestRecordIgnoredEntries(t *testing.T) {
 	}
 	got := notes(res.Notes)
 	for _, want := range []string{
-		"GENERATED line 27 GET /docks: status ignore: not sent; generated from the schema: response 200 (apitest checks it against the schema only)",
+		"GENERATED line 29 GET /docks: status ignore: not sent; generated from the schema: response 200 (apitest checks it against the schema only)",
 		"GET /bookings/{bookingId}: status ignore: not sent; generated from the schema: path bookingId, response 200",
 		"PUT /docks/{dockId}: status ignore: not sent; generated from the schema: body, response 200",
 	} {

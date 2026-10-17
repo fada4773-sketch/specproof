@@ -34,6 +34,11 @@ contain breaking changes, which are listed here.
 
 ### Features
 
+- `apitest-gen record`: an optional mapping `vars` at the top of the
+  record file gives fixed values a name for every entry (`{{bookId}}`); a
+  value may combine the ones above it (`key: "{{bookId}}-{{bookCode}}"`),
+  and a value that is one placeholder keeps its type. A name not defined
+  above is reported as `PLACEHOLDER`. `-analyse` keeps `vars` at the top.
 - `apitest-gen record`: every schema under `components/schemas` gets an
   `example` from the values bodies and answers of the record file hold at
   it (nested ones too; an object cut to the properties the schema
