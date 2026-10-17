@@ -3,6 +3,8 @@ package tree
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -351,6 +353,179 @@ tree:
 	}
 }
 
+// TestFetchTrace: the fetch as a tree holds per node and record above it
+// the values with their source, the conditions, every request, and per
+// candidate why it was taken or not, with the visits below the record; the
+// page carries it.
+func TestFetchTrace(t *testing.T) {
+	s := loadStarport(t)
+	_, base := stage(t)
+	_, d := fetch(t, s, `
+tree:
+  planets:
+    call: GET /planets
+    pick: [venus, mars, pluto]
+    key: [/code]
+    each:
+      docks:
+        call: GET /planets/{code}/docks
+        path: {code: .code}
+        page: {param: page, size: {pageSize: 1}, max: 5}
+        pick: all
+        where: {capacity: ">=5"}
+        require:
+          ships:
+            call: GET /docks/{dockId}/ships
+            path: {dockId: .id}
+            where: {name: [South-1, Cloud-1]}
+            min: 1
+        each:
+          ships:
+            call: GET /docks/{dockId}/ships
+            path: {dockId: .id}
+            pick: {first: 1}
+`, base)
+	if len(d.Trace) != 1 || d.Trace[0].Node != "planets" {
+		t.Fatalf("one visit at the top: %+v", d.Trace)
+	}
+	planets := d.Trace[0]
+	if planets.Picked != 2 || len(planets.Notes) != 1 || !strings.Contains(planets.Notes[0], "pluto") || planets.Order != "in the order of the keys of pick" {
+		t.Errorf("planets: %+v", planets)
+	}
+	if len(planets.Requests) != 1 || planets.Requests[0].Log != 1 || planets.Requests[0].Status != 200 {
+		t.Errorf("planets requests: %+v", planets.Requests)
+	}
+	var mars *Visit
+	for _, c := range planets.Candidates {
+		if c.Key == "mars" && c.Outcome == OutcomePicked && len(c.Each) == 1 {
+			mars = c.Each[0]
+		}
+	}
+	if mars == nil {
+		t.Fatalf("the docks of mars below its candidate: %+v", planets.Candidates)
+	}
+	if mars.Under == "" || len(mars.Values) != 1 || mars.Values[0].From != ".code" || text(mars.Values[0].Value) != "mars" {
+		t.Errorf("value with its source: %+v", mars.Values)
+	}
+	if !slices.Contains(mars.Where, "capacity: >=5") {
+		t.Errorf("where: %v", mars.Where)
+	}
+	var where, required, picked bool
+	for _, c := range mars.Candidates {
+		switch c.Outcome {
+		case OutcomeWhere:
+			where = where || strings.Contains(c.Why, "capacity: >=5") && strings.Contains(c.Why, "the record has 4")
+		case OutcomeRequire:
+			required = required || len(c.Requires) == 1 && !c.Requires[0].Held && len(c.Requires[0].Requests) == 1 && strings.HasPrefix(c.Why, "require ships:")
+		case OutcomePicked:
+			picked = picked || len(c.Requires) == 1 && c.Requires[0].Held && len(c.Each) == 1 && c.Each[0].Node == "ships"
+		}
+	}
+	// North: capacity 4; East: no ship South-1 or Cloud-1; South picked
+	if !where || !required || !picked {
+		t.Errorf("candidates of mars (where %v, require %v, picked %v): %s", where, required, picked, encodeJSON(mars.Candidates))
+	}
+	// the ships below a dock read the answer of the require again: cached
+	for _, c := range mars.Candidates {
+		if c.Outcome == OutcomePicked {
+			if r := c.Each[0].Requests; len(r) != 1 || !r[0].Cached || r[0].Log != 0 {
+				t.Errorf("the second read of the ships comes from the cache: %+v", r)
+			}
+			break
+		}
+	}
+	path := filepath.Join(t.TempDir(), "tree-review_gen.md")
+	doc := LoadReview(path)
+	doc.Set(ReviewFetch, "fetched", "fetched", false)
+	doc.SetTimeline(ReviewFetch, FetchTimeline(d.Log, nil))
+	doc.SetTrace(FetchTrace(d, nil))
+	page := doc.RenderHTML()
+	if !strings.Contains(page, `<div class="trace"></div>`) || !strings.Contains(page, `"outcome":"where"`) {
+		t.Errorf("the page lacks the tree")
+	}
+	if err := os.WriteFile(HTMLPath(path), []byte(page), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := LoadReview(path).Trace(); len(got) != 1 || len(got[0].Candidates) != len(planets.Candidates) {
+		t.Errorf("a later run reads the tree back: %+v", got)
+	}
+}
+
+// TestGlobalWhereAtEveryDepth: the where of the file holds at every node
+// whose records are of the resource, however deep: lists below lists, a
+// list with items, a read of one record, a require, a search; a node of
+// another schema (the log of a ship) is not filtered.
+func TestGlobalWhereAtEveryDepth(t *testing.T) {
+	s := loadStarport(t)
+	_, base := stage(t)
+	tr, d := fetch(t, s, `
+where:
+  Dock.capacity: ">=5"
+  Ship.name: [South-1, East-2, Cloud-1]
+tree:
+  planets:
+    call: GET /planets
+    pick: all
+    key: [/code]
+    each:
+      docks:
+        call: GET /planets/{code}/docks
+        path: {code: .code}
+        page: {param: page, size: {pageSize: 1}, max: 5}
+        pick: all
+        require:
+          anyShip: GET /docks/{dockId}/ships dockId=.id
+        each:
+          ships:
+            call: GET /docks/{dockId}/ships
+            path: {dockId: .id}
+            pick: all
+            each:
+              ship: GET /ships/{shipId} shipId=.id
+              log: GET /ships/{shipId}/log shipId=.id
+  oneShip:
+    call: GET /ships/{shipId}
+    path: {shipId: 108}
+  pilots:
+    call: GET /pilots
+    pick: all
+    each:
+      flown:
+        call: POST /ships/search
+        read: true
+        body: {pilotId: .id}
+        pick: all
+`, base)
+	names := func(node string) []string {
+		var out []string
+		for _, r := range d.Of(tr.Node(node)) {
+			out = append(out, text(r.Value.(map[string]any)["name"]))
+		}
+		slices.Sort(out)
+		return slices.Compact(out)
+	}
+	if got := names("docks"); !slices.Equal(got, []string{"Cloud", "East", "South"}) {
+		t.Errorf("docks (items of a page, below the planets): %v", got)
+	}
+	ships := []string{"Cloud-1", "East-2", "South-1"}
+	for _, node := range []string{"ships", "ship", "flown"} {
+		if got := names(node); !slices.Equal(got, ships) {
+			t.Errorf("%s: %v, want %v", node, got, ships)
+		}
+	}
+	if len(d.Of(tr.Node("log"))) != 3 {
+		t.Errorf("the log is no ship: one per ship, unfiltered: %d", len(d.Of(tr.Node("log"))))
+	}
+	if got := d.Of(tr.Node("oneShip")); len(got) != 0 {
+		t.Errorf("a read of one record holds the where too: %v", got[0].Value)
+	}
+	if !slices.ContainsFunc(d.Notes, func(n string) bool {
+		return strings.Contains(n, "oneShip: the record it answered with was left out") && strings.Contains(n, "name: [South-1, East-2, Cloud-1]")
+	}) {
+		t.Errorf("the read of one record left out is noted with the clause: %v", d.Notes)
+	}
+}
+
 func TestFetchNotesAndBudget(t *testing.T) {
 	s := loadStarport(t)
 	_, base := stage(t)
@@ -382,7 +557,7 @@ tree:
     call: GET /planets/{code}/docks
     path: {code: terra}
 `, base)
-	for _, want := range []string{"answered 404", "docks: 2 of 9 picked from 3 candidates (1 left out by where)", "none: 0 of 1 picked from 0 candidates"} {
+	for _, want := range []string{"answered 404", "docks: 2 of 9 picked from 3 candidates (1 left out by where: capacity: >=5 ×1 (e.g. 103 has 4))", "none: 0 of 1 picked from 0 candidates"} {
 		if !slices.ContainsFunc(d.Notes, func(n string) bool { return strings.Contains(n, want) }) {
 			t.Errorf("notes lack %q: %v", want, d.Notes)
 		}
@@ -1554,5 +1729,52 @@ func TestReviewTimeline(t *testing.T) {
 	}
 	if strings.Count(again.RenderHTML(), `"step":"docks1.read"`) != 0 {
 		t.Error("the lines of the run before stay on the page")
+	}
+}
+
+// TestGlobalWhereFollowsItems: a page the spec does not mark as a list
+// (two lists in it) is read through items; the where of the file holds for
+// the records at items.
+func TestGlobalWhereFollowsItems(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "moons.yaml")
+	if err := os.WriteFile(path, []byte(`openapi: 3.0.3
+info: {title: moons, version: "1"}
+paths:
+  /moons:
+    get:
+      operationId: listMoons
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MoonPage'}
+components:
+  schemas:
+    MoonPage:
+      type: object
+      properties:
+        content: {type: array, items: {$ref: '#/components/schemas/Moon'}}
+        links: {type: array, items: {$ref: '#/components/schemas/Link'}}
+    Moon:
+      type: object
+      properties: {id: {type: integer}, name: {type: string}}
+    Link:
+      type: object
+      properties: {rel: {type: string}, href: {type: string}}
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := spec.Load(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"content":[{"id":1,"name":"Io"},{"id":2,"name":"Europa"}],"links":[{"rel":"self","href":"/moons"}]}`))
+	}))
+	defer srv.Close()
+	tr, d := fetch(t, s, "where:\n  Moon.name: Io\ntree:\n  moons:\n    call: GET /moons\n    items: /content\n    pick: all\n", srv.URL)
+	if got := d.Of(tr.Node("moons")); len(got) != 1 || text(got[0].Value.(map[string]any)["name"]) != "Io" {
+		t.Errorf("moons: %d records, want Io only", len(got))
 	}
 }

@@ -258,6 +258,21 @@ contain breaking changes, which are listed here.
     built when opened (long lists 100 at a time), closed on load, with
     search and "only failed"; each run keeps the timelines of the steps
     it did not run.
+  - `tree-review_gen.html` shows the fetch as a tree: per node and record
+    above it the values sent and where they come from, the conditions
+    (`where`, `any`, the `where` and `prefer` of the file), `pick`, every
+    request (cached ones marked), and per candidate why it was taken or
+    not (the failed clause with the value of the record, each `require`
+    with its requests), with the nodes below a record; the nodes that took
+    nothing on top.
+  - `apitest-gen tree`: the note of a node that took fewer records than
+    asked names per `where` clause how many candidates it left out, with
+    the value of the first, and the first reason of `require`; it also
+    comes for `pick: all` and a read of one record that took nothing
+    (before: no note).
+  - `apitest-gen tree`: the `where` of the file holds at a node with
+    `items` for the records at items (before: only where the spec marks
+    the list itself).
   - Scenario mode: a saved value takes the type of the field it is filled
     into, in a request body and in the kept answer of the golden snapshot
     (as parameters already did). An id saved from a `Location` header is

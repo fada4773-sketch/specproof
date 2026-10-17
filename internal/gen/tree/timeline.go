@@ -42,6 +42,13 @@ func (d *ReviewDoc) SetTimeline(step string, list []Entry) {
 	d.timelines[step] = list
 }
 
+// SetTrace sets the fetch as a tree; the page shows it above the requests
+// of the fetch.
+func (d *ReviewDoc) SetTrace(list []*Visit) { d.trace = list }
+
+// Trace is the fetch as a tree, nil without.
+func (d *ReviewDoc) Trace() []*Visit { return d.trace }
+
 // Timeline is the timeline of a step, nil without.
 func (d *ReviewDoc) Timeline(step string) []Entry { return d.timelines[step] }
 
@@ -175,12 +182,13 @@ type reviewData struct {
 	Spec      string             `json:"spec,omitempty"`
 	File      string             `json:"file,omitempty"`
 	Timelines map[string][]Entry `json:"timelines"`
+	Trace     []*Visit           `json:"trace,omitempty"`
 }
 
 // encodeData is the data of the review as JSON for the page; json escapes
 // <, > and &, so the text cannot end the script element.
 func (d *ReviewDoc) encodeData() string {
-	b, err := json.Marshal(reviewData{Spec: d.Spec, File: d.File, Timelines: d.timelines})
+	b, err := json.Marshal(reviewData{Spec: d.Spec, File: d.File, Timelines: d.timelines, Trace: d.trace})
 	if err != nil {
 		return `{"timelines":{}}`
 	}

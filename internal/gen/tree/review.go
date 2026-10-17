@@ -44,7 +44,9 @@ type ReviewDoc struct {
 	// timelines are the lines of each step in the order they ran; the page
 	// (tree-review_gen.html) shows them with their bodies and keeps them
 	timelines map[string][]Entry
-	page      string
+	// trace is the fetch as a tree (FetchTrace), kept like the timelines
+	trace []*Visit
+	page  string
 }
 
 type reviewSection struct {

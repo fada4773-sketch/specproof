@@ -61,6 +61,10 @@ type Data struct {
 	// Log is every request the fetch sent, in order (not in the data
 	// file: the review shows it).
 	Log []Exchange
+	// Trace is the fetch as a tree: per node and record above it the
+	// values, requests, conditions and candidates (not in the data file:
+	// the review page shows it).
+	Trace []*Visit
 }
 
 // Exchange is one request and its answer, for the review.
@@ -128,6 +132,11 @@ type fetcher struct {
 	preferRes map[*Node][]string
 	preferAt  map[string]bool
 	preferSub map[*Node]bool
+	// attach is where the next visit hangs (the top of the trace, or the
+	// candidate being taken), reqs the visit or require that gets the
+	// requests sent.
+	attach *[]*Visit
+	reqs   *[]TraceRequest
 }
 
 // first is the first record of a node fetched so far, nil without.
@@ -175,6 +184,7 @@ func Fetch(ctx context.Context, s *spec.Spec, t *Tree, opt Options) (*Data, erro
 	if f.budget <= 0 {
 		f.budget = DefaultBudget
 	}
+	f.attach = &f.data.Trace
 	if opt.Only != "" {
 		return f.only(ctx, opt.Only, opt.Before)
 	}
@@ -251,6 +261,12 @@ func (f *fetcher) note(format string, args ...any) {
 	f.data.Notes = append(f.data.Notes, fmt.Sprintf(format, args...))
 }
 
+// vnote notes and adds the note to a visit.
+func (f *fetcher) vnote(v *Visit, format string, args ...any) {
+	f.note(format, args...)
+	v.Notes = append(v.Notes, f.data.Notes[len(f.data.Notes)-1])
+}
+
 // where names a node and the record it runs under, for notes.
 func where(n *Node, parent *Record) string {
 	if parent == nil {
@@ -260,22 +276,30 @@ func where(n *Node, parent *Record) string {
 }
 
 func (f *fetcher) node(ctx context.Context, n *Node, parent *Record) error {
+	v := f.newVisit(n, parent)
 	if !n.Enabled() {
+		v.Skipped = "off: the node and what hangs below it are not fetched"
 		return nil
 	}
 	op := lookupOp(f.s, n.Call)
 	if op == nil {
 		f.note("%s: %s is not in the spec; left out", n.Name, n.Call)
+		v.Skipped = n.Call + " is not in the spec"
 		return nil
 	}
+	v.Op = op.ID
 	if missing := unsetParams(f.t, n); len(missing) > 0 {
 		if !f.unset[n] {
 			f.unset[n] = true
 			f.note("%s: left out, $%s has no value; set it under params at the top of tree.yaml", n.Name, strings.Join(missing, ", $"))
 		}
+		v.Skipped = "$" + strings.Join(missing, ", $") + " has no value; set it under params at the top of tree.yaml"
 		return nil
 	}
-	candidates, single, err := f.candidates(ctx, n, op, parent)
+	v.Values = f.traceValues(n, parent)
+	v.Where = f.traceWhere(n)
+	v.Pick = pickText(n)
+	candidates, single, err := f.candidates(ctx, n, op, parent, v)
 	if err != nil {
 		return err
 	}
@@ -283,33 +307,51 @@ func (f *fetcher) node(ctx context.Context, n *Node, parent *Record) error {
 		return nil
 	}
 	total := len(candidates)
+	v.Total, v.Single = total, single
 	f.prefers(n)
 	for _, r := range f.preferRes[n] {
 		f.preferAt[r] = true
 	}
 	var kept []cand
+	var out []*TraceCandidate
+	var labels []string
 	for _, c := range candidates {
 		if f.passes(n, c.value, parent) {
 			kept = append(kept, c)
+		} else {
+			label, why := f.failedClause(n, c.value, parent)
+			out = append(out, &TraceCandidate{Key: KeyText(c.value, keyOf(n)), Outcome: OutcomeWhere, Why: why, Value: c.value})
+			labels = append(labels, label)
 		}
 	}
 	whereOut := total - len(kept)
 	ordered, missing := f.order(n, kept)
+	switch {
+	case len(n.Pick.Keys) > 0:
+		v.Order = "in the order of the keys of pick"
+	case n.Pick.First || n.Pick.All || len(kept) < 2:
+		v.Order = "as answered"
+	default:
+		v.Order = fmt.Sprintf("at random by seed %d", f.t.Seed)
+	}
 	if len(missing) > 0 {
-		f.note("%s: no record with key %s", where(n, parent), strings.Join(missing, ", "))
+		f.vnote(v, "%s: no record with key %s", where(n, parent), strings.Join(missing, ", "))
 	}
 	// prefer: the preferred records (and those that lead to one) first;
 	// keys and all pick what they name
 	if !single && !n.Pick.All && len(n.Pick.Keys) == 0 && f.preferBelow(n) {
+		f.reqs = &v.Requests
 		if ordered, err = f.preferOrder(ctx, n, ordered, parent); err != nil {
 			return err
 		}
+		v.Order += ", then the preferred records and those that lead to one first"
 	}
 	// want is what pick asks for, limit what can be taken
 	want := len(ordered)
 	if !single && !n.Pick.All && len(n.Pick.Keys) == 0 {
 		want = max(n.Pick.N, 1)
 	}
+	v.Want = want
 	limit := min(want, len(ordered))
 	checks := n.Candidates
 	if checks == 0 {
@@ -317,25 +359,35 @@ func (f *fetcher) node(ctx context.Context, n *Node, parent *Record) error {
 	}
 	picked, requireOut, sourceOut := 0, 0, map[string]int{}
 	sources := f.sourcesOf(n)
+	var tried []*TraceCandidate
+	requireWhy := ""
 	for i, c := range ordered {
+		tc := &TraceCandidate{Key: KeyText(c.value, keyOf(n)), Value: c.value}
+		tried = append(tried, tc)
 		if picked >= limit {
-			break
+			tc.Outcome, tc.Why = OutcomeLimit, fmt.Sprintf("pick has its %d", picked)
+			continue
 		}
 		if len(n.Require) > 0 {
 			if i >= checks {
-				break
+				tc.Outcome, tc.Why = OutcomeChecks, fmt.Sprintf("candidates: %d are checked against require", checks)
+				continue
 			}
-			ok, err := f.required(ctx, n, c.value, parent)
+			ok, err := f.required(ctx, n, c.value, parent, tc)
 			if err != nil {
 				return err
 			}
 			if !ok {
 				requireOut++
+				tc.Outcome = OutcomeRequire
+				if requireWhy == "" {
+					requireWhy = tc.Key + ": " + tc.Why
+				}
 				continue
 			}
 		}
 		before, notes, counts := len(f.data.Records), len(f.data.Notes), maps.Clone(f.count)
-		rec, err := f.take(ctx, n, c, parent)
+		rec, err := f.take(ctx, n, c, parent, tc)
 		if err != nil {
 			return err
 		}
@@ -346,32 +398,55 @@ func (f *fetcher) node(ctx context.Context, n *Node, parent *Record) error {
 		if gone := f.lacking(rec, sources, before); gone != "" {
 			f.data.Records, f.data.Notes, f.count = f.data.Records[:before], f.data.Notes[:notes], counts
 			sourceOut[gone]++
+			tc.Outcome, tc.Record = OutcomeSource, ""
+			tc.Why = fmt.Sprintf("it names a record of %s, but %s took none below it (the source of order: left out by where); dropped with what hangs below it", gone, gone)
 			continue
 		}
+		tc.Outcome = OutcomePicked
 		picked++
+	}
+	v.Picked = picked
+	tried = append(tried, out...)
+	v.Candidates = tried
+	if len(v.Candidates) > traceLimit {
+		v.Hidden = len(v.Candidates) - traceLimit
+		v.Candidates = v.Candidates[:traceLimit]
 	}
 	// fewer records than asked for is noted when it is not just the data:
 	// none at all, or candidates left out by where or require
-	if !single && picked < want && (picked == 0 || whereOut > 0 || requireOut > 0 || len(sourceOut) > 0) {
+	// pick: all and a read of one record want what where lets through:
+	// none of the candidates is noted too
+	if (picked < want || picked == 0 && total > 0) && (picked == 0 || whereOut > 0 || requireOut > 0 || len(sourceOut) > 0) {
 		var why []string
 		if whereOut > 0 {
-			why = append(why, fmt.Sprintf("%d left out by where", whereOut))
+			why = append(why, fmt.Sprintf("%d left out by where: %s", whereOut, whereCounts(out, labels)))
 		}
 		if requireOut > 0 {
-			why = append(why, fmt.Sprintf("%d by require", requireOut))
+			why = append(why, fmt.Sprintf("%d by require (e.g. %s)", requireOut, requireWhy))
 		}
 		for _, name := range sortedKeys(sourceOut) {
 			why = append(why, fmt.Sprintf("%d without a record of %s (the source of order: left out by where)", sourceOut[name], name))
 		}
-		f.note("%s: %d of %d picked from %d candidates%s", where(n, parent), picked, want, total, paren(why))
+		switch {
+		case single:
+			f.vnote(v, "%s: the record it answered with was left out%s", where(n, parent), paren(why))
+		case n.Pick.All:
+			f.vnote(v, "%s: %d of all picked from %d candidates%s", where(n, parent), picked, total, paren(why))
+		default:
+			f.vnote(v, "%s: %d of %d picked from %d candidates%s", where(n, parent), picked, want, total, paren(why))
+		}
 	}
 	return nil
 }
 
 // take keeps a candidate as a record of n and fetches the nodes below it.
-func (f *fetcher) take(ctx context.Context, n *Node, c cand, parent *Record) (*Record, error) {
+func (f *fetcher) take(ctx context.Context, n *Node, c cand, parent *Record, tc *TraceCandidate) (*Record, error) {
 	f.count[n]++
 	rec := &Record{ID: fmt.Sprintf("%s%d", n.Name, f.count[n]), Node: n, Parent: parent, Value: c.value, Request: c.target}
+	tc.Record = rec.ID
+	up := f.attach
+	f.attach = &tc.Each
+	defer func() { f.attach = up }()
 	if len(n.Save) > 0 {
 		rec.Saved = map[string]any{}
 		for name, src := range n.Save {
@@ -483,11 +558,13 @@ func paren(parts []string) string {
 // candidates sends the request of a node, page by page and once per value
 // of a list-valued parameter, and returns the elements; single is set for
 // an answer that is one record. nil means the request failed (noted).
-func (f *fetcher) candidates(ctx context.Context, n *Node, op *spec.Operation, parent *Record) ([]cand, bool, error) {
+func (f *fetcher) candidates(ctx context.Context, n *Node, op *spec.Operation, parent *Record, v *Visit) ([]cand, bool, error) {
 	f.sending = where(n, parent)
+	f.reqs = &v.Requests
 	reqs, err := f.requests(n, op, parent)
 	if err != nil {
 		f.note("%s: %v", where(n, parent), err)
+		v.Skipped = err.Error()
 		return nil, false, nil
 	}
 	var out []cand
@@ -517,6 +594,7 @@ func (f *fetcher) candidates(ctx context.Context, n *Node, op *spec.Operation, p
 			}
 			if a.status/100 != 2 {
 				f.note("%s: %s answered %d; the branch is left out", where(n, parent), f.lastTarget, a.status)
+				v.Skipped = fmt.Sprintf("%s answered %d; the branch is left out", f.lastTarget, a.status)
 				return nil, false, nil
 			}
 			list, isList := listOf(n, op, a.body)
@@ -905,19 +983,28 @@ func fillPath(path string, values map[string]any) (string, error) {
 	return out, nil
 }
 
-// required checks a candidate against the requires of a node.
-func (f *fetcher) required(ctx context.Context, n *Node, cand any, parent *Record) (bool, error) {
+// required checks a candidate against the requires of a node; tc gets
+// each require checked and why it did not hold.
+func (f *fetcher) required(ctx context.Context, n *Node, cand any, parent *Record, tc *TraceCandidate) (bool, error) {
 	probe := &Record{ID: n.Name + "?", Node: n, Parent: parent, Value: cand}
 	for _, r := range n.Require {
-		op := lookupOp(f.s, r.Call)
-		if op == nil {
+		tr := &TraceRequire{Name: r.Name, Call: r.Call, Values: f.traceValues(r, probe), Where: f.traceWhere(r)}
+		tc.Requires = append(tc.Requires, tr)
+		fail := func(why string) (bool, error) {
+			tr.Why = why
+			tc.Why = "require " + r.Name + ": " + why
 			return false, nil
 		}
+		op := lookupOp(f.s, r.Call)
+		if op == nil {
+			return fail(r.Call + " is not in the spec")
+		}
 		f.sending = "require " + r.Name + " of a candidate of " + where(n, parent)
+		f.reqs = &tr.Requests
 		reqs, err := f.requests(r, op, probe)
 		if err != nil {
 			f.note("%s: require %s: %v", where(n, parent), r.Name, err)
-			return false, nil
+			return fail(err.Error())
 		}
 		for _, rq := range reqs {
 			a, err := f.send(ctx, op.Method, rq.path, rq.query, rq.header, rq.body, rq.hasBody)
@@ -925,26 +1012,34 @@ func (f *fetcher) required(ctx context.Context, n *Node, cand any, parent *Recor
 				return false, err
 			}
 			if a.status/100 != 2 {
-				return false, nil
+				return fail(fmt.Sprintf("%s answered %d", f.lastTarget, a.status))
 			}
 			// a list answer: its elements must hold where, and min of them
 			// be there; another answer must hold where itself
 			if list, isList := listOf(r, op, a.body); isList {
 				held := 0
+				var first string
 				for _, el := range list {
 					if f.passes(r, el, probe) {
 						held++
+					} else if first == "" {
+						first = f.whyNot(r, el, probe)
 					}
 				}
 				if held < max(r.Min, 1) && (r.Min > 0 || len(r.Where)+len(r.WhereAny)+len(f.globals(r)) > 0) {
-					return false, nil
+					why := fmt.Sprintf("%d of %d answered hold where, min %d", held, len(list), max(r.Min, 1))
+					if first != "" {
+						why += " (first left out: " + first + ")"
+					}
+					return fail(why)
 				}
 				continue
 			}
-			if !f.passes(r, a.body, probe) {
-				return false, nil
+			if why := f.whyNot(r, a.body, probe); why != "" {
+				return fail(why)
 			}
 		}
+		tr.Held = true
 	}
 	return true, nil
 }
@@ -1028,9 +1123,11 @@ func (f *fetcher) send(ctx context.Context, method, path string, query, header m
 		cacheKey += " " + encodeJSON(body)
 	}
 	if a, ok := f.cache[cacheKey]; ok {
+		f.traced(TraceRequest{For: f.sending, Method: method, Target: target, Status: a.status, Cached: true})
 		return a, nil
 	}
 	if f.data.Requests >= f.budget {
+		f.traced(TraceRequest{For: f.sending, Method: method, Target: target, Error: "not sent: " + errBudget.Error()})
 		return nil, errBudget
 	}
 	f.data.Requests++
@@ -1039,6 +1136,7 @@ func (f *fetcher) send(ctx context.Context, method, path string, query, header m
 	defer func() {
 		ex.Ms = time.Since(start).Milliseconds()
 		f.data.Log = append(f.data.Log, ex)
+		f.traced(TraceRequest{For: ex.For, Method: method, Target: target, Status: ex.Status, Error: ex.Error, Log: len(f.data.Log)})
 	}()
 	ctx, cancel := context.WithTimeout(ctx, f.opt.Timeout)
 	defer cancel()

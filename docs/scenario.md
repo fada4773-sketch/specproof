@@ -59,7 +59,7 @@ starport/
     │   ├── tree-data_gen.yaml        # generated: the records fetched (data of the stage)
     │   ├── tree-test_gen.yaml        # generated: the steps that rebuild them, and the answers of "tree run -update"
     │   ├── tree-review_gen.md        # generated: next command, plan, a section per step, one line per request and step
-    │   ├── tree-review_gen.html      # generated: every request and step with its bodies, in the order it ran
+    │   ├── tree-review_gen.html      # generated: every request and step with its bodies, in the order it ran; the fetch as a tree
     │   ├── tree_test.go              # yours, optional: the same test in go test
     │   └── out/                      # reports, not committed
     └── regression/
@@ -102,6 +102,24 @@ thousands of requests stays fast. On load everything is closed; search
 listed, tokens and secret fields are masked. Each run writes the page
 anew and keeps the timelines of the steps it did not run (it reads them
 back from the page).
+
+**The fetch as a tree.** Above the requests of the fetch the page shows
+the fetch as it ran, folded per node and record above it (`docks under
+planets2`): the values of path, query, header and body as `tree.yaml`
+writes them (`.code`, `planets.code`, `$moonId`) and as they were sent
+(a value that could not be read with its reason), the conditions of the
+records (the node's `where` and `any`, the `where` and `prefer` of the
+file), `pick` and how the candidates were ordered, every request with
+status (one taken from the cache marked; a click opens body and answer),
+the notes of the fetch about it, and every candidate: its key, the
+record, and its outcome — picked (with the record id and the nodes below
+it), left out by `where` (the clause, the value it was tested with and
+the value the record has: `where capacity: >=5; the record has 4`), by
+`require` (each require with its values, requests and why it did not
+hold), dropped as the source of `order`, or not needed once `pick` had
+its records. A list lists up to 200 candidates. On top, open on load,
+the nodes that took nothing or fewer than `pick` asks for; search narrows
+the tree too.
 
 | Section | Written by | Holds |
 |---|---|---|
@@ -317,8 +335,10 @@ are checked against the spec; a condition no node of the tree applies is
 noted after the fetch.
 
 Without a match a `where` takes nothing: `pick: 3` under a moon with one
-such garden gives that one garden (the review says "1 of 3 picked …
-left out by where").
+such garden gives that one garden (the review says `1 of 3 picked …
+left out by where: status: OPEN ×4 (e.g. 12 has "CLOSED")`: per
+clause how many it left out, with the value of the first). The same note
+comes for `pick: all` and for a read of one record when nothing passes.
 
 **Prefer.** `prefer` at the top, in the same form, does not filter: a
 pick takes the records that hold it first and fills the rest with others

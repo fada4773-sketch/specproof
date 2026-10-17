@@ -161,7 +161,7 @@ func (f *fetcher) clausesOf(n *Node, filters []Filter, used map[string]bool) []C
 	// garden are no garden)
 	var names []string
 	if op := lookupOp(f.s, n.Call); op != nil {
-		if dto := itemDTO(op); dto != "" {
+		if dto := nodeItemDTO(n, op); dto != "" {
 			names = append(names, dto)
 			if r := resourceOf(f.model, op); r != nil && len(r.Schemas) > 0 && r.Schemas[0] == dto {
 				names = append(names, r.Name)
@@ -349,6 +349,26 @@ func (f *fetcher) whereValue(parent *Record) func(any) any {
 		return v
 	}
 	return fill
+}
+
+// nodeItemDTO is the schema of one record of a node: the item of the list
+// at its items, else as itemDTO finds it.
+func nodeItemDTO(n *Node, op *spec.Operation) string {
+	if !n.HasItems {
+		return itemDTO(op)
+	}
+	ref := responseRef(op, lowestSuccess(op))
+	for _, part := range strings.Split(strings.TrimPrefix(n.Items, "/"), "/") {
+		if part == "" || ref == nil || ref.Value == nil {
+			continue
+		}
+		props, _ := dict.Properties(ref.Value)
+		ref, _ = propertyFoldIn(props, part)
+	}
+	if ref == nil || ref.Value == nil || ref.Value.Items == nil {
+		return ""
+	}
+	return dict.DTORef(ref.Value.Items)
 }
 
 // itemDTO is the schema of one record of an answer: the item of a list.

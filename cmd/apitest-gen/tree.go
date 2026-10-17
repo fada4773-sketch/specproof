@@ -541,6 +541,7 @@ func treeMain(o *treeOptions, out io.Writer) (int, error) {
 		}
 		review.Set(tree.ReviewFetch, summary, body, false)
 		review.SetTimeline(tree.ReviewFetch, tree.FetchTimeline(data.Log, red))
+		review.SetTrace(tree.FetchTrace(data, red))
 	default:
 		if _, err := os.Stat(dataPath); err != nil {
 			fmt.Fprintf(out, "no records yet: fetch them with -base-url <instance>\n")
@@ -697,7 +698,7 @@ func (o *treeOptions) writeReview(r *tree.ReviewDoc, out io.Writer) error {
 		return err
 	}
 	fmt.Fprintf(out, "  %s: the review, with the next step\n", path)
-	fmt.Fprintf(out, "  %s: every request and step with its bodies, in the order it ran\n", tree.HTMLPath(path))
+	fmt.Fprintf(out, "  %s: every request and step with its bodies, in the order it ran; the fetch as a tree\n", tree.HTMLPath(path))
 	return nil
 }
 
