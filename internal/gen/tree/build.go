@@ -1341,7 +1341,10 @@ func (b *builder) body(step string, r *Record, w *Write, ref *openapi3.SchemaRef
 		return map[string]any{}, nil
 	}
 	dto := dict.DTORef(ref)
-	out := b.project(step, src, ref.Value, r.Node.Name+"."+dto, dto, 0)
+	root := r.Node.Name + "." + dto
+	drop := map[string]string{}
+	out := b.project(step, src, ref.Value, root, dto, 0, drop)
+	b.noteDropped(step, root, dto, drop)
 	m, ok := out.(map[string]any)
 	if !ok {
 		return out, nil
@@ -1469,10 +1472,18 @@ func (b *builder) about(c, r *Record) bool {
 	return false
 }
 
+// Reasons project gives for a field of the record it leaves out.
+const (
+	dropReadOnly = "readOnly"
+	dropNull     = "null in the record"
+	dropUnknown  = "not in the schema"
+)
+
 // project cuts a value to a schema: object fields the schema declares (no
 // readOnly ones), list elements by the item schema. A required field the
-// value lacks is generated.
-func (b *builder) project(step string, v any, s *openapi3.Schema, path, dto string, depth int) any {
+// value lacks is generated. drop gets the fields of the value left out
+// (path → reason).
+func (b *builder) project(step string, v any, s *openapi3.Schema, path, dto string, depth int, drop map[string]string) any {
 	if s == nil || depth > 12 {
 		return v
 	}
@@ -1483,7 +1494,7 @@ func (b *builder) project(step string, v any, s *openapi3.Schema, path, dto stri
 		}
 		out := make([]any, len(l))
 		for i, c := range l {
-			out[i] = b.project(step, c, s.Items.Value, path+"[]", dict.DTORef(s.Items), depth+1)
+			out[i] = b.project(step, c, s.Items.Value, path+"[]", dict.DTORef(s.Items), depth+1, drop)
 		}
 		return out
 	}
@@ -1492,15 +1503,30 @@ func (b *builder) project(step string, v any, s *openapi3.Schema, path, dto stri
 		return v
 	}
 	in, _ := v.(map[string]any)
+	for k := range in {
+		if _, ok := propertyFoldName(props, k); !ok {
+			drop[path+"."+k] = dropUnknown
+		}
+	}
 	out := map[string]any{}
 	for _, name := range sortedKeys(props) {
 		p := props[name].Value
-		if p == nil || p.ReadOnly {
+		if p == nil {
 			continue
 		}
-		if val, ok := lookupFold(in, name); ok && val != nil {
-			out[name] = b.project(step, val, p, path+"."+name, dict.DTORef(props[name]), depth+1)
+		val, has := lookupFold(in, name)
+		if p.ReadOnly {
+			if has && val != nil {
+				drop[path+"."+name] = dropReadOnly
+			}
 			continue
+		}
+		if has && val != nil {
+			out[name] = b.project(step, val, p, path+"."+name, dict.DTORef(props[name]), depth+1, drop)
+			continue
+		}
+		if has && !slices.Contains(required, name) {
+			drop[path+"."+name] = dropNull
 		}
 		if !slices.Contains(required, name) {
 			continue
@@ -1514,6 +1540,31 @@ func (b *builder) project(step string, v any, s *openapi3.Schema, path, dto stri
 		b.note(step, fmt.Sprintf("%s = %s generated", name, text(out[name])), "the record of the stage has no "+name+", the request requires it")
 	}
 	return out
+}
+
+// noteDropped notes the fields of the record a body built by project
+// leaves out, by reason: the request (dto) cannot take them.
+func (b *builder) noteDropped(step, root, dto string, drop map[string]string) {
+	if len(drop) == 0 {
+		return
+	}
+	by := map[string][]string{}
+	var names []string
+	for _, path := range sortedKeys(drop) {
+		name := strings.TrimPrefix(strings.TrimPrefix(path, root), ".")
+		by[drop[path]] = append(by[drop[path]], name)
+		names = append(names, name)
+	}
+	var why []string
+	for _, reason := range []string{dropReadOnly, dropNull, dropUnknown} {
+		if l := by[reason]; len(l) > 0 {
+			if reason != dropNull {
+				reason += " of " + dto
+			}
+			why = append(why, reason+": "+strings.Join(l, ", "))
+		}
+	}
+	b.note(step, plural(len(names), "field")+" of the record left out: "+strings.Join(names, ", "), strings.Join(why, "; "))
 }
 
 func lookupFold(m map[string]any, name string) (any, bool) {

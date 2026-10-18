@@ -312,6 +312,11 @@ contain breaking changes, which are listed here.
     with the same body; the keys both nodes name now decide. A create
     that still sends the same request and body as an earlier one is noted
     at its step.
+  - `apitest-gen tree`: a body built from a record notes at its step
+    (review page and timeline) every field of the record it leaves out,
+    with the reason: `readOnly` in the request schema, `null` in the
+    record, or not in the request schema; nested fields by their path
+    (`pilot.rank`, `crew[].since`). Before, they were left out silently.
   - Token flags for both: `-token`, `-token-env`, `-forbidden-token`,
     `-forbidden-token-env`, `-header`. The settings file of a run is
     optional (spec, base URL, health, tokens, headers, report, unique).

@@ -799,7 +799,9 @@ the records in an empty instance:
   `details`, `profile`), a field taken from the first that has it; cut to
   the schema of the request: no readOnly
   fields, nested objects and lists by their schemas. A required field the
-  record lacks is generated and listed. `unique` marks fields like `code`
+  record lacks is generated and listed. The fields of the record the body
+  leaves out are noted at the step with their reason (`readOnly`, `null`
+  in the record, not in the schema of the request). `unique` marks fields like `code`
   or `email` and client-chosen keys, for `-unique`.
 - **Saved keys** come from the answer of the create, else the request
   body (a client-chosen key), else the `Location` header. An `ETag` is
