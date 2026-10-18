@@ -171,7 +171,9 @@ KEYS OF A NODE
                   (a path with {…} in a one-line {…} mapping is no valid
                   YAML: write such a mapping as a block)
   candidates      require checks at most this many candidates
-  key             JSON pointers that identify a record (default [/id])
+  key             JSON pointers that identify a record (default [/id]); a
+                  node with a create names the id the instance gives
+                  (-fix adds it): the test saves the new one
   save            values of the answer under a name: {etag: header ETag},
                   {no: /number}
   items           JSON pointer of the list in the answer (/content)

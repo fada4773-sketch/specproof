@@ -107,6 +107,7 @@ func propose(full *spec.Spec, ops []*spec.Operation) *Tree {
 	p.addWrites()
 	p.attachWrites()
 	p.conditions()
+	addGeneratedKeys(p.s, t)
 	p.t.Roots = p.sortSiblings(p.t.Roots, p.t.names())
 	t.Order = proposeOrder(p.s, p.m, t, p.orderValues())
 	t.HasOrder = len(t.Order) > 0

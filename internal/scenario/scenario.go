@@ -58,9 +58,10 @@ type Step struct {
 	// were filled in).
 	BodyFrom string
 	// Save keeps values for later steps: name → source. A source is a JSON
-	// pointer into the answer ("/id"), "header <Name>" ("header Location"
-	// gives its last path segment), "request /pointer", "request path
-	// <name>" or "request query <name>".
+	// pointer into the answer ("/id"; a part "[code={{ship1.code}}]" finds
+	// the element of a list with these values, see Lookup), "header <Name>"
+	// ("header Location" gives its last path segment), "request /pointer",
+	// "request path <name>" or "request query <name>".
 	Save map[string]string
 	// Token is TokenDefault, TokenNone, TokenInvalid or TokenForbidden.
 	Token string
@@ -348,6 +349,9 @@ func (st *Step) Uses() []string {
 	}
 	if st.Contains != nil {
 		out = append(out, Names(st.Contains.Values)...)
+	}
+	for _, src := range st.Save {
+		out = append(out, Names(src)...)
 	}
 	slices.Sort(out)
 	return slices.Compact(out)

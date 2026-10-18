@@ -758,7 +758,7 @@ tree:
   docks:
     call: GET /planets/{code}/docks
     path: {code: mars}
-    key: [/dockId]
+    key: [/dockId, /id]
     write:
       create: PUT /docks/{dockId} dockId=.dockId
       delete: DELETE /docks/{dockId} dockId=.dockId

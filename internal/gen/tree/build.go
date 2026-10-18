@@ -55,16 +55,21 @@ type builder struct {
 	schemes openapi3.SecuritySchemes
 	out     *Built
 
-	canon    map[*Record]*Record // record → the record that stands for it
-	created  map[*Record]bool
-	keyVar   map[*Record]map[string]string
-	byValue  map[string][]keyRef
-	etag     map[*Record]string
-	createID map[*Record]string
-	readID   map[*Record]string
-	deps     map[*Record][]*Record
-	ids      map[string]int
-	sent     map[string]bool
+	canon   map[*Record]*Record // record → the record that stands for it
+	created map[*Record]bool
+	keyVar  map[*Record]map[string]string
+	// generated are the fields of a created record the instance gives it
+	// (its id): the create does not send them, later steps take the saved
+	// value; finds are those the answer of the create lacks, read after it
+	generated map[*Record]map[string]bool
+	finds     map[*Record][]string
+	byValue   map[string][]keyRef
+	etag      map[*Record]string
+	createID  map[*Record]string
+	readID    map[*Record]string
+	deps      map[*Record][]*Record
+	ids       map[string]int
+	sent      map[string]bool
 	// sending are the fields sentValue is resolving: a create whose path
 	// takes the field from the record itself (PUT /docks/{dockId}
 	// dockId=.dockId) would ask for it again and again
@@ -111,6 +116,7 @@ func Build(s *spec.Spec, t *Tree, d *Data) (*Built, error) {
 	b := &builder{
 		s: s, t: t, d: d, m: model.Detect(s, nil), out: &Built{},
 		canon: map[*Record]*Record{}, created: map[*Record]bool{}, keyVar: map[*Record]map[string]string{},
+		generated: map[*Record]map[string]bool{}, finds: map[*Record][]string{},
 		byValue: map[string][]keyRef{}, etag: map[*Record]string{}, createID: map[*Record]string{},
 		readID: map[*Record]string{}, deps: map[*Record][]*Record{}, ids: map[string]int{}, sent: map[string]bool{}, sending: map[sentField]bool{},
 		scope: t.names(), writeSaved: map[string]bool{}, stage: map[string]any{}, strict: t.Strict(),
@@ -672,7 +678,43 @@ func (b *builder) entities() {
 			b.keyVar[r][field] = name
 			b.byValue[text(v)] = append(b.byValue[text(v)], keyRef{r, field})
 		}
+		// the fields the instance gives the record (id): in an empty instance
+		// they differ from the stage (456 there, 1 here)
+		for _, field := range b.generatedFields(r) {
+			if b.generated[r] == nil {
+				b.generated[r] = map[string]bool{}
+			}
+			b.generated[r][field] = true
+			if b.keyVar[r][field] != "" {
+				continue
+			}
+			v, _ := r.Get(field)
+			b.keyVar[r][field] = r.ID + "." + field
+			b.byValue[text(v)] = append(b.byValue[text(v)], keyRef{r, field})
+		}
 	}
+}
+
+// generatedFields are the fields of a created record the instance gives
+// it: its id, with a value, which the create does not require.
+func (b *builder) generatedFields(r *Record) []string {
+	m, ok := r.Value.(map[string]any)
+	if !ok {
+		return nil
+	}
+	_, op := b.createOf(r.Node)
+	_, required := properties(schemaOf(requestRef(op)))
+	var out []string
+	for _, field := range sortedKeys(m) {
+		if m[field] == nil || !generatedName(field) {
+			continue
+		}
+		if slices.ContainsFunc(required, func(x string) bool { return strings.EqualFold(x, field) }) {
+			continue // the client gives it
+		}
+		out = append(out, field)
+	}
+	return out
 }
 
 // relation scores how well a field name refers to the record: the length
@@ -969,6 +1011,7 @@ func (b *builder) creates() []*Record {
 		r    *Record
 		st   *scenario.Step
 		uses []string
+		find *scenario.Step // finds what the answer of the create lacks
 	}
 	var list []*pending
 	owner := map[string]*Record{}
@@ -994,12 +1037,13 @@ func (b *builder) creates() []*Record {
 		b.params(st, op, w.Path, w.Query, w.Header, r, r.Node, r)
 		if ref := requestRef(op); ref != nil || w.HasBody {
 			body, unique := b.body(st.ID, r, w, ref)
+			b.ownGenerated(st.ID, r, body, true)
 			st.Body, st.HasBody, st.Unique = body, true, unique
 		}
 		b.saves(st, r, op, expect)
 		addSaves(st, w)
 		b.createID[r] = st.ID
-		list = append(list, &pending{r: r, st: st, uses: st.Uses()})
+		list = append(list, &pending{r: r, st: st, uses: st.Uses(), find: b.findStep(r, st)})
 	}
 	// order: each time the first record (in fetch order) whose saved values
 	// are all there
@@ -1010,6 +1054,9 @@ func (b *builder) creates() []*Record {
 		order = append(order, p.r)
 		b.slot = ownerName(b, p.r)
 		b.push(p.st)
+		if p.find != nil {
+			b.push(p.find)
+		}
 	}
 	defer func() { b.slot = "" }()
 	if b.strict {
@@ -1064,6 +1111,98 @@ func (b *builder) creates() []*Record {
 	return order
 }
 
+// ownGenerated handles the fields the instance gives a record in a body
+// of its own: a create leaves them out (the instance gives them), an
+// update sends the saved value. A body the file writes stays.
+func (b *builder) ownGenerated(step string, r *Record, body any, create bool) {
+	m, ok := body.(map[string]any)
+	if !ok {
+		return
+	}
+	for _, field := range sortedKeys(b.generated[r]) {
+		k, v, has := foldEntry(m, field)
+		if !has {
+			continue
+		}
+		if s, isText := v.(string); isText && len(scenario.Names(s)) > 0 {
+			continue // a value the file or order gives
+		}
+		if create {
+			delete(m, k)
+			b.note(step, k+" left out", "the instance gives it ("+text(v)+" on the stage); later steps take the saved one")
+			continue
+		}
+		if name := b.keyVar[r][field]; name != "" {
+			m[k] = "{{" + name + "}}"
+		}
+	}
+}
+
+// findStep is the step right after the create of r that reads the fields
+// the instance gave the record (its id) when the answer of the create
+// lacks them: the request of its node, in a list the element whose other
+// keys the create sent ("/[slot=…][dock=…]/id"). Without such a request
+// later steps take the value of the stage.
+func (b *builder) findStep(r *Record, create *scenario.Step) *scenario.Step {
+	fields := b.finds[r]
+	if len(fields) == 0 {
+		return nil
+	}
+	drop := func(why string) *scenario.Step {
+		for _, f := range fields {
+			b.note(create.ID, "no saved "+f, why+"; later steps use the value of the stage")
+			delete(b.keyVar[r], f)
+		}
+		return nil
+	}
+	n := r.Node
+	op := lookupOp(b.s, n.Call)
+	if op == nil || op.Method != http.MethodGet && !n.Read {
+		return drop("the answer of " + create.Call + " has no " + strings.Join(fields, ", ") + " and " + n.Name + " reads with no GET")
+	}
+	st := &scenario.Step{ID: b.id(r.ID + ".find"), Call: callOf(op), Expect: lowestSuccess(op)}
+	if st.Expect == 0 {
+		st.Expect = http.StatusOK
+	}
+	query := n.Query
+	if n.Page != nil && n.Page.In != "body" && len(n.Page.Size) > 0 {
+		query = merged(cloneMap(query), n.Page.Size)
+	}
+	b.params(st, op, n.Path, singleValues(query), n.Header, r.Parent, n.Parent, nil)
+	if n.HasBody {
+		st.Body, st.HasBody = b.resolve(n.Body, r.Parent, n.Parent, "", st.ID, nil), true
+	}
+	for _, name := range st.Uses() {
+		for _, f := range fields {
+			if name == b.keyVar[r][f] {
+				return drop(n.Name + " reads the record by " + f + " itself")
+			}
+		}
+	}
+	prefix := ""
+	if n.HasItems || isList(op) {
+		var keys, vals []string
+		for _, k := range sortedKeys(b.keyVar[r]) {
+			name := b.keyVar[r][k]
+			if _, saved := create.Save[name]; !saved || b.generated[r][k] {
+				continue
+			}
+			keys = append(keys, k)
+			vals = append(vals, "{{"+name+"}}")
+		}
+		if len(keys) == 0 {
+			return drop(n.Name + " lists the records, and the create saves no other key to find " + r.ID + " by")
+		}
+		prefix = n.Items + "/" + scenario.FindPart(keys, vals)
+	}
+	st.Save = map[string]string{}
+	for _, f := range fields {
+		st.Save[b.keyVar[r][f]] = prefix + "/" + f
+	}
+	st.Why = fmt.Sprintf("finds the %s the instance gave %s: the answer of %s does not hold it", strings.Join(fields, ", "), r.ID, create.ID)
+	return st
+}
+
 // saves adds what a create keeps: the keys of the record (from the answer,
 // the Location header or the request) and its ETag.
 func (b *builder) saves(st *scenario.Step, r *Record, op *spec.Operation, status int) {
@@ -1074,9 +1213,18 @@ func (b *builder) saves(st *scenario.Step, r *Record, op *spec.Operation, status
 	first := true
 	for _, field := range sortedKeys(b.keyVar[r]) {
 		name := b.keyVar[r][field]
+		// the answer may spell the field otherwise (Id for id)
+		answered, inAnswer := propertyFoldName(props, field)
+		gen := b.generated[r][field]
 		switch {
-		case props[field] != nil:
-			st.Save[name] = "/" + field
+		case inAnswer:
+			st.Save[name] = "/" + answered
+		case gen && documentsHeader(op, status, "Location"):
+			st.Save[name] = "header Location"
+		case gen:
+			// the instance gives it, the answer does not hold it: a step after
+			// the create finds the record by its other keys
+			b.finds[r] = append(b.finds[r], field)
 		case req[field] != nil && hasField(st.Body, field):
 			st.Save[name] = "request /" + field
 		case pathParamOf(st, r, field) != "":
@@ -1717,6 +1865,7 @@ func (b *builder) update(r *Record, w *Write, op *spec.Operation, kind string) {
 		// the unique values of the create again: a run with Unique sends the
 		// new ones, the keys the next update by code or name takes stay
 		body, unique := b.body(st.ID, r, w, ref)
+		b.ownGenerated(st.ID, e, body, false)
 		st.Unique = unique
 		if !w.HasBody && !action {
 			full := KindBase(kind) == WriteUpdate

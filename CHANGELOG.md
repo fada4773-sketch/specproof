@@ -275,6 +275,17 @@ contain breaking changes, which are listed here.
     the value inside the object. Before, such a reference got no source
     and no warning, and `-fix` removed one written by hand. Lists of
     objects are not followed.
+  - `apitest-gen tree`: the id an instance gives a record the test
+    creates is replaced: a node with a create has `/id` in `key` (the
+    check names it, `-fix` and the proposal add it) unless the create
+    requires it. The create leaves the id out of its body and saves the
+    new one from the answer (the field may be spelled `Id`), the
+    `Location` header, or a step `<record>.find` right after it that finds
+    the record in the node's list by its other keys; reads below it
+    (`id=.id`), updates and deletes take the saved id. Before, they took
+    the id of the stage (456), which the empty instance gives no record.
+  - Scenario `save`: a part `[field=value]` of a pointer finds the element
+    of a list (`/[slot={{bookings1.slot}}]/id`), with saved values in it.
   - `tree-review_gen.html`: the button "Mismatches (n)" on top lists every
     step of every timeline with a data mismatch, a schema violation or a
     difference from the golden snapshot, grouped by kind: the message,

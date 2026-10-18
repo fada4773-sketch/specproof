@@ -1093,7 +1093,8 @@ func (s *scenarioRunner) save(st *scenario.Step, resp *exec.Response, body any) 
 	query, _ := scenario.Fill(anyOrNil(st.Query), s.vars)
 	got := map[string]any{}
 	for _, name := range scenarioKeys(anyMap(st.Save)) {
-		from := st.Save[name]
+		// a source may find a list element by saved values: /[code={{c}}]/id
+		from, _ := scenario.FillSource(st.Save[name], s.vars)
 		v, ok := source(from, resp.Header, body, reqBody, path, query)
 		if !ok {
 			missing = append(missing, from)
@@ -1135,7 +1136,7 @@ func source(from string, header http.Header, body, reqBody, path, query any) (an
 		if rest == "/" {
 			return reqBody, reqBody != nil
 		}
-		return bind.Pointer(reqBody, rest)
+		return scenario.Lookup(reqBody, rest)
 	}
 	if name, ok := strings.CutPrefix(from, "header "); ok {
 		h := header.Get(name)
@@ -1150,7 +1151,7 @@ func source(from string, header http.Header, body, reqBody, path, query any) (an
 	if from == "/" {
 		return body, body != nil
 	}
-	return bind.Pointer(body, from)
+	return scenario.Lookup(body, from)
 }
 
 // compareGolden compares the answer with the golden snapshot: the body as

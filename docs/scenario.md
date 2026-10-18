@@ -508,6 +508,16 @@ marked `# new: check its place`, and the run says so.
   the read below (`shipPilot`) can be `off: true` and does not come back;
 - a source of such a field reads records of that resource (`pilotId:
   shipDock.id` is named, the fix takes the pilot below);
+- a node whose records the test creates has their `id` in `key` when the
+  create does not require it: the instance gives the id, an empty
+  instance another one than the stage (456 there, 1 here). The fix adds
+  it (`key: [/slot] → key: [/slot, /id]`), the proposal has it. The
+  create then leaves the id out of its body and saves the new one: from
+  the answer (also spelled `Id`), from the `Location` header, else by a
+  step `<record>.find` right after it that reads the node's request and
+  takes the element whose other keys the create sent
+  (`/[slot={{bookings1.slot}}]/id`); later steps (`.id` below the record,
+  its updates and deletes) take the saved one;
 - a path value that is a value of the stage (`shipId=7`, or `$shipId`
   with a value in params) where the path takes the key of a record the
   test creates: the fix names the record itself (`.id` in a write) or the
@@ -872,7 +882,7 @@ steps:
 | `path`, `query`, `header` | parameter values; `{{name}}` is a saved value (alone: with its type; inside a text: as text) |
 | `body` | the request body |
 | `bodyFrom` | send the body an earlier step sent |
-| `save` | `name: source`: `/pointer` into the answer, `header Location` (its last path segment), `header ETag`, `request /pointer`, `request path <name>`, `request query <name>` |
+| `save` | `name: source`: `/pointer` into the answer (a part `[field=value]…` finds the element of a list with these values, `{{name}}` saved values in it: `/[slot={{bookings1.slot}}]/id`; in a page its one list), `header Location` (its last path segment), `header ETag`, `request /pointer`, `request path <name>`, `request query <name>` |
 | `token` | `none` (401), `invalid` (a manipulated token), `forbidden` (403); left out: the default token |
 | `expect` | the status the answer must have |
 | `check.equals` | the answer holds what that step sent (fields the answer's schema does not declare and writeOnly ones left out) |
