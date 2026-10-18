@@ -773,7 +773,7 @@ func (b *builder) readBy(n *Node, field string) bool {
 
 // placeholderFor replaces a value of the stage by the saved key of the
 // record the scenario creates for it, when the field name refers to that
-// record: authorId 3 → {{authors2.id}}. Without a fitting record the value
+// record: pilotId 3 → {{pilots2.id}}. Without a fitting record the value
 // stays.
 func (b *builder) placeholderFor(v any, fields []string, at string, exclude *Record, step string) any {
 	best := b.matches(v, fields, exclude)
@@ -1341,17 +1341,9 @@ func (b *builder) body(step string, r *Record, w *Write, ref *openapi3.SchemaRef
 		return map[string]any{}, nil
 	}
 	dto := dict.DTORef(ref)
-	root := r.Node.Name + "." + dto
-	drop := map[string]string{}
-	out := b.project(step, src, ref.Value, root, dto, 0, drop)
-	b.noteDropped(step, root, dto, drop)
-	m, ok := out.(map[string]any)
-	if !ok {
-		return out, nil
-	}
 	props, _ := properties(ref.Value)
-	var unique []string
-	// the fields order gives a source, by path: substitute leaves them
+	// the fields order gives a source, by path: substitute leaves them; the
+	// search in project also leaves those fields of the node gives
 	set := map[string]bool{}
 	if e := b.entryOf(b.entity(r)); e != nil {
 		for f := range e.Values {
@@ -1360,7 +1352,23 @@ func (b *builder) body(step string, r *Record, w *Write, ref *openapi3.SchemaRef
 			}
 		}
 	}
+	fixed := maps.Clone(set)
+	rules := b.fieldRules(r)
+	for _, f := range sortedKeys(rules) {
+		if _, k, ok := bodyField(props, f); ok {
+			fixed[k] = true
+		}
+	}
+	pj := &projection{root: r.Node.Name + "." + dto, drop: map[string]string{}, fixed: fixed}
+	out := b.project(step, src, ref.Value, pj.root, dto, 0, pj)
+	b.noteDropped(step, dto, pj)
+	m, ok := out.(map[string]any)
+	if !ok {
+		return out, nil
+	}
+	var unique []string
 	b.sources(r, m, props)
+	b.applyRules(step, r, m, props, rules)
 	for _, k := range sortedKeys(m) {
 		m[k] = b.substitute(m[k], k, set, r, step)
 		if p := props[k]; p != nil && p.Value != nil && isUniqueField(p.Value, k, r.Node) {
@@ -1371,6 +1379,34 @@ func (b *builder) body(step string, r *Record, w *Write, ref *openapi3.SchemaRef
 	}
 	b.validate(step, m, ref.Value)
 	return m, unique
+}
+
+// fieldRules are the fields of the node of r (and of its entity, when r
+// is a view): body field → where its value comes from.
+func (b *builder) fieldRules(r *Record) map[string]any {
+	out := map[string]any{}
+	for _, n := range []*Node{b.entity(r).Node, r.Node} {
+		maps.Copy(out, n.Fields)
+	}
+	return out
+}
+
+// applyRules sets the body fields the fields of the node give (pilotId:
+// .pilotDetails.pilotId), over the record and order; a write whose body
+// has no such field leaves it.
+func (b *builder) applyRules(step string, r *Record, m map[string]any, props openapi3.Schemas, rules map[string]any) {
+	for _, f := range sortedKeys(rules) {
+		_, k, ok := bodyField(props, f)
+		if !ok {
+			continue
+		}
+		v := b.resolve(rules[f], r, r.Node, k[strings.LastIndex(k, ".")+1:], step, r)
+		if v == nil {
+			continue // resolve noted why
+		}
+		setField(m, k, v)
+		b.note(step, fmt.Sprintf("%s = %s from fields", k, text(v)), fmt.Sprintf("fields of %s: %s: %s", r.Node.Name, f, text(rules[f])))
+	}
 }
 
 // substitute replaces the values of a body that refer to records the
@@ -1479,11 +1515,26 @@ const (
 	dropUnknown  = "not in the schema"
 )
 
+// projection is the state of one body project builds: root is the path of
+// the body (ships.ShipWrite), drop gets the fields of the record left out
+// (path → reason), fixed are the body fields with a source of their own
+// (order, fields of the node), which the search for a reference skips.
+type projection struct {
+	root  string
+	drop  map[string]string
+	fixed map[string]bool
+}
+
+// rel is a path of project inside the body: crew.pilotId.
+func (pj *projection) rel(path string) string {
+	return strings.TrimPrefix(strings.TrimPrefix(path, pj.root), ".")
+}
+
 // project cuts a value to a schema: object fields the schema declares (no
-// readOnly ones), list elements by the item schema. A required field the
-// value lacks is generated. drop gets the fields of the value left out
-// (path → reason).
-func (b *builder) project(step string, v any, s *openapi3.Schema, path, dto string, depth int, drop map[string]string) any {
+// readOnly ones), list elements by the item schema. A reference field the
+// value lacks (pilotId) is searched deeper in it (pilotDetails.pilotId,
+// deepRef); a required field it still lacks is generated.
+func (b *builder) project(step string, v any, s *openapi3.Schema, path, dto string, depth int, pj *projection) any {
 	if s == nil || depth > 12 {
 		return v
 	}
@@ -1494,7 +1545,7 @@ func (b *builder) project(step string, v any, s *openapi3.Schema, path, dto stri
 		}
 		out := make([]any, len(l))
 		for i, c := range l {
-			out[i] = b.project(step, c, s.Items.Value, path+"[]", dict.DTORef(s.Items), depth+1, drop)
+			out[i] = b.project(step, c, s.Items.Value, path+"[]", dict.DTORef(s.Items), depth+1, pj)
 		}
 		return out
 	}
@@ -1505,7 +1556,7 @@ func (b *builder) project(step string, v any, s *openapi3.Schema, path, dto stri
 	in, _ := v.(map[string]any)
 	for k := range in {
 		if _, ok := propertyFoldName(props, k); !ok {
-			drop[path+"."+k] = dropUnknown
+			pj.drop[path+"."+k] = dropUnknown
 		}
 	}
 	out := map[string]any{}
@@ -1517,16 +1568,22 @@ func (b *builder) project(step string, v any, s *openapi3.Schema, path, dto stri
 		val, has := lookupFold(in, name)
 		if p.ReadOnly {
 			if has && val != nil {
-				drop[path+"."+name] = dropReadOnly
+				pj.drop[path+"."+name] = dropReadOnly
 			}
 			continue
 		}
 		if has && val != nil {
-			out[name] = b.project(step, val, p, path+"."+name, dict.DTORef(props[name]), depth+1, drop)
+			out[name] = b.project(step, val, p, path+"."+name, dict.DTORef(props[name]), depth+1, pj)
 			continue
 		}
+		if !has && in != nil && !pj.fixed[pj.rel(path+"."+name)] {
+			if dv, ok := b.deepRef(step, in, name, pj.rel(path), p, props); ok {
+				out[name] = dv
+				continue
+			}
+		}
 		if has && !slices.Contains(required, name) {
-			drop[path+"."+name] = dropNull
+			pj.drop[path+"."+name] = dropNull
 		}
 		if !slices.Contains(required, name) {
 			continue
@@ -1544,15 +1601,15 @@ func (b *builder) project(step string, v any, s *openapi3.Schema, path, dto stri
 
 // noteDropped notes the fields of the record a body built by project
 // leaves out, by reason: the request (dto) cannot take them.
-func (b *builder) noteDropped(step, root, dto string, drop map[string]string) {
-	if len(drop) == 0 {
+func (b *builder) noteDropped(step, dto string, pj *projection) {
+	if len(pj.drop) == 0 {
 		return
 	}
 	by := map[string][]string{}
 	var names []string
-	for _, path := range sortedKeys(drop) {
-		name := strings.TrimPrefix(strings.TrimPrefix(path, root), ".")
-		by[drop[path]] = append(by[drop[path]], name)
+	for _, path := range sortedKeys(pj.drop) {
+		name := pj.rel(path)
+		by[pj.drop[path]] = append(by[pj.drop[path]], name)
 		names = append(names, name)
 	}
 	var why []string

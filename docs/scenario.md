@@ -376,6 +376,7 @@ name. A prefer no fetched record holds is noted.
 | `candidates` | how many candidates `require` checks at most |
 | `key` | JSON pointers that identify a record (default `/id`); records are matched by them |
 | `save` | values under a name: `/pointer`, or `header <Name>` |
+| `fields` | where a field of the bodies built from the record comes from when the record holds it elsewhere: `pilotId: .pilotDetails.pilotId` (also `<node>.field`, `$name` or a value); over the record, `order` and the search for a reference (see Bodies) |
 | `write` | `create` (or `none`), `update`, `patch`, `delete`, their variants by another key (`update-by-name: PUT /gardens/name/{name} name=.name`, `delete-by-code`, `patch-by-…`), and actions under any other name (`open: POST /gardens/{gardenId}/open gardenId=.id`) |
 | `each` | the child nodes |
 | `off` | the node and its children are not fetched |
@@ -631,7 +632,7 @@ spec (the model apitest-gen uses for its examples):
   `update-by-code` in the same block, deletes and patches alike; its reads
   by the other keys are `gardenByName` and `gardenByCode`, and `key`
   starts with the id (`[/id, /code, /name]`). Path parameters come from a
-  node above that gives them, else a field of the record itself (`authorId` of a book), else any
+  node above that gives them, else a field of the record itself (`pilotId` of a book), else any
   node of the tree, else `$name`. Create, update and patch always get
   `body: from <read>`: the read of the record that covers most fields of
   the request (`from profile`), else the node itself;
@@ -799,9 +800,18 @@ the records in an empty instance:
   `details`, `profile`), a field taken from the first that has it; cut to
   the schema of the request: no readOnly
   fields, nested objects and lists by their schemas. A required field the
-  record lacks is generated and listed. The fields of the record the body
-  leaves out are noted at the step with their reason (`readOnly`, `null`
-  in the record, not in the schema of the request). `unique` marks fields like `code`
+  record lacks is generated and listed. A reference field the record
+  lacks (`pilotId`, the last word `id`) is searched in it: the same name
+  deeper (`pilotDetails.pilotId`), a name that ends with it
+  (`currentPilotId`, also deeper), the `id` of an object named after it
+  (`currentPilot.id`), in that order; objects only, no lists, at most 6
+  levels and 5000 fields, no field the body takes under its own name. It is
+  taken when the fields of the best kind hold one value (noted with the
+  path); several values are noted and none is taken: `fields` of the node
+  decides. A source in `order` or `fields` comes first. The fields of the
+  record the body leaves out are noted at the step with their reason
+  (`readOnly`, `null` in the record, not in the schema of the request).
+  `unique` marks fields like `code`
   or `email` and client-chosen keys, for `-unique`.
 - **Saved keys** come from the answer of the create, else the request
   body (a client-chosen key), else the `Location` header. An `ETag` is

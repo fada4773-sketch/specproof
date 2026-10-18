@@ -170,7 +170,7 @@ type Tree struct {
 // Tags (all without), none of ExcludeTags or ExcludeOps (operationIds or
 // "METHOD /path"; * matches any text). Deps also proposes the reads of
 // other tags that give values the scope needs (a list of authors for
-// {authorId}).
+// {pilotId}).
 type Scope struct {
 	Tags, ExcludeTags, ExcludeOps []string
 	Deps                          bool
@@ -184,6 +184,11 @@ type Node struct {
 	Path, Query, Header map[string]any
 	Body                any
 	HasBody             bool
+	// Fields say where a field of the bodies built from the node's records
+	// comes from when the record holds it elsewhere: body field (pilotId,
+	// crew.pilotId) → a reference (.pilotDetails.pilotId, books.id,
+	// $name) or a value.
+	Fields map[string]any
 	// Read marks a POST that only reads (a search); only such a POST is
 	// sent by a fetch.
 	Read bool
@@ -399,7 +404,7 @@ func (p *parser) errf(n *yaml.Node, format string, args ...any) {
 }
 
 var nodeKeys = []string{"call", "path", "query", "header", "body", "read", "items", "page", "pick", "candidates",
-	"min", "where", "require", "key", "save", "write", "each", "off"}
+	"min", "where", "require", "key", "save", "fields", "write", "each", "off"}
 
 func (p *parser) scope(v *yaml.Node) Scope {
 	var sc Scope
@@ -570,6 +575,8 @@ func (p *parser) node(name string, v *yaml.Node, parent *Node) *Node {
 			}
 		case "save":
 			n.Save = p.save(val, name)
+		case "fields":
+			n.Fields, _ = p.valueMap(val, name+".fields")
 		case "write":
 			n.Write = p.writes(val, name)
 		case "each":

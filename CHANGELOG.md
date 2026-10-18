@@ -317,6 +317,15 @@ contain breaking changes, which are listed here.
     with the reason: `readOnly` in the request schema, `null` in the
     record, or not in the request schema; nested fields by their path
     (`pilot.rank`, `crew[].since`). Before, they were left out silently.
+  - `apitest-gen tree`: a reference field a body needs and the record
+    lacks (`pilotId`) is searched in the record: the same name deeper
+    (`pilotDetails.pilotId`), a name that ends with it (`currentPilotId`),
+    the id of an object named after it (`currentPilot.id`); objects only,
+    at most 6 levels and 5000 fields. It is taken when it names one value,
+    with a note of the path; several values are noted, none is taken.
+    The new node key `fields` says where a body field comes from
+    (`fields: {pilotId: .log.lastPilotId}`), over the record, `order` and
+    the search; `tree check` names a field no body of the node has.
   - Token flags for both: `-token`, `-token-env`, `-forbidden-token`,
     `-forbidden-token-env`, `-header`. The settings file of a run is
     optional (spec, base URL, health, tokens, headers, report, unique).

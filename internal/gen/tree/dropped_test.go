@@ -52,6 +52,10 @@ components:
             dockId: {type: integer}
 `
 
+func newProjection() *projection {
+	return &projection{root: "ships.ShipWrite", drop: map[string]string{}, fixed: map[string]bool{}}
+}
+
 // TestBodyDroppedNote: a body built from a record notes every field of the
 // record it leaves out, with the reason, also inside objects and lists;
 // the fields the request takes stay.
@@ -69,10 +73,10 @@ func TestBodyDroppedNote(t *testing.T) {
 		"crew":      []any{map[string]any{"role": "cook", "since": 1}, map[string]any{"role": "medic", "since": 2}},
 		"createdAt": "2026-01-01"}
 	b := &builder{out: &Built{}}
-	drop := map[string]string{}
+	pj := newProjection()
 	ref := requestRef(lookupOp(s, "createShip"))
-	out, _ := b.project("ships.create", rec, ref.Value, "ships.ShipWrite", "ShipWrite", 0, drop).(map[string]any)
-	b.noteDropped("ships.create", "ships.ShipWrite", "ShipWrite", drop)
+	out, _ := b.project("ships.create", rec, ref.Value, pj.root, "ShipWrite", 0, pj).(map[string]any)
+	b.noteDropped("ships.create", "ShipWrite", pj)
 
 	for _, k := range []string{"name", "dockId", "pilot", "crew"} {
 		if _, ok := out[k]; !ok {
@@ -97,9 +101,9 @@ func TestBodyDroppedNote(t *testing.T) {
 	}
 
 	b = &builder{out: &Built{}}
-	drop = map[string]string{}
-	b.project("ships.create", map[string]any{"name": "Comet"}, ref.Value, "ships.ShipWrite", "ShipWrite", 0, drop)
-	b.noteDropped("ships.create", "ships.ShipWrite", "ShipWrite", drop)
+	pj = newProjection()
+	b.project("ships.create", map[string]any{"name": "Comet"}, ref.Value, pj.root, "ShipWrite", 0, pj)
+	b.noteDropped("ships.create", "ShipWrite", pj)
 	if len(b.out.Notes) != 0 {
 		t.Errorf("nothing left out, no note: %v", b.out.Notes)
 	}

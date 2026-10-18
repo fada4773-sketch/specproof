@@ -359,6 +359,8 @@ func check(s *spec.Spec, t *Tree) ([]string, []Fix) {
 					add(w.Line, "%s.write.%s: body from %q: no node of that name", n.Name, kind, w.From)
 				}
 			}
+			checkFields(s, n, func(format string, args ...any) { add(n.Line, format, args...) })
+			checkRefs(n.Line, n.Name+".fields", n, true, nil, anyMap(n.Fields))
 			walk(n.Each)
 		}
 	}
@@ -382,6 +384,33 @@ func check(s *spec.Spec, t *Tree) ([]string, []Fix) {
 	sortProblems(problems)
 	slices.SortStableFunc(fixes, func(a, b Fix) int { return a.Line - b.Line })
 	return problems, fixes
+}
+
+// checkFields: each field of fields is a field of the body of a write of
+// the node that builds its body from the record (no body of its own).
+func checkFields(s *spec.Spec, n *Node, add func(format string, args ...any)) {
+	if len(n.Fields) == 0 {
+		return
+	}
+	var props []openapi3.Schemas
+	for _, kind := range n.Kinds() {
+		w := n.Write[kind]
+		if w == nil || w.None || w.Off || w.Gone || w.HasBody {
+			continue
+		}
+		if p, _ := properties(schemaOf(requestRef(lookupOp(s, w.Call)))); len(p) > 0 {
+			props = append(props, p)
+		}
+	}
+	for _, f := range sortedKeys(n.Fields) {
+		if len(props) == 0 {
+			add("%s.fields.%s: no write of %s builds a body from the record", n.Name, f, n.Name)
+			continue
+		}
+		if !slices.ContainsFunc(props, func(p openapi3.Schemas) bool { _, _, ok := bodyField(p, f); return ok }) {
+			add("%s.fields.%s: no body of a write of %s has the field %s", n.Name, f, n.Name, f)
+		}
+	}
 }
 
 // dotRecord names the record ".field" reads at a node: in a write the

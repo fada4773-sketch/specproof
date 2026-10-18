@@ -176,6 +176,11 @@ KEYS OF A NODE
                   (-fix adds it): the test saves the new one
   save            values of the answer under a name: {etag: header ETag},
                   {no: /number}
+  fields          where a body field comes from when the record holds it
+                  elsewhere: {pilotId: .pilotDetails.pilotId}; without
+                  it a missing reference field (…Id) is searched in the
+                  record (same name deeper, …PilotId, pilot….id), taken
+                  when it names one value
   items           JSON pointer of the list in the answer (/content)
   page            {param: page, size: {pageSize: 50}, max: 3}; also start,
                   step, next (pointer of a cursor), in: body

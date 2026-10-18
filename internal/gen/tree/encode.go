@@ -210,7 +210,7 @@ func comment(parts ...string) string {
 func (n *Node) short() bool {
 	return len(n.Query) == 0 && len(n.Header) == 0 && !n.HasBody && !n.Read && !n.HasItems && n.Page == nil &&
 		n.Pick.N == 0 && !n.Pick.All && len(n.Pick.Keys) == 0 && n.Candidates == 0 && n.Min == 0 && len(n.Where) == 0 &&
-		len(n.WhereAny) == 0 && len(n.Require) == 0 && len(n.Key) == 0 && len(n.Save) == 0 && len(n.Write) == 0 &&
+		len(n.WhereAny) == 0 && len(n.Require) == 0 && len(n.Key) == 0 && len(n.Save) == 0 && len(n.Fields) == 0 && len(n.Write) == 0 &&
 		len(n.Each) == 0 && !n.Off
 }
 
@@ -295,6 +295,9 @@ func nodeYAML(n *Node) *yaml.Node {
 	}
 	if len(n.Save) > 0 {
 		add("save", valueYAML(n.Save, true))
+	}
+	if len(n.Fields) > 0 {
+		add("fields", valueYAML(n.Fields, true))
 	}
 	if len(n.Write) > 0 {
 		add("write", writesYAML(n, n.Write))
