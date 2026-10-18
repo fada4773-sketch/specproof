@@ -488,7 +488,11 @@ marked `# new: check its place`, and the run says so.
   names the node below that reads the pilot by `.pilotId`, or a node above
   of that resource; without one it adds the read below the ships
   (`pilot: GET /pilots/{pilotId} pilotId=.pilotId`) and names it, then
-  fetch again with `-node ships`;
+  fetch again with `-node ships`. The `why:` line names the create that
+  sends the field (with its line) and the nodes that create the records it
+  names. When the spec does not require the field, the problem also names
+  the other way: a `body` of the create without it (sent as written); then
+  the read below (`shipPilot`) can be `off: true` and does not come back;
 - a source of such a field reads records of that resource (`pilotId:
   shipDock.id` is named, the fix takes the pilot below);
 - a path value that is a value of the stage (`shipId=7`, or `$shipId`

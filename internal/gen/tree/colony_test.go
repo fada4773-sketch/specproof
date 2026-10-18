@@ -715,3 +715,43 @@ func TestColonyPrefer(t *testing.T) {
 		t.Errorf("encode:\n%s", enc)
 	}
 }
+
+// TestColonySourceWhy: a garden create without a source for personId names
+// the create that sends it, the node that creates the persons and, as the
+// spec does not require it, a body without it; with that body the read of
+// the person can be off, the check is clean and a merge brings nothing back.
+func TestColonySourceWhy(t *testing.T) {
+	s := loadColony(t)
+	b, err := Propose(s).Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := strings.Replace(string(b), "  - gardens: {personId: gardenPerson.id}\n", "  - gardens\n", 1)
+	problems := Check(s, parse(t, src))
+	i := slices.IndexFunc(problems, func(p string) bool {
+		return strings.Contains(p, "order: gardens.personId holds the id of a person the test creates, but order gives it no source")
+	})
+	if i < 0 {
+		t.Fatalf("no source: %v", problems)
+	}
+	for _, want := range []string{
+		"why: gardens.write.create (line ", ", POST /moons/{moonId}/gardens) sends personId in its body; persons (line ",
+		"a node below gardens must read the person each garden names",
+		"or, when the test needs no person for gardens: change line ", "give gardens.write.create a body without personId",
+	} {
+		if !strings.Contains(problems[i], want) {
+			t.Errorf("%q missing:\n%s", want, problems[i])
+		}
+	}
+	src = strings.Replace(src, "              gardenPerson:\n", "              gardenPerson:\n                off: true\n", 1)
+	src = strings.Replace(src, "              personId: present # gardenPerson reads it\n", "", 1)
+	src = strings.Replace(src, "create: POST /moons/{moonId}/gardens # createGarden",
+		"create:\n                call: POST /moons/{moonId}/gardens\n                body: {name: Rosa, code: G-1, status: DRAFT}", 1)
+	tr := parse(t, src)
+	if problems := Check(s, tr); len(problems) > 0 {
+		t.Fatalf("a body without personId: %v", problems)
+	}
+	if changes := Merge(s, tr, Propose(s), "2.0"); len(changes) > 0 {
+		t.Errorf("merge brings back: %+v", changes)
+	}
+}

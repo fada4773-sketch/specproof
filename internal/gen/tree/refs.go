@@ -257,7 +257,8 @@ func checkReferences(s *spec.Spec, t *Tree) ([]string, []Fix) {
 					if need.source != "" {
 						f = Fix{Line: e.Line, Change: fmt.Sprintf("%s: %v → %s: %s", field, v, field, need.source), apply: setOrderSource(e.Line, field, need.source)}
 					}
-					fix(f, "order: %s.%s holds %s, but its source %s %s: no record of it is fetched", e.Node, field, what, ref.Node, why)
+					fix(f, "order: %s.%s holds %s, but its source %s %s: no record of it is fetched%s", e.Node, field, what, ref.Node, why, needWhy(s, m, t, n, w, op, need))
+					out[len(out)-1] += orWithout(n, w, op, need)
 					continue
 				}
 				r := nodeResource(s, m, src)
@@ -271,17 +272,62 @@ func checkReferences(s *spec.Spec, t *Tree) ([]string, []Fix) {
 				fix(f, "order: %s.%s holds %s, but %s reads %s records", e.Node, field, what, ref.Node, r.Name)
 				continue
 			}
-			msg := fmt.Sprintf("order: %s.%s holds %s, but order gives it no source: the create would send the value of the stage, which the empty instance does not have",
-				e.Node, need.field, what)
+			msg := fmt.Sprintf("order: %s.%s holds %s, but order gives it no source", e.Node, need.field, what) +
+				needWhy(s, m, t, n, w, op, need)
 			if need.source != "" {
 				fix(Fix{Line: e.Line, Change: fmt.Sprintf("- %s → - %s: {…, %s: %s}", e.Node, e.Node, need.field, need.source), apply: addOrderSource(e.Line, need.field, need.source)}, "%s", msg)
+				out[len(out)-1] += orWithout(n, w, op, need)
 				continue
 			}
 			fix(newSourceFix(s, t, n, e, need), "%s", msg)
+			out[len(out)-1] += orWithout(n, w, op, need)
 		}
 	}
 	o, f := checkPathKeys(s, m, t, created)
 	return append(out, o...), append(fixes, f...)
+}
+
+// needWhy says where a referring field comes from: the create that sends
+// it and the nodes that create the records it names, which get new ids in
+// the empty instance.
+func needWhy(s *spec.Spec, m *model.Model, t *Tree, n *Node, w *Write, op *spec.Operation, need refNeed) string {
+	sends := "in its body"
+	if w.From != "" {
+		sends = "in the body from " + w.From
+	}
+	why := fmt.Sprintf("\n  why: %s.write.create (line %d, %s) sends %s %s", n.Name, w.Line, callOf(op), need.field, sends)
+	if slices.Contains(schemaRequired(op), need.field) {
+		why += " (the spec requires it)"
+	}
+	var by []string
+	for _, c := range creators(s, m, t, need.to) {
+		by = append(by, fmt.Sprintf("%s (line %d)", c.Name, c.Line))
+	}
+	what := lowerFirst(need.to.Name)
+	if len(by) > 0 {
+		why += fmt.Sprintf("; %s creates the %s records", strings.Join(by, ", "), what)
+	}
+	return why + fmt.Sprintf(", so in the empty instance the %s of the stage does not exist: a node below %s must read the %s each %s names, and order must name it",
+		need.key, n.Name, what, lowerFirst(singular(n.Name)))
+}
+
+// orWithout is the other way when the spec does not require the field: a
+// create whose body leaves it out needs no source (the node that read it
+// can then be off or go).
+func orWithout(n *Node, w *Write, op *spec.Operation, need refNeed) string {
+	if slices.Contains(schemaRequired(op), need.field) {
+		return ""
+	}
+	return fmt.Sprintf("\n  or, when the test needs no %s for %s: change line %d: give %s.write.create a body without %s (sent as written; the spec does not require it)",
+		lowerFirst(need.to.Name), n.Name, w.Line, n.Name, need.field)
+}
+
+// schemaRequired are the required fields of the request body of op.
+func schemaRequired(op *spec.Operation) []string {
+	if sc := schemaOf(requestRef(op)); sc != nil {
+		return sc.Required
+	}
+	return nil
 }
 
 // newSourceFix adds below n the node that reads the record a field names
