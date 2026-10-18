@@ -206,6 +206,9 @@ ORDER
     - ships: {pilotId: shipPilot.id}   the body field pilotId takes the key
                                     of the record of shipPilot below each
                                     ship (or of a node above it)
+    - ships: {crew.pilotId: shipPilot.id}
+                                    a field inside an object of the body
+                                    by its path
     - docks.update                  a step at this place: read, list,
                                     update, patch, a variant, an action
   The first run writes order; later runs add new creates, marked
@@ -789,9 +792,16 @@ func treeRun(o *treeOptions, out io.Writer) (int, error) {
 	timeline := make([]tree.Entry, 0, len(exchanges))
 	for _, ex := range exchanges {
 		e := tree.Entry{Step: ex.ID, Method: ex.Method, Target: red.String(ex.Target), Status: ex.Status, Ms: ex.Duration.Milliseconds(),
-			Failed: !ex.Passed, HasRequest: ex.HasBody}
+			Failed: !ex.Passed, HasRequest: ex.HasBody, Equals: ex.Equals}
 		if !ex.Passed {
 			e.Result = red.String(fmt.Sprintf("%s: %s", ex.Outcome, ex.Message))
+			e.Outcome = string(ex.Outcome)
+		}
+		for _, p := range ex.Problems {
+			e.Problems = append(e.Problems, red.String(p))
+		}
+		for _, d := range ex.Diffs {
+			e.Diffs = append(e.Diffs, tree.EntryDiff{Pointer: d.Pointer, Expected: red.String(d.Expected), Actual: red.String(d.Actual), Note: red.String(d.Note)})
 		}
 		if ex.HasBody {
 			e.Request = red.Value(ex.Body)

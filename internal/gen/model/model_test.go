@@ -2,6 +2,8 @@ package model
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -248,5 +250,101 @@ func TestDetectComposed(t *testing.T) {
 	}
 	if got := requestDTO(s.Op("CreateShip")); got != "ShipBase" {
 		t.Errorf("CreateShip DTO %q", got)
+	}
+}
+
+// nestedSpec: ships name their pilot inside crew and their dock as an
+// embedded record inside berth; the dock names its planet.
+const nestedSpec = `
+openapi: 3.0.3
+info: {title: nested, version: "1"}
+paths:
+  /planets:
+    get: {operationId: listPlanets, responses: {"200": {description: ok, content: {application/json: {schema: {type: array, items: {$ref: "#/components/schemas/Planet"}}}}}}}
+  /planets/{planetCode}:
+    get:
+      operationId: getPlanet
+      parameters: [{name: planetCode, in: path, required: true, schema: {type: string}}]
+      responses: {"200": {description: ok, content: {application/json: {schema: {$ref: "#/components/schemas/Planet"}}}}}
+  /pilots:
+    get: {operationId: listPilots, responses: {"200": {description: ok, content: {application/json: {schema: {type: array, items: {$ref: "#/components/schemas/Pilot"}}}}}}}
+  /pilots/{pilotId}:
+    get:
+      operationId: getPilot
+      parameters: [{name: pilotId, in: path, required: true, schema: {type: integer}}]
+      responses: {"200": {description: ok, content: {application/json: {schema: {$ref: "#/components/schemas/Pilot"}}}}}
+  /docks:
+    get: {operationId: listDocks, responses: {"200": {description: ok, content: {application/json: {schema: {type: array, items: {$ref: "#/components/schemas/Dock"}}}}}}}
+  /docks/{dockId}:
+    get:
+      operationId: getDock
+      parameters: [{name: dockId, in: path, required: true, schema: {type: integer}}]
+      responses: {"200": {description: ok, content: {application/json: {schema: {$ref: "#/components/schemas/Dock"}}}}}
+  /ships:
+    get: {operationId: listShips, responses: {"200": {description: ok, content: {application/json: {schema: {type: array, items: {$ref: "#/components/schemas/Ship"}}}}}}}
+    post:
+      operationId: createShip
+      requestBody: {content: {application/json: {schema: {$ref: "#/components/schemas/Ship"}}}}
+      responses: {"201": {description: ok, content: {application/json: {schema: {$ref: "#/components/schemas/Ship"}}}}}
+  /ships/{shipId}:
+    get:
+      operationId: getShip
+      parameters: [{name: shipId, in: path, required: true, schema: {type: integer}}]
+      responses: {"200": {description: ok, content: {application/json: {schema: {$ref: "#/components/schemas/Ship"}}}}}
+components:
+  schemas:
+    Planet:
+      type: object
+      properties: {planetCode: {type: string}, name: {type: string}}
+    Pilot:
+      type: object
+      properties: {id: {type: integer}, name: {type: string}}
+    Dock:
+      type: object
+      properties: {id: {type: integer}, planetCode: {type: string}}
+    Ship:
+      type: object
+      properties:
+        id: {type: integer}
+        name: {type: string}
+        crew:
+          type: object
+          properties:
+            pilotId: {type: integer}
+            role: {type: string}
+        berth:
+          type: object
+          properties:
+            dock: {$ref: "#/components/schemas/Dock"}
+`
+
+// TestDetectNested: a relation inside an object field is found by its
+// path; inside an embedded record only its key refers (berth.dock.id), not
+// that record's own relations (berth.dock.planetCode).
+func TestDetectNested(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nested.yaml")
+	if err := os.WriteFile(path, []byte(nestedSpec), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s, err := spec.Load(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := Detect(s, nil)
+	ship := m.Resource("Ship")
+	if ship == nil {
+		t.Fatalf("resources: %v", m.Describe())
+	}
+	if !slices.Equal(ship.Nested, []string{"berth.dock.id", "crew.pilotId"}) || len(ship.Relations) != 0 {
+		t.Errorf("nested relations: %v, relations %v", ship.Nested, ship.Relations)
+	}
+	if to, key := ship.Ref("crew.pilotId"); to != m.Resource("Pilot") || key != "id" {
+		t.Errorf("crew.pilotId → %v %s", to, key)
+	}
+	if to, _ := ship.Ref("berth.dock.id"); to != m.Resource("Dock") {
+		t.Errorf("berth.dock.id → %v", to)
+	}
+	if ship.Fixed("crew.pilotId") || ship.Fixed("crew") {
+		t.Error("a nested relation is no field of the record: updates may change crew")
 	}
 }

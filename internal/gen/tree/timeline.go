@@ -30,6 +30,22 @@ type Entry struct {
 	Request    any    `json:"request,omitempty"`
 	HasRequest bool   `json:"hasRequest,omitempty"`
 	Answer     any    `json:"answer,omitempty"`
+	// Outcome is the status of a step of a run that did not pass
+	// (DATA_MISMATCH, SCHEMA_VIOLATION, …); Problems its schema violations,
+	// Diffs the values that differ, Equals the step whose body the answer
+	// must hold. The page lists them together (button "Mismatches").
+	Outcome  string      `json:"outcome,omitempty"`
+	Problems []string    `json:"problems,omitempty"`
+	Diffs    []EntryDiff `json:"diffs,omitempty"`
+	Equals   string      `json:"equals,omitempty"`
+}
+
+// EntryDiff is a value of an answer that differs from the expected one.
+type EntryDiff struct {
+	Pointer  string `json:"pointer"`
+	Expected string `json:"expected"`
+	Actual   string `json:"actual"`
+	Note     string `json:"note,omitempty"`
 }
 
 // SetTimeline sets the timeline of a step of the review: its lines in the

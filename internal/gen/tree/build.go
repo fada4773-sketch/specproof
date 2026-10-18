@@ -237,21 +237,22 @@ func (b *builder) sources(r *Record, body map[string]any, props openapi3.Schemas
 	}
 	for _, field := range sortedKeys(e.Values) {
 		name := field
+		var p *openapi3.SchemaRef
 		if len(props) > 0 {
-			k, ok := propertyFoldName(props, field)
-			if !ok {
+			var ok bool
+			if p, name, ok = bodyField(props, field); !ok {
 				continue // an update without the field
 			}
-			name = k
 		}
 		vals, ok := b.sourceOf(r, e, field)
 		if !ok {
 			continue
 		}
-		if p := props[name]; p != nil && p.Value != nil && value.Type(p.Value) == "array" {
-			body[name] = vals
+		// a field inside an object (crew.pilotId) is set in that object
+		if p != nil && p.Value != nil && value.Type(p.Value) == "array" {
+			setField(body, name, vals)
 		} else {
-			body[name] = vals[0]
+			setField(body, name, vals[0])
 		}
 	}
 }
@@ -732,13 +733,19 @@ func (b *builder) readBy(n *Node, field string) bool {
 // record the scenario creates for it, when the field name refers to that
 // record: authorId 3 → {{authors2.id}}. Without a fitting record the value
 // stays.
-func (b *builder) placeholderFor(v any, fields []string, exclude *Record, step string) any {
+func (b *builder) placeholderFor(v any, fields []string, at string, exclude *Record, step string) any {
 	best := b.matches(v, fields, exclude)
+	what := strings.Join(fields, "/")
+	if at == "" {
+		at = fields[0]
+	} else {
+		what = at // a field of a body by its path (crew.pilotId)
+	}
 	if b.strict {
 		// the file says where values come from: a match is only a hint
 		if len(best) == 1 {
-			b.note(step, fmt.Sprintf("%s = %s stays as it is", strings.Join(fields, "/"), text(v)),
-				"it is the key of "+best[0].rec.ID+", which the test creates; to send that, give the source in order ("+fields[0]+": <node>."+best[0].field+")")
+			b.note(step, fmt.Sprintf("%s = %s stays as it is", what, text(v)),
+				"it is the key of "+best[0].rec.ID+", which the test creates; to send that, give the source in order ("+at+": <node>."+best[0].field+")")
 		}
 		return v
 	}
@@ -750,7 +757,7 @@ func (b *builder) placeholderFor(v any, fields []string, exclude *Record, step s
 		for _, kr := range best {
 			names = append(names, kr.rec.ID)
 		}
-		b.note(step, fmt.Sprintf("%s = %s stays as it is", strings.Join(fields, "/"), text(v)),
+		b.note(step, fmt.Sprintf("%s = %s stays as it is", what, text(v)),
 			"it fits several records ("+strings.Join(names, ", ")+"); write a reference (.field or <node>.field) to choose one")
 	}
 	return v
@@ -885,7 +892,7 @@ func (b *builder) resolve(v any, at *Record, scope *Node, param, step string, ex
 		return v
 	}
 	last := ref.Field[strings.LastIndex(ref.Field, ".")+1:]
-	return b.placeholderFor(val, []string{param, last}, exclude, step)
+	return b.placeholderFor(val, []string{param, last}, "", exclude, step)
 }
 
 // errNoValue stops a composed value whose part has no value (noted).
@@ -911,7 +918,7 @@ func (b *builder) paramValue(name string, at *Record, scope *Node, param, step s
 		return nil
 	}
 	// a value of the stage: the placeholder of the record created for it
-	return b.placeholderFor(val, []string{param, name}, exclude, step)
+	return b.placeholderFor(val, []string{param, name}, "", exclude, step)
 }
 
 // params fills path, query and header of a step from the values of the
@@ -1193,19 +1200,18 @@ func (b *builder) body(step string, r *Record, w *Write, ref *openapi3.SchemaRef
 	}
 	props, _ := properties(ref.Value)
 	var unique []string
+	// the fields order gives a source, by path: substitute leaves them
 	set := map[string]bool{}
 	if e := b.entryOf(b.entity(r)); e != nil {
 		for f := range e.Values {
-			if k, ok := propertyFoldName(props, f); ok {
+			if _, k, ok := bodyField(props, f); ok {
 				set[k] = true
 			}
 		}
 	}
 	b.sources(r, m, props)
 	for _, k := range sortedKeys(m) {
-		if !set[k] {
-			m[k] = b.substitute(m[k], k, r, step)
-		}
+		m[k] = b.substitute(m[k], k, set, r, step)
 		if p := props[k]; p != nil && p.Value != nil && isUniqueField(p.Value, k, r.Node) {
 			if _, isStr := m[k].(string); isStr && len(scenario.Names(m[k])) == 0 {
 				unique = append(unique, "/"+k)
@@ -1217,21 +1223,25 @@ func (b *builder) body(step string, r *Record, w *Write, ref *openapi3.SchemaRef
 }
 
 // substitute replaces the values of a body that refer to records the
-// scenario creates, also in nested objects and lists.
-func (b *builder) substitute(v any, field string, r *Record, step string) any {
+// scenario creates, also in nested objects and lists; path is the field
+// (crew.pilotId), the fields of set have their source in order.
+func (b *builder) substitute(v any, path string, set map[string]bool, r *Record, step string) any {
+	if set[path] {
+		return v
+	}
 	switch x := v.(type) {
 	case map[string]any:
 		for k, c := range x {
-			x[k] = b.substitute(c, k, r, step)
+			x[k] = b.substitute(c, path+"."+k, set, r, step)
 		}
 		return x
 	case []any:
 		for i, c := range x {
-			x[i] = b.substitute(c, field, r, step)
+			x[i] = b.substitute(c, path, set, r, step)
 		}
 		return x
 	}
-	return b.placeholderFor(v, []string{field}, r, step)
+	return b.placeholderFor(v, []string{path[strings.LastIndex(path, ".")+1:]}, path, r, step)
 }
 
 // source is the value a body is built from: the record of the node from

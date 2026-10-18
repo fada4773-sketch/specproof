@@ -101,7 +101,13 @@ thousands of requests stays fast. On load everything is closed; search
 (step, path, result) and "only failed" narrow the lines. Headers are not
 listed, tokens and secret fields are masked. Each run writes the page
 anew and keeps the timelines of the steps it did not run (it reads them
-back from the page).
+back from the page). The button "Mismatches (n)" on top gathers the
+steps of every timeline whose answer does not hold what it should, by
+kind: data mismatch (the answer lacks what a step sent, `check: {equals:
+…}`), schema violation, difference from the golden snapshot. Each shows
+its message, the differences (pointer, expected, actual) or the schema
+violations, and as raw JSON the body sent, the answer and, for a data
+mismatch, the body of the step it was compared with.
 
 **The fetch as a tree.** Above the requests of the fetch the page shows
 the fetch as it ran, folded per node and record above it (`docks under
@@ -429,13 +435,20 @@ own, but their steps can be placed (below). A line
 may name where values of the create's body come from: `field: node.key`,
 a node below the created record (the pilot read below a ship) or above
 it; a list field takes the key of every record of that node (`docks:
-dockList.code`).
+dockList.code`). A field inside an object of the body is named by its
+path (`crew.pilotId`): the proposal, the check and `-fix` find such
+references as they find those on top (also the key inside an object
+named after a resource, `berth.dock.id`), and the create sets the value
+in that object, the other fields of it as the record has them. Fields
+inside lists of objects are not followed.
 
 ```yaml
 order:
   - pilots
   - docks
   - ships: {pilotId: shipPilot.id}
+  # the pilot inside an object of the body:
+  # - ships: {crew.pilotId: shipPilot.id}
 ```
 
 **Steps besides the creates.** A line `node.step` places a step of a
@@ -959,7 +972,7 @@ func TestTree(t *testing.T) {
 | `Errors` | the error steps (status 400 and above) that run, and their order: statuses (`"401"`) or classes (`"4xx"`). Steps no entry matches are left out; consecutive error steps run in the order of the list, at the place the scenario gives them |
 | `Unique` | as `-unique` |
 | `Update` | write the answers instead of comparing: into `Golden` when set, else into the scenario file |
-| `OnStep` | called after each step with what was sent and received |
+| `OnStep` | called after each step with what was sent and received, how it ended (`Outcome`, `Message`), the schema violations (`Problems`), the values that differ (`Diffs`) and the step an `equals` check compared with (`Equals`) |
 
 `apitest.RunScenarioStandalone` runs the same outside of `go test`; the
 command line uses it.

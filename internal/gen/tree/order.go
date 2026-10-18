@@ -362,7 +362,7 @@ func checkOrder(s *spec.Spec, t *Tree) ([]string, []Fix) {
 		props, _ := properties(schemaOf(requestRef(op)))
 		for _, field := range sortedKeys(e.Values) {
 			if len(props) > 0 {
-				if _, ok := propertyFoldIn(props, field); !ok {
+				if _, _, ok := bodyField(props, field); !ok {
 					fix(Fix{Line: e.Line, Change: fmt.Sprintf("remove %s: %v (the body has no such field)", field, e.Values[field]), apply: setOrderSource(e.Line, field, "")},
 						"order: %s: the body of %s has no field %s", e.Node, callOf(op), field)
 					continue
@@ -415,10 +415,10 @@ func checkOrder(s *spec.Spec, t *Tree) ([]string, []Fix) {
 	return out, fixes
 }
 
-// fieldType is the type of a body field, of its items for a list: the
-// type a source must have.
+// fieldType is the type of a body field (a path for one inside an object),
+// of its items for a list: the type a source must have.
 func fieldType(props openapi3.Schemas, field string) string {
-	p, ok := propertyFoldIn(props, field)
+	p, _, ok := bodyField(props, field)
 	if !ok || p == nil || p.Value == nil {
 		return ""
 	}

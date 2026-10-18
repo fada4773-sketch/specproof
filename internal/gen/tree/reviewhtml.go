@@ -51,7 +51,9 @@ func (d *ReviewDoc) RenderHTML() string {
 		fmt.Fprintf(&b, "<p class=\"muted\">Spec %s · %s · the steps, the next command and the plan: tree-review_gen.md</p>", esc(d.Spec), esc(d.File))
 	}
 	b.WriteString(`<div class="bar"><input id="q" type="search" placeholder="Search step or path" aria-label="Search step or path">
-<label><input id="bad" type="checkbox"> only failed</label><button id="all" type="button">open all steps</button><button id="none" type="button">close all</button></div></header><main>`)
+<label><input id="bad" type="checkbox"> only failed</label><button id="all" type="button">open all steps</button><button id="none" type="button">close all</button>
+<button id="mm" type="button" aria-expanded="false" aria-controls="mismatches">Mismatches</button></div></header><main>
+<section id="mismatches" hidden></section>`)
 	for i, s := range reviewSteps {
 		sec := d.sections[s]
 		if sec == nil {
@@ -132,6 +134,14 @@ h3{font-size:14px;margin:12px 0 4px}
 .cond.bad{color:var(--bad)}.key{font-family:ui-monospace,monospace}
 table.vals{width:auto;min-width:50%}table.vals td{font-family:ui-monospace,monospace;font-size:12px;word-break:break-all}
 .reqs,.cands{margin:6px 0}details.req.bad>summary{color:var(--bad)}
+#mm.some{color:var(--bad);border-color:var(--bad);font-weight:600}#mm[aria-expanded=true]{background:var(--line)}
+#mismatches{border:1px solid var(--bad);border-radius:8px;margin:12px 0;padding:4px 12px 8px}
+#mismatches>details>summary{cursor:pointer;padding:8px 0;font-weight:600}
+details.mm{margin:2px 0 6px 12px;border-left:2px solid var(--line);padding-left:8px}details.mm>summary{cursor:pointer;padding:3px 0;word-break:break-all}
+details.mm>div{margin:4px 0 8px}.msg{color:var(--bad);margin:4px 0}
+table.diffs{width:auto;min-width:60%}table.diffs td{font-family:ui-monospace,monospace;font-size:12px;word-break:break-all;white-space:pre-wrap}
+ul.probs{margin:4px 0;padding-left:20px;font:12px/1.5 ui-monospace,monospace}
+.raw h4{display:flex;align-items:center;gap:8px}.raw h4 button{font-size:11px;padding:0 6px}
 `
 
 const reviewJS = `
@@ -268,7 +278,56 @@ const q=document.getElementById('q'),bad=document.getElementById('bad');
 function filter(){const s=q.value.trim().toLowerCase();
   document.querySelectorAll('tr.row').forEach(tr=>{const show=(!bad.checked||tr.classList.contains('bad'))&&(!s||tr.dataset.text.includes(s));
     tr.hidden=!show;const n=tr.nextElementSibling;if(n&&n.classList.contains('body'))n.hidden=!show});
-  document.querySelectorAll('details.visit').forEach(d=>{d.hidden=!!s&&!d.dataset.text.includes(s)})}
+  document.querySelectorAll('details.visit,details.mm').forEach(d=>{d.hidden=!!s&&!d.dataset.text.includes(s)})}
+// the steps whose answer does not hold what it should, from every
+// timeline: a data mismatch (the answer lacks what a step sent), a schema
+// violation, a difference from the golden snapshot; each with its
+// differences and the raw JSON of what was sent and answered
+const KINDS=[['DATA_MISMATCH','Data mismatch: the answer does not hold what a step sent'],
+  ['SCHEMA_VIOLATION','Schema violation: the answer does not fit the schema of the spec'],
+  ['EXAMPLE_MISMATCH','Example mismatch: the answer differs from the golden snapshot']];
+const ORDER=['tree','fetch','scenario','run','update'];
+function outcomeOf(e){if(e.outcome)return e.outcome;const m=/^([A-Z_]+):/.exec(e.result||'');return m?m[1]:''}
+const found=[];
+Object.keys(data.timelines).sort((a,b)=>ORDER.indexOf(a)-ORDER.indexOf(b)).forEach(step=>{
+  const list=data.timelines[step]||[];
+  list.forEach((e,i)=>{const o=outcomeOf(e);if(KINDS.some(k=>k[0]===o))found.push({step:step,i:i,e:e,o:o,list:list})})});
+function raw(title,v){
+  const box=el('div','raw'),h=el('h4',null,title);
+  const text=typeof v==='string'?v:JSON.stringify(v,null,2);
+  const copy=el('button',null,'copy');copy.type='button';
+  copy.onclick=()=>{try{navigator.clipboard.writeText(text).then(()=>{copy.textContent='copied'},()=>{})}catch(_){}};
+  h.appendChild(copy);box.appendChild(h);box.appendChild(el('pre',null,text));return box}
+function mismatch(f){
+  const e=f.e,head=el('span');
+  head.appendChild(el('span','n',f.step+' #'+(f.i+1)+' '));head.appendChild(el('b',null,e.step||''));
+  head.appendChild(document.createTextNode('  '+((e.method||'')+' '+(e.target||'')).trim()+'  → '+status(e)));
+  const d=fold(head,'mm',d=>{
+    const body=el('div');d.appendChild(body);
+    if(e.result)body.appendChild(el('div','msg',e.result));
+    if(e.diffs&&e.diffs.length){
+      const t=el('table','diffs');t.innerHTML='<thead><tr><th>at</th><th>expected</th><th>actual</th><th>note</th></tr></thead>';
+      const tb=el('tbody');e.diffs.forEach(x=>{const tr=el('tr');[x.pointer,x.expected,x.actual,x.note||''].forEach(v=>tr.appendChild(el('td',null,v)));tb.appendChild(tr)});
+      t.appendChild(tb);body.appendChild(t)}
+    if(e.problems&&e.problems.length){const ul=el('ul','probs');e.problems.forEach(p=>ul.appendChild(el('li',null,p)));body.appendChild(ul)}
+    const p=el('div','pane');
+    if(e.equals){const src=f.list.find(x=>x.step===e.equals);
+      p.appendChild(raw('sent by '+e.equals+' (the answer must hold it)',src&&src.hasRequest?src.request:'not in this timeline'))}
+    if(e.hasRequest)p.appendChild(raw('request',e.request));
+    p.appendChild(raw('answer',e.answer===undefined||e.answer===null?'no body':e.answer));
+    body.appendChild(p)});
+  d.dataset.text=((e.step||'')+' '+(e.method||'')+' '+(e.target||'')+' '+(e.result||'')+' '+(e.problems||[]).join(' ')+' '+JSON.stringify(e.diffs||[])).toLowerCase();
+  return d}
+const mm=document.getElementById('mm'),mmBox=document.getElementById('mismatches');
+mm.textContent='Mismatches ('+found.length+')';if(found.length)mm.classList.add('some');
+let mmBuilt=false;
+mm.onclick=()=>{
+  if(!mmBuilt){mmBuilt=true;
+    if(!found.length)mmBox.appendChild(el('p','muted','No data mismatch, schema violation or example mismatch in the timelines (tree run writes them).'));
+    KINDS.forEach(k=>{const list=found.filter(f=>f.o===k[0]);if(!list.length)return;
+      mmBox.appendChild(fold(k[1]+' ('+list.length+')','kind',d=>list.forEach(f=>d.appendChild(mismatch(f))),true))});
+    filter()}
+  mmBox.hidden=!mmBox.hidden;mm.setAttribute('aria-expanded',String(!mmBox.hidden))};
 q.oninput=filter;bad.onchange=filter;
 document.getElementById('all').onclick=()=>document.querySelectorAll('details.step').forEach(d=>d.open=true);
 document.getElementById('none').onclick=()=>{document.querySelectorAll('details.step').forEach(d=>d.open=false);document.querySelectorAll('tr.body').forEach(r=>{r.previousElementSibling.click()})};

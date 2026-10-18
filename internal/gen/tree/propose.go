@@ -475,11 +475,12 @@ type reference struct {
 	many  bool
 }
 
-// referencesOf are the references of r: its relations, and lists of keys
-// named after a resource (docks, dockCodes, pilotIds).
+// referencesOf are the references of r: its relations, also those inside
+// an object field (crew.pilotId), and lists of keys named after a resource
+// (docks, dockCodes, pilotIds).
 func (p *proposer) referencesOf(r *model.Resource) []reference {
 	var out []reference
-	for _, f := range r.Relations {
+	for _, f := range slices.Concat(r.Relations, r.Nested) {
 		if t, key := r.Ref(f); t != nil {
 			out = append(out, reference{field: f, to: t, key: key})
 		}
@@ -657,13 +658,11 @@ func (p *proposer) orderValues() map[string]map[string]any {
 			if !ok || ref.key == "" {
 				continue
 			}
-			for name := range props {
-				if strings.EqualFold(name, ref.field) {
-					if out[n.Name] == nil {
-						out[n.Name] = map[string]any{}
-					}
-					out[n.Name][name] = c.Name + "." + ref.key
+			if _, name, ok := bodyField(props, ref.field); ok {
+				if out[n.Name] == nil {
+					out[n.Name] = map[string]any{}
 				}
+				out[n.Name][name] = c.Name + "." + ref.key
 			}
 		}
 	})
@@ -897,7 +896,7 @@ func (p *proposer) chainOf(n *Node) *chain {
 
 // refers reports whether a field of r refers to t.
 func (p *proposer) refers(r, t *model.Resource) bool {
-	for _, f := range r.Relations {
+	for _, f := range slices.Concat(r.Relations, r.Nested) {
 		if x, _ := r.Ref(f); x == t {
 			return true
 		}

@@ -94,6 +94,19 @@ type StepExchange struct {
 	Outcome  Status
 	Message  string
 	Problems []string
+	// Diffs are the values of the answer that differ: from the golden
+	// snapshot (EXAMPLE_MISMATCH) or from the body of the step Equals
+	// names (DATA_MISMATCH).
+	Diffs []StepDiff
+	// Equals is the step whose body the answer must hold (check equals),
+	// "" without.
+	Equals string
+}
+
+// StepDiff is a value of an answer that differs from the expected one, at
+// a JSON pointer ("header:<name>" for a header).
+type StepDiff struct {
+	Pointer, Expected, Actual, Note string
 }
 
 // RunScenario runs the steps of a scenario as subtests of t ("<tag>/<id>")
@@ -700,6 +713,10 @@ func (s *scenarioRunner) observe(st *scenario.Step, o *outcome) {
 	for _, p := range o.problems {
 		ex.Problems = append(ex.Problems, p.String())
 	}
+	for _, d := range o.diffs {
+		ex.Diffs = append(ex.Diffs, StepDiff{Pointer: d.Pointer, Expected: d.Expected, Actual: d.Actual, Note: d.Note})
+	}
+	ex.Equals = st.Equals
 	ex.Path, _ = s.originals(path).(map[string]any)
 	ex.Query, _ = s.originals(query).(map[string]any)
 	ex.Header, _ = hdr.(map[string]any)

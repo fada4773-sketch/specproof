@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -214,9 +215,16 @@ func TestScenarioEqualsCheck(t *testing.T) {
 	}
 	cfg = bookstoreScenarioConfig(t, testserver.Faults{DropOnUpdate: true}, sc, golden)
 	cfg.CompareMode = CompareSchema
+	var seen []StepExchange
+	cfg.OnStep = func(ex StepExchange) { seen = append(seen, ex) }
 	res, ft := runScenarioFake(t, cfg)
 	if got := statusOf(res)["Book/book1.read.afterUpdate"]; got != StatusDataMismatch {
 		t.Errorf("got %s, want DATA_MISMATCH\n%s", got, ft.output())
+	}
+	// OnStep hands over what differs and the step whose body it compared
+	i := slices.IndexFunc(seen, func(ex StepExchange) bool { return ex.ID == "book1.read.afterUpdate" })
+	if i < 0 || seen[i].Outcome != StatusDataMismatch || seen[i].Equals != "book1.update" || len(seen[i].Diffs) == 0 || seen[i].Diffs[0].Pointer == "" {
+		t.Errorf("OnStep of the data mismatch: %+v", seen)
 	}
 }
 

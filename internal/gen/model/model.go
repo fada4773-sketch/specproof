@@ -51,7 +51,12 @@ type Resource struct {
 	// other resource by its name and key (AuthorId). Updates do not change
 	// them.
 	Relations []string
-	Ops       []*Op
+	// Nested are relation fields inside an object field, as a path
+	// (crew.pilotId, or route.dock.id: the id inside an object named after
+	// Dock); Ref resolves them like Relations. They are no fields of the
+	// record itself: updates and records leave them to Relations.
+	Nested []string
+	Ops    []*Op
 
 	fields openapi3.Schemas
 	refs   map[string]relation // relation field → the key it holds
@@ -933,15 +938,63 @@ func (d *detector) relations() {
 			if slices.Contains(r.Keys, f) {
 				continue
 			}
-			if s := r.fields[f]; s == nil || s.Value == nil {
+			s := r.fields[f]
+			if s == nil || s.Value == nil {
 				continue
-			} else if _, ok := dict.Primitive(s.Value); !ok {
+			}
+			if _, ok := dict.Primitive(s.Value); !ok {
+				d.nested(r, f, f, s.Value, above, 1)
 				continue
 			}
 			if to, key := d.refers(r, f, above); to != nil {
 				r.Relations = append(r.Relations, f)
 				r.refs[f] = relation{to, key}
 			}
+		}
+	}
+}
+
+// maxNested is how deep relations inside object fields are searched.
+const maxNested = 6
+
+// nested finds the relations inside an object field of r (path, its name
+// owner): a field that refers by its own name (crew.pilotId), or a key
+// inside an object named after the resource (dock.id, dock.code). Lists
+// of objects are left out.
+func (d *detector) nested(r *Resource, path, owner string, s *openapi3.Schema, above []*Resource, depth int) {
+	if depth > maxNested || s.Type != nil && !s.Type.Is("object") {
+		return
+	}
+	// an object named after a resource is (a part of) its record: only its
+	// key refers, not the relations of that record (dock.planetCode)
+	embedded := d.byName(owner)
+	props, _ := dict.Properties(s)
+	for _, k := range sortedKeys(props) {
+		p := props[k]
+		if p == nil || p.Value == nil {
+			continue
+		}
+		full := path + "." + k
+		if _, ok := dict.Primitive(p.Value); !ok {
+			if embedded == nil {
+				d.nested(r, full, k, p.Value, above, depth+1)
+			}
+			continue
+		}
+		var to *Resource
+		var key string
+		if embedded == nil {
+			to, key = d.refers(r, k, above)
+		}
+		if to == nil {
+			to, key = d.refers(r, owner+k, above)
+			if embedded != nil && to != embedded {
+				to = nil
+			}
+		}
+		if to != nil && to != r {
+			r.Nested = append(r.Nested, full)
+			r.refs[full] = relation{to, key}
 		}
 	}
 }

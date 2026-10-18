@@ -117,6 +117,68 @@ func properties(s *openapi3.Schema) (openapi3.Schemas, []string) {
 	return dict.Properties(s)
 }
 
+// bodyField finds a field of a body by its path (pilotId, crew.pilotId),
+// ignoring case, through the objects on the way: its schema and the path
+// as the schema spells it.
+func bodyField(props openapi3.Schemas, path string) (*openapi3.SchemaRef, string, bool) {
+	var names []string
+	var cur *openapi3.SchemaRef
+	for i, seg := range strings.Split(path, ".") {
+		if i > 0 {
+			if cur == nil || cur.Value == nil {
+				return nil, "", false
+			}
+			props, _ = properties(cur.Value)
+		}
+		name, ok := propertyFoldName(props, seg)
+		if !ok {
+			return nil, "", false
+		}
+		cur = props[name]
+		names = append(names, name)
+	}
+	return cur, strings.Join(names, "."), true
+}
+
+// bodyRequires reports whether the request body of op requires a field:
+// every part of its path (crew and crew.pilotId).
+func bodyRequires(op *spec.Operation, path string) bool {
+	s := schemaOf(requestRef(op))
+	for _, seg := range strings.Split(path, ".") {
+		if s == nil {
+			return false
+		}
+		props, req := properties(s)
+		name, ok := propertyFoldName(props, seg)
+		if !ok || !slices.Contains(req, name) {
+			return false
+		}
+		s = schemaOf(props[name])
+	}
+	return true
+}
+
+// setField sets a field of a body by its path, the objects on the way
+// created when the body lacks them; keys match ignoring case.
+func setField(body map[string]any, path string, v any) {
+	segs := strings.Split(path, ".")
+	cur := body
+	for _, seg := range segs[:len(segs)-1] {
+		k, next, ok := foldEntry(cur, seg)
+		m, isMap := next.(map[string]any)
+		if !ok || !isMap {
+			k, m = seg, map[string]any{}
+		}
+		cur[k] = m
+		cur = m
+	}
+	last := segs[len(segs)-1]
+	if k, _, ok := foldEntry(cur, last); ok {
+		last = k
+	}
+	cur[last] = v
+}
+
 // listPointer says where the list of a list answer is by the schema of the
 // lowest 2xx answer: "" for an array, "/items" for a page with one list.
 func listPointer(op *spec.Operation) (string, bool) {

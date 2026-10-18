@@ -99,7 +99,8 @@ func refNeeds(s *spec.Spec, m *model.Model, t *Tree, n *Node, w *Write, op *spec
 	p := &proposer{m: m}
 	var out []refNeed
 	for _, ref := range p.referencesOf(res) {
-		name, ok := propertyFoldName(props, ref.field)
+		// a field of the body itself, or inside an object of it (crew.pilotId)
+		_, name, ok := bodyField(props, ref.field)
 		if !ok || slices.ContainsFunc(out, func(x refNeed) bool { return x.field == name }) {
 			continue
 		}
@@ -121,13 +122,14 @@ func refNeeds(s *spec.Spec, m *model.Model, t *Tree, n *Node, w *Write, op *spec
 
 // bodySends reports whether a body given in the file sends a field as a
 // value of the stage: as it is, or read from the record itself (.authorId);
-// a reference to a node is the user's choice.
+// a reference to a node is the user's choice. field is a path for a field
+// inside an object (crew.pilotId).
 func bodySends(body any, field string, scope func(string) bool) bool {
 	m, ok := body.(map[string]any)
 	if !ok {
 		return false
 	}
-	v, ok := lookupFold(m, field)
+	v, ok := Field(m, field)
 	if !ok {
 		return false
 	}
@@ -296,7 +298,7 @@ func needWhy(s *spec.Spec, m *model.Model, t *Tree, n *Node, w *Write, op *spec.
 		sends = "in the body from " + w.From
 	}
 	why := fmt.Sprintf("\n  why: %s.write.create (line %d, %s) sends %s %s", n.Name, w.Line, callOf(op), need.field, sends)
-	if slices.Contains(schemaRequired(op), need.field) {
+	if bodyRequires(op, need.field) {
 		why += " (the spec requires it)"
 	}
 	var by []string
@@ -315,19 +317,11 @@ func needWhy(s *spec.Spec, m *model.Model, t *Tree, n *Node, w *Write, op *spec.
 // create whose body leaves it out needs no source (the node that read it
 // can then be off or go).
 func orWithout(n *Node, w *Write, op *spec.Operation, need refNeed) string {
-	if slices.Contains(schemaRequired(op), need.field) {
+	if bodyRequires(op, need.field) {
 		return ""
 	}
 	return fmt.Sprintf("\n  or, when the test needs no %s for %s: change line %d: give %s.write.create a body without %s (sent as written; the spec does not require it)",
 		lowerFirst(need.to.Name), n.Name, w.Line, n.Name, need.field)
-}
-
-// schemaRequired are the required fields of the request body of op.
-func schemaRequired(op *spec.Operation) []string {
-	if sc := schemaOf(requestRef(op)); sc != nil {
-		return sc.Required
-	}
-	return nil
 }
 
 // newSourceFix adds below n the node that reads the record a field names

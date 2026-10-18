@@ -265,6 +265,23 @@ contain breaking changes, which are listed here.
     not (the failed clause with the value of the record, each `require`
     with its requests), with the nodes below a record; the nodes that took
     nothing on top.
+  - `apitest-gen tree`: a reference inside an object of a create's body
+    gets its source in `order` by its path (`- ships: {crew.pilotId:
+    shipPilot.id}`): the model finds relations inside object fields (also
+    the key inside an object named after a resource, `berth.dock.id`, but
+    not the relations of that embedded record), the proposal adds the
+    node that reads the record (`pilotId=.crew.pilotId`) and the source,
+    the check and `-fix` name and add a missing one, and the build sets
+    the value inside the object. Before, such a reference got no source
+    and no warning, and `-fix` removed one written by hand. Lists of
+    objects are not followed.
+  - `tree-review_gen.html`: the button "Mismatches (n)" on top lists every
+    step of every timeline with a data mismatch, a schema violation or a
+    difference from the golden snapshot, grouped by kind: the message,
+    each difference (pointer, expected, actual), each schema violation,
+    and as raw JSON (with copy) the body sent, the answer and, for a
+    data mismatch, the body of the step the answer must hold. Search
+    narrows it too. `apitest.StepExchange` has `Diffs` and `Equals` for it.
   - `apitest-gen tree`: the note of a node that took fewer records than
     asked names per `where` clause how many candidates it left out, with
     the value of the first, and the first reason of `require`; it also

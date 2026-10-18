@@ -1733,6 +1733,16 @@ func TestReviewTimeline(t *testing.T) {
 		{Step: "docks1.read", Method: "GET", Target: "/docks/7", Status: 500, Expect: 200, Failed: true, Result: "FAILED: status 500"},
 	})
 	md, page := d.Render(), d.RenderHTML()
+	// the button lists the mismatches of every timeline with their diffs
+	d.SetTimeline(ReviewUpdate, []Entry{
+		{Step: "docks1.read.after", Method: "GET", Target: "/docks/7", Status: 200, Expect: 200, Failed: true, Result: "DATA_MISMATCH: …",
+			Outcome: "DATA_MISMATCH", Equals: "docks1.update", Diffs: []EntryDiff{{Pointer: "/route/dockId", Expected: "7", Actual: "8"}}},
+	})
+	if mm := d.RenderHTML(); !strings.Contains(mm, `id="mm"`) || !strings.Contains(mm, `id="mismatches" hidden`) ||
+		!strings.Contains(mm, `"outcome":"DATA_MISMATCH","diffs":[{"pointer":"/route/dockId","expected":"7","actual":"8"}],"equals":"docks1.update"`) {
+		t.Errorf("page without the mismatches:\n%s", mm)
+	}
+	d.SetTimeline(ReviewUpdate, nil)
 	for _, want := range []string{
 		"### Requests in the order sent (2, 1 failed)", "| 2 | ships under docks1 | GET /docks/7/ships | 404 ✗ |",
 		"<details open><summary>Steps in the order they ran (2, 1 did not pass)", "| 1 | docks1.create | POST /planets/mars/docks | 201 ✓ |",
