@@ -863,6 +863,10 @@ func (b *builder) resolve(v any, at *Record, scope *Node, param, step string, ex
 		return nil
 	}
 	e := b.entity(rec)
+	if exclude != nil && e == b.entity(exclude) {
+		// the create of the record sends its own value: a key the client
+		return val
+	}
 	if b.created[e] {
 		if name := b.keyVar[e][ref.Field]; name != "" {
 			return "{{" + name + "}}"
@@ -1068,6 +1072,8 @@ func (b *builder) saves(st *scenario.Step, r *Record, op *spec.Operation, status
 			st.Save[name] = "/" + field
 		case req[field] != nil && hasField(st.Body, field):
 			st.Save[name] = "request /" + field
+		case pathParamOf(st, r, field) != "":
+			st.Save[name] = "request path " + pathParamOf(st, r, field)
 		case first && (resp == nil || documentsHeader(op, status, "Location")):
 			st.Save[name] = "header Location"
 		default:
@@ -1084,6 +1090,27 @@ func (b *builder) saves(st *scenario.Step, r *Record, op *spec.Operation, status
 	if len(st.Save) == 0 {
 		st.Save = nil
 	}
+}
+
+// pathParamOf is the path parameter in which a create sends a key field
+// of its record: the one named like it, else the one that holds its value;
+// "" for none.
+func pathParamOf(st *scenario.Step, r *Record, field string) string {
+	v, ok := r.Get(field)
+	if !ok {
+		return ""
+	}
+	for _, p := range sortedKeys(st.Path) {
+		if strings.EqualFold(p, field) && text(st.Path[p]) == text(v) {
+			return p
+		}
+	}
+	for _, p := range sortedKeys(st.Path) {
+		if text(st.Path[p]) == text(v) {
+			return p
+		}
+	}
+	return ""
 }
 
 // addSaves adds to a step what its write saves (receiptNo: header X-Receipt-No).

@@ -747,7 +747,8 @@ tree:
 }
 
 // TestBuildCreateReadsItsOwnField: a create whose path takes a field of the
-// record itself sends the record's value; the build ends.
+// record itself sends the record's value; the build ends. A key the client
+// gives in the path is saved from the request, later steps read it.
 func TestBuildCreateReadsItsOwnField(t *testing.T) {
 	s := loadStarport(t)
 	tr := parse(t, `
@@ -757,9 +758,10 @@ tree:
   docks:
     call: GET /planets/{code}/docks
     path: {code: mars}
-    key: [/id]
+    key: [/dockId]
     write:
       create: PUT /docks/{dockId} dockId=.dockId
+      delete: DELETE /docks/{dockId} dockId=.dockId
 `)
 	d := &Data{Records: []*Record{{ID: "docks1", Node: tr.Node("docks"), Request: "GET /x",
 		Value: map[string]any{"id": 5, "dockId": "D-5", "name": "North", "capacity": 4}}}}
@@ -767,9 +769,18 @@ tree:
 	if err != nil {
 		t.Fatal(err)
 	}
-	i := slices.IndexFunc(b.Scenario.Steps, func(st *scenario.Step) bool { return st.Call == "PUT /docks/{dockId}" })
-	if i < 0 || b.Scenario.Steps[i].Path["dockId"] != "D-5" {
-		t.Errorf("the create sends the dock's own dockId: %+v", b.Scenario.Steps)
+	step := func(call string) *scenario.Step {
+		i := slices.IndexFunc(b.Scenario.Steps, func(st *scenario.Step) bool { return st.Call == call })
+		if i < 0 {
+			t.Fatalf("no %s: %+v", call, b.Scenario.Steps)
+		}
+		return b.Scenario.Steps[i]
+	}
+	if c := step("PUT /docks/{dockId}"); c.Path["dockId"] != "D-5" || c.Save["docks1.dockId"] != "request path dockId" {
+		t.Errorf("the create sends the dock's own dockId and saves it: %+v %+v", c.Path, c.Save)
+	}
+	if del := step("DELETE /docks/{dockId}"); del.Path["dockId"] != "{{docks1.dockId}}" {
+		t.Errorf("the delete reads the saved key: %+v", del.Path)
 	}
 }
 
