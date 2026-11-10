@@ -91,14 +91,37 @@ the order it ran, without bodies: the fetch the requests that failed (and
 how many it sent), the test its steps in the order they will run with
 their checks, decisions and gaps, the run every step with status, time
 and result (a step that did not pass marked ✗), `-update` the steps whose
-answers became examples, in the order they ran.
+answers became examples, in the order they ran. Every line names the
+operationId next to the request (`–` when the spec has none).
+
+**Requests without answer.** A request the API does not answer (the
+connection fails or closes, the request times out, the API crashes on it)
+stays in the review, it is not left out:
+
+- in the fetch it stops the fetch: `tree-data_gen.yaml` is not written,
+  the section "Fetch" is *failed* and lists the request under "Requests
+  without answer" (with the error), the timeline holds every request up
+  to it (status `no answer ✗`), and the next command says to check the
+  log of the instance and fetch again. An answer that breaks off after
+  its status shows `<status>, answer broke off ✗`.
+- in a run the step is `ERROR` with status `no answer ✗` in the
+  timeline, the section "Run" lists it under "Steps without answer"; the
+  steps that need its values are `SKIPPED` and stand in the timeline as
+  `not sent`, with the reason (`dependency failed: …`).
 
 **The page.** `tree-review_gen.html`, next to it, is one self-contained
-file with every line of every step, in the same order: a click on a line
-opens the body sent and the answer as a tree in which every object and
-list folds (built when opened, long lists 100 at a time), so a fetch of
-thousands of requests stays fast. On load everything is closed; search
-(step, path, result) and "only failed" narrow the lines. Headers are not
+file with every line of every step, in the same order, with step,
+operationId, request, status, time and result: a click on a line opens
+the body sent and the answer. Each body is a box of its own that folds,
+with its size on top and the buttons *tree* / *raw* (a tree in which
+every object and list folds, or the raw JSON, indented), *open all* /
+*close all* (every level of the tree; at most 4000 at once) and *copy*
+(the raw JSON). In the tree a closed object shows its first keys, each
+object and list has its own *copy* (on hover), and strings longer than
+240 characters are cut until *show all*. The tree is built when opened,
+long lists 100 at a time, so a fetch of thousands of requests stays
+fast. On load everything is closed; search (step, operationId, path,
+result) and "only failed" narrow the lines. Headers are not
 listed, tokens and secret fields are masked. Each run writes the page
 anew and keeps the timelines of the steps it did not run (it reads them
 back from the page). The button "Mismatches (n)" on top gathers the
@@ -106,8 +129,9 @@ steps of every timeline whose answer does not hold what it should, by
 kind: data mismatch (the answer lacks what a step sent, `check: {equals:
 …}`), schema violation, difference from the golden snapshot. Each shows
 its message, the differences (pointer, expected, actual) or the schema
-violations, and as raw JSON the body sent, the answer and, for a data
-mismatch, the body of the step it was compared with.
+violations, and as raw JSON (the same boxes, raw first) the body sent,
+the answer and, for a data mismatch, the body of the step it was
+compared with.
 
 **The fetch as a tree.** Above the requests of the fetch the page shows
 the fetch as it ran, folded per node and record above it (`docks under
@@ -994,7 +1018,7 @@ func TestTree(t *testing.T) {
 | `Errors` | the error steps (status 400 and above) that run, and their order: statuses (`"401"`) or classes (`"4xx"`). Steps no entry matches are left out; consecutive error steps run in the order of the list, at the place the scenario gives them |
 | `Unique` | as `-unique` |
 | `Update` | write the answers instead of comparing: into `Golden` when set, else into the scenario file |
-| `OnStep` | called after each step with what was sent and received, how it ended (`Outcome`, `Message`), the schema violations (`Problems`), the values that differ (`Diffs`) and the step an `equals` check compared with (`Equals`) |
+| `OnStep` | called after each step, in the order they ran, with what was sent and received, how it ended (`Outcome`, `Message`), the schema violations (`Problems`), the values that differ (`Diffs`) and the step an `equals` check compared with (`Equals`). Also for a step without answer (`Answered` false; `Sent` true when the request went out: connection failed or closed, timeout, crash) and for one that was skipped or not buildable (`Sent` false; `Target` is then the path of the operation) |
 
 `apitest.RunScenarioStandalone` runs the same outside of `go test`; the
 command line uses it.

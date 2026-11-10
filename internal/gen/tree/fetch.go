@@ -70,7 +70,9 @@ type Data struct {
 // Exchange is one request and its answer, for the review.
 type Exchange struct {
 	// For says what sent it: a node under a record, a step of the test.
-	For            string
+	For string
+	// OperationID is the operation of the request.
+	OperationID    string
 	Method, Target string
 	Request        any
 	HasRequest     bool
@@ -588,7 +590,7 @@ func (f *fetcher) candidates(ctx context.Context, n *Node, op *spec.Operation, p
 					q, body = withPage(n.Page, q, body, v)
 				}
 			}
-			a, err := f.send(ctx, op.Method, rq.path, q, rq.header, body, rq.hasBody)
+			a, err := f.send(ctx, op, rq.path, q, rq.header, body, rq.hasBody)
 			if err != nil {
 				return nil, false, err
 			}
@@ -1007,7 +1009,7 @@ func (f *fetcher) required(ctx context.Context, n *Node, cand any, parent *Recor
 			return fail(err.Error())
 		}
 		for _, rq := range reqs {
-			a, err := f.send(ctx, op.Method, rq.path, rq.query, rq.header, rq.body, rq.hasBody)
+			a, err := f.send(ctx, op, rq.path, rq.query, rq.header, rq.body, rq.hasBody)
 			if err != nil {
 				return false, err
 			}
@@ -1102,7 +1104,8 @@ func listOf(n *Node, op *spec.Operation, body any) ([]any, bool) {
 	return l, ok
 }
 
-func (f *fetcher) send(ctx context.Context, method, path string, query, header map[string]any, body any, hasBody bool) (*answer, error) {
+func (f *fetcher) send(ctx context.Context, op *spec.Operation, path string, query, header map[string]any, body any, hasBody bool) (*answer, error) {
+	method := op.Method
 	target := path
 	if len(query) > 0 {
 		v := url.Values{}
@@ -1131,7 +1134,7 @@ func (f *fetcher) send(ctx context.Context, method, path string, query, header m
 		return nil, errBudget
 	}
 	f.data.Requests++
-	ex := Exchange{For: f.sending, Method: method, Target: target, Request: body, HasRequest: hasBody}
+	ex := Exchange{For: f.sending, OperationID: op.ID, Method: method, Target: target, Request: body, HasRequest: hasBody}
 	start := time.Now()
 	defer func() {
 		ex.Ms = time.Since(start).Milliseconds()
@@ -1174,7 +1177,9 @@ func (f *fetcher) send(ctx context.Context, method, path string, query, header m
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 20<<20))
 	if err != nil {
-		return nil, err
+		// the answer broke off: the status came, the body did not
+		ex.Status, ex.Error = resp.StatusCode, "reading the answer: "+err.Error()
+		return nil, fmt.Errorf("%s: answer %d broke off: %w", f.lastTarget, resp.StatusCode, err)
 	}
 	a := &answer{status: resp.StatusCode, header: resp.Header}
 	if len(bytes.TrimSpace(raw)) > 0 {

@@ -108,7 +108,12 @@ func pass(ctx context.Context, in ReadInput, report string, out io.Writer) ([]ap
 			RequestTimeout: in.Timeout,
 		},
 		Scenario: in.Scenario,
-		OnStep:   func(ex apitest.StepExchange) { got = append(got, ex) },
+		// the steps without an answer come from the result
+		OnStep: func(ex apitest.StepExchange) {
+			if ex.Answered {
+				got = append(got, ex)
+			}
+		},
 	}
 	if in.Token != "" {
 		cfg.Token = apitest.StaticToken(in.Token)

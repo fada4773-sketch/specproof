@@ -1725,12 +1725,15 @@ func TestReviewTimeline(t *testing.T) {
 	d.Set(ReviewFetch, "2 requests", "fetched", false)
 	d.SetTimeline(ReviewFetch, FetchTimeline([]Exchange{
 		{For: "docks under planets1", Method: "GET", Target: "/planets/mars/docks", Status: 200, Answer: []any{map[string]any{"id": 7, "note": "</script><b>x</b>"}}},
-		{For: "ships under docks1", Method: "GET", Target: "/docks/7/ships", Status: 404},
+		{For: "ships under docks1", OperationID: "listShips", Method: "GET", Target: "/docks/7/ships", Status: 404},
+		{For: "pilots under ships1", OperationID: "listPilots", Method: "GET", Target: "/ships/3/pilots", Error: "EOF"},
 	}, nil))
 	d.Set(ReviewRun, "FAILED: 2 steps", "ran", true)
 	d.SetTimeline(ReviewRun, []Entry{
 		{Step: "docks1.create", Method: "POST", Target: "/planets/mars/docks", Status: 201, Expect: 201, HasRequest: true, Request: map[string]any{"name": "North"}},
-		{Step: "docks1.read", Method: "GET", Target: "/docks/7", Status: 500, Expect: 200, Failed: true, Result: "FAILED: status 500"},
+		{Step: "docks1.read", OperationID: "getDock", Method: "GET", Target: "/docks/7", Status: 500, Expect: 200, Failed: true, Result: "FAILED: status 500"},
+		{Step: "docks1.update", OperationID: "updateDock", Method: "PUT", Target: "/docks/7", Expect: 200, Failed: true, NoAnswer: true, Result: "ERROR: connection reset by peer"},
+		{Step: "docks1.delete", OperationID: "deleteDock", Method: "DELETE", Target: "/docks/{dockId}", Expect: 204, NotSent: true, Result: "SKIPPED: dependency failed"},
 	})
 	md, page := d.Render(), d.RenderHTML()
 	// the button lists the mismatches of every timeline with their diffs
@@ -1744,9 +1747,12 @@ func TestReviewTimeline(t *testing.T) {
 	}
 	d.SetTimeline(ReviewUpdate, nil)
 	for _, want := range []string{
-		"### Requests in the order sent (2, 1 failed)", "| 2 | ships under docks1 | GET /docks/7/ships | 404 ✗ |",
-		"<details open><summary>Steps in the order they ran (2, 1 did not pass)", "| 1 | docks1.create | POST /planets/mars/docks | 201 ✓ |",
-		"| 2 | docks1.read | GET /docks/7 | 500 ✗ (expected 200) |", "[tree-review_gen.html](tree-review_gen.html)",
+		"### Requests in the order sent (3, 2 failed)", "| 2 | ships under docks1 | listShips | GET /docks/7/ships | 404 ✗ |",
+		"| 3 | pilots under ships1 | listPilots | GET /ships/3/pilots | no answer ✗ | EOF |",
+		"<details open><summary>Steps in the order they ran (4, 2 did not pass)", "| 1 | docks1.create | – | POST /planets/mars/docks | 201 ✓ |",
+		"| 2 | docks1.read | getDock | GET /docks/7 | 500 ✗ (expected 200) |", "[tree-review_gen.html](tree-review_gen.html)",
+		"| 3 | docks1.update | updateDock | PUT /docks/7 | no answer ✗ | 0 | ERROR: connection reset by peer |",
+		"| 4 | docks1.delete | deleteDock | DELETE /docks/{dockId} | not sent | 0 | SKIPPED: dependency failed |",
 	} {
 		if !strings.Contains(md, want) {
 			t.Errorf("markdown lacks %q:\n%s", want, md)
@@ -1767,7 +1773,7 @@ func TestReviewTimeline(t *testing.T) {
 	// a later run writes the run again: the fetch stays, the old lines of
 	// the run are replaced, the Markdown has them once
 	again := LoadReview(path)
-	if got := again.Timeline(ReviewFetch); len(got) != 2 || got[1].Step != "ships under docks1" || !got[1].Failed {
+	if got := again.Timeline(ReviewFetch); len(got) != 3 || got[1].Step != "ships under docks1" || !got[1].Failed || got[1].OperationID != "listShips" || !got[2].NoAnswer {
 		t.Fatalf("fetch read back: %+v", got)
 	}
 	again.Set(ReviewRun, "PASSED: 1 step", "ran", false)

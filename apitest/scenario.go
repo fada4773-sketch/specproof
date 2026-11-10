@@ -66,9 +66,12 @@ type ScenarioConfig struct {
 	// step must still answer as the scenario expects. A reading step is sent
 	// twice; the fields that change by themselves are volatile.
 	Update bool
-	// OnStep is called after every step that got an answer, with what was
-	// sent and received (secrets included, as sent). apitest-gen uses it
-	// to write the examples into the spec.
+	// OnStep is called after every step, in the order they ran, with what
+	// was sent and received (secrets included, as sent). A step without an
+	// answer (the connection failed or closed, a timeout, the request could
+	// not be built) or one that was skipped is passed too, with Answered
+	// false and its outcome. apitest-gen uses it for the review and to
+	// write the examples into the spec.
 	OnStep func(StepExchange)
 }
 
@@ -77,17 +80,23 @@ type StepExchange struct {
 	ID          string
 	OperationID string
 	Method      string
-	// Target is path and query as sent, relative to the base URL.
+	// Target is path and query as sent, relative to the base URL; the
+	// path of the operation for a step that was not sent.
 	Target string
 	// Path, Query and Header are the parameter values of the step with
 	// the saved values filled in.
 	Path, Query, Header map[string]any
 	Body                any // request body; nil without
 	HasBody             bool
-	Status              int
-	ResponseHeader      http.Header
-	ResponseBody        any // decoded JSON; nil without or for other content
-	Duration            time.Duration
+	// Answered reports whether the API answered; Status, ResponseHeader
+	// and ResponseBody are empty without. Sent reports whether the request
+	// was sent (or tried): false for a skipped step or one that could not
+	// be built.
+	Answered, Sent bool
+	Status         int
+	ResponseHeader http.Header
+	ResponseBody   any // decoded JSON; nil without or for other content
+	Duration       time.Duration
 	// Passed reports whether every check of the step passed; Outcome and
 	// Message say how it ended, Problems lists the schema violations.
 	Passed   bool
@@ -694,9 +703,9 @@ func (s *scenarioRunner) check(ctx context.Context, st *scenario.Step) *outcome 
 	return o
 }
 
-// observe passes a step with an answer to ScenarioConfig.OnStep.
+// observe passes a step to ScenarioConfig.OnStep, with or without answer.
 func (s *scenarioRunner) observe(st *scenario.Step, o *outcome) {
-	if s.scfg.OnStep == nil || o.resp == nil {
+	if s.scfg.OnStep == nil {
 		return
 	}
 	path, _ := scenario.Fill(anyOrNil(st.Path), s.vars)
@@ -704,9 +713,14 @@ func (s *scenarioRunner) observe(st *scenario.Step, o *outcome) {
 	hdr, _ := scenario.Fill(anyOrNil(st.Header), s.vars)
 	ex := StepExchange{
 		ID: st.ID, OperationID: o.c.Op.ID, Method: o.c.Op.Method,
-		Status: o.resp.Status, ResponseHeader: o.resp.Header.Clone(), ResponseBody: s.originals(o.decoded),
 		Passed: o.status == StatusPassed, Outcome: o.status, Message: o.message, Duration: o.duration,
+		Sent: o.sent != nil,
 	}
+	if o.resp != nil {
+		ex.Answered = true
+		ex.Status, ex.ResponseHeader, ex.ResponseBody = o.resp.Status, o.resp.Header.Clone(), s.originals(o.decoded)
+	}
+	ex.Target = o.c.Op.Path
 	if o.prepared != nil {
 		ex.Target = o.prepared.Target
 	}

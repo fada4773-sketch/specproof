@@ -50,7 +50,7 @@ func (d *ReviewDoc) RenderHTML() string {
 	if d.Spec != "" {
 		fmt.Fprintf(&b, "<p class=\"muted\">Spec %s · %s · the steps, the next command and the plan: tree-review_gen.md</p>", esc(d.Spec), esc(d.File))
 	}
-	b.WriteString(`<div class="bar"><input id="q" type="search" placeholder="Search step or path" aria-label="Search step or path">
+	b.WriteString(`<div class="bar"><input id="q" type="search" placeholder="Search step, operationId or path" aria-label="Search step, operationId or path">
 <label><input id="bad" type="checkbox"> only failed</label><button id="all" type="button">open all steps</button><button id="none" type="button">close all</button>
 <button id="mm" type="button" aria-expanded="false" aria-controls="mismatches">Mismatches</button></div></header><main>
 <section id="mismatches" hidden></section>`)
@@ -118,7 +118,7 @@ tr.body td{background:var(--soft);padding:8px}
 .pane h4{margin:0 0 4px;font-size:12px;color:var(--muted)}
 pre{margin:0;padding:8px;background:var(--code);border:1px solid var(--line);border-radius:6px;overflow:auto;max-height:480px;font:12px/1.4 ui-monospace,monospace}
 .json{font:12px/1.5 ui-monospace,monospace;background:var(--code);border:1px solid var(--line);border-radius:6px;padding:6px 8px;overflow:auto;max-height:600px}
-.json details{margin-left:14px}.json details>summary{cursor:pointer;list-style:none;margin-left:-14px}
+.json details{margin-left:14px;border-left:1px dotted var(--line);padding-left:2px}.json details>summary{cursor:pointer;list-style:none;margin-left:-14px}
 .json details>summary::before{content:'▸ ';color:var(--muted)}.json details[open]>summary::before{content:'▾ '}
 .json .k{color:#8250df}.json .s{color:#0a3069}.json .num{color:#0550ae}.json .lit{color:#cf222e}.json .c{color:var(--muted)}
 @media (prefers-color-scheme:dark){.json .k{color:#d2a8ff}.json .s{color:#a5d6ff}.json .num{color:#79c0ff}.json .lit{color:#ff7b72}}
@@ -141,7 +141,18 @@ details.mm{margin:2px 0 6px 12px;border-left:2px solid var(--line);padding-left:
 details.mm>div{margin:4px 0 8px}.msg{color:var(--bad);margin:4px 0}
 table.diffs{width:auto;min-width:60%}table.diffs td{font-family:ui-monospace,monospace;font-size:12px;word-break:break-all;white-space:pre-wrap}
 ul.probs{margin:4px 0;padding-left:20px;font:12px/1.5 ui-monospace,monospace}
-.raw h4{display:flex;align-items:center;gap:8px}.raw h4 button{font-size:11px;padding:0 6px}
+.jbox{border:1px solid var(--line);border-radius:6px;background:var(--code);min-width:0;margin:0 0 6px}
+.jbox>summary{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:4px 8px;cursor:pointer;font-size:12px;color:var(--muted)}
+.jbox[open]>summary{border-bottom:1px solid var(--line)}.jbox .jt{font-weight:600;color:var(--fg)}
+.jbox .tools{margin-left:auto;display:flex;gap:4px;align-items:center;flex-wrap:wrap}
+button.tb{font-size:11px;padding:1px 7px}button.tb.on{background:var(--line);font-weight:600}
+.jbody .json,.jbody pre{border:0;border-radius:0;margin:0;max-height:70vh;overflow:auto}
+pre.rawtext{white-space:pre;tab-size:2}
+.json summary button.tb{visibility:hidden;margin:0 0 0 8px}.json summary:hover button.tb,.json summary:focus-within button.tb{visibility:visible}
+.json details[open]>summary .pv{display:none}.json .pv{color:var(--muted)}
+.json .s.long button.tb{margin:0 0 0 6px}
+.pane>*{min-width:0}td.op{font-family:ui-monospace,monospace;font-size:12px;word-break:break-all}.opid{color:var(--muted);font-family:ui-monospace,monospace}
+tr.row.lost td.st,tr.row.lost td.res{color:var(--bad);font-weight:600}tr.row.unsent td{color:var(--muted)}tr.row.unsent td.st{color:var(--warn)}
 `
 
 const reviewJS = `
@@ -149,10 +160,24 @@ const reviewJS = `
 const data=JSON.parse(document.getElementById('review-data').textContent);
 const CHUNK=100;
 // a JSON value as a tree: every object and list folds; its children are
-// built when it is opened, long lists 100 at a time
+// built when it is opened, long lists 100 at a time; long strings are cut
+// until asked for
 function el(tag,cls,t){const e=document.createElement(tag);if(cls)e.className=cls;if(t!==undefined)e.textContent=t;return e}
+const LONG=240,EXPAND_MAX=4000;
+function copyText(text,b){
+  const done=()=>{const t=b.textContent;b.textContent='copied';setTimeout(()=>{b.textContent=t},1200)};
+  const fallback=()=>{const ta=el('textarea');ta.value=text;ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.select();
+    try{document.execCommand('copy');done()}catch(_){}ta.remove()};
+  try{if(navigator.clipboard&&window.isSecureContext){navigator.clipboard.writeText(text).then(done,fallback);return}}catch(_){}
+  fallback()}
+function tool(label,title,fn){const b=el('button','tb',label);b.type='button';if(title)b.title=title;
+  b.onclick=e=>{e.preventDefault();e.stopPropagation();fn(b)};return b}
 function scalar(v){
-  if(typeof v==='string')return el('span','s',JSON.stringify(v));
+  if(typeof v==='string'){
+    const q=JSON.stringify(v);
+    if(q.length<=LONG)return el('span','s',q);
+    const s=el('span','s long'),t=el('span',null,q.slice(0,LONG)+'…');s.appendChild(t);
+    const more=tool('show all '+v.length+' chars',null,()=>{t.textContent=q;more.remove()});s.appendChild(more);return s}
   if(typeof v==='number')return el('span','num',String(v));
   return el('span','lit',String(v))}
 function node(key,v,open){
@@ -161,7 +186,11 @@ function node(key,v,open){
   const arr=Array.isArray(v),keys=arr?null:Object.keys(v),n=arr?v.length:keys.length;
   if(n===0){const d=el('div','leaf');d.appendChild(label);d.appendChild(el('span','c',arr?'[]':'{}'));return d}
   const det=el('details'),sum=el('summary');sum.appendChild(label);
-  sum.appendChild(el('span','c',arr?'[ '+n+' items ]':'{ '+n+' keys }'));det.appendChild(sum);
+  sum.appendChild(el('span','c',arr?'[ '+count(n,'item','items')+' ]':'{ '+count(n,'key','keys')+' }'));
+  // the first keys while it is closed
+  if(!arr)sum.appendChild(el('span','pv','  '+keys.slice(0,4).join(', ')+(n>4?', …':'')));
+  sum.appendChild(tool('copy','copy this '+(arr?'list':'object')+' as JSON',b=>copyText(JSON.stringify(v,null,2),b)));
+  det.appendChild(sum);
   let built=0;
   function more(){
     const end=Math.min(n,built+CHUNK);
@@ -170,33 +199,69 @@ function node(key,v,open){
     if(det.lastMoreButton){det.lastMoreButton.remove();det.lastMoreButton=null}
     if(built<n){const b=el('button',null,'show '+Math.min(CHUNK,n-built)+' more of '+(n-built));b.type='button';
       b.onclick=e=>{e.stopPropagation();more()};det.appendChild(b);det.lastMoreButton=b}}
-  det.addEventListener('toggle',()=>{if(det.open&&built===0)more()});
+  det._fill=()=>{if(built===0)more()};
+  det.addEventListener('toggle',()=>{if(det.open)det._fill()});
   if(open){det.open=true;more()}
   return det}
-function pane(title,v){
-  const box=el('div');box.appendChild(el('h4',null,title));
-  const j=el('div','json');
-  if(typeof v==='string'){const d=el('div','leaf',v);j.appendChild(d)}else j.appendChild(node(null,v,true));
-  box.appendChild(j);return box}
+// expandAll opens every object and list below box (at most EXPAND_MAX, so
+// a huge answer does not freeze the page); true when it stopped there
+function expandAll(box){let count=0,capped=false;
+  const walk=d=>{if(count>=EXPAND_MAX){capped=true;return}count++;d.open=true;if(d._fill)d._fill();
+    for(const c of Array.from(d.children))if(c.tagName==='DETAILS')walk(c)};
+  Array.from(box.children).forEach(c=>{if(c.tagName==='DETAILS')walk(c)});return capped}
+function count(n,one,many){return n+' '+(n===1?one:many)}
+function describe(v){if(v===null)return 'null';if(Array.isArray(v))return count(v.length,'item','items');
+  if(typeof v==='object')return count(Object.keys(v).length,'key','keys');if(typeof v==='string')return count(v.length,'char','chars');return typeof v}
+function bytes(n){return n<1024?n+' B':n<1048576?(n/1024).toFixed(1)+' KB':(n/1048576).toFixed(1)+' MB'}
+// jsonBox is a body (request, answer, …) that folds: as a tree or as raw
+// JSON, with copy (the raw JSON) and, in the tree, open and close all
+function jsonBox(title,v,mode){
+  const det=el('details','jbox'),sum=el('summary'),body=el('div','jbody');det.open=true;
+  const isObj=v!==null&&typeof v==='object',text=typeof v==='string'?v:JSON.stringify(v,null,2);
+  let view=isObj?(mode||'tree'):'raw';
+  sum.appendChild(el('span','jt',title));sum.appendChild(el('span','c',describe(v)+' · '+bytes(text.length)));
+  const tools=el('span','tools'),note=el('span','c');
+  let tb=null,rb=null,ex=null,co=null;
+  if(isObj){
+    tb=tool('tree','show as a tree',()=>{view='tree';render()});tb.dataset.v='tree';
+    rb=tool('raw','show the raw JSON',()=>{view='raw';render()});rb.dataset.v='raw';
+    ex=tool('open all','open every level',()=>{det.open=true;const j=body.querySelector('.json');if(j)note.textContent=expandAll(j)?'first '+EXPAND_MAX+' opened':''});
+    co=tool('close all','close every level',()=>{const j=body.querySelector('.json');if(!j)return;
+      j.querySelectorAll('details').forEach(d=>d.open=false);const r=j.querySelector('details');if(r)r.open=true;note.textContent=''});
+    [tb,rb,ex,co].forEach(b=>tools.appendChild(b))}
+  tools.appendChild(note);
+  tools.appendChild(tool('copy','copy the raw JSON',b=>copyText(text,b)));
+  sum.appendChild(tools);det.appendChild(sum);det.appendChild(body);
+  function render(){body.textContent='';note.textContent='';
+    if(view==='raw')body.appendChild(el('pre','rawtext',text));
+    else{const j=el('div','json');j.appendChild(node(null,v,true));body.appendChild(j)}
+    [tb,rb].forEach(b=>{if(b)b.classList.toggle('on',b.dataset.v===view)});
+    [ex,co].forEach(b=>{if(b)b.hidden=view!=='tree'})}
+  render();return det}
+function pane(title,v){return jsonBox(title,v)}
 function cell(tr,cls,t){const td=document.createElement('td');td.className=cls;td.textContent=t;tr.appendChild(td);return td}
-function status(e){if(!e.status)return e.expect?'expect '+e.expect:'';let s=e.status+(e.failed?' ✗':' ✓');if(e.expect&&e.expect!==e.status)s+=' (expected '+e.expect+')';return s}
+function status(e){
+  if(e.noAnswer)return (e.status?e.status+', answer broke off':'no answer')+' ✗';
+  if(e.notSent)return 'not sent'+(e.failed?' ✗':'');
+  if(!e.status)return e.expect?'expect '+e.expect:'';let s=e.status+(e.failed?' ✗':' ✓');if(e.expect&&e.expect!==e.status)s+=' (expected '+e.expect+')';return s}
 document.querySelectorAll('.tl').forEach(div=>{
   const list=data.timelines[div.dataset.step]||[];
   const t=document.createElement('table');
-  t.innerHTML='<thead><tr><th>#</th><th>Step</th><th>Request</th><th>Status</th><th class="ms">ms</th><th class="res">Result</th></tr></thead>';
+  t.innerHTML='<thead><tr><th>#</th><th>Step</th><th class="op">Operation</th><th>Request</th><th>Status</th><th class="ms">ms</th><th class="res">Result</th></tr></thead>';
   const tb=document.createElement('tbody');t.appendChild(tb);
   list.forEach((e,i)=>{
-    const tr=document.createElement('tr');tr.className='row'+(e.failed?' bad':'');
-    tr.dataset.text=((e.step||'')+' '+(e.method||'')+' '+(e.target||'')+' '+(e.result||'')).toLowerCase();
-    cell(tr,'n',i+1);cell(tr,'',e.step||'');cell(tr,'req',((e.method||'')+' '+(e.target||'')).trim());
+    const tr=document.createElement('tr');tr.className='row'+(e.failed?' bad':'')+(e.noAnswer?' lost':'')+(e.notSent?' unsent':'');
+    tr.dataset.text=((e.step||'')+' '+(e.op||'')+' '+(e.method||'')+' '+(e.target||'')+' '+(e.result||'')+' '+status(e)).toLowerCase();
+    cell(tr,'n',i+1);cell(tr,'',e.step||'');cell(tr,'op',e.op||'–');cell(tr,'req',((e.method||'')+' '+(e.target||'')).trim());
     cell(tr,'st',status(e));cell(tr,'ms',e.ms||'');cell(tr,'res',e.result||'');
     let open=null;
     tr.onclick=()=>{
       if(open){open.remove();open=null;return}
-      open=document.createElement('tr');open.className='body';const td=document.createElement('td');td.colSpan=6;
+      open=document.createElement('tr');open.className='body';const td=document.createElement('td');td.colSpan=7;
       const p=document.createElement('div');p.className='pane';
       if(e.hasRequest)p.appendChild(pane('request',e.request));
       if(e.answer!==undefined&&e.answer!==null)p.appendChild(pane('answer',e.answer));
+      else if(e.noAnswer)p.appendChild(pane('answer','no answer: the connection failed or closed, the request timed out, or the API crashed on it (result)'));
       if(e.result)p.appendChild(pane('result',e.result));
       if(!p.children.length){const m=document.createElement('p');m.className='muted';m.textContent='no body';p.appendChild(m)}
       td.appendChild(p);open.appendChild(td);tr.after(open)};
@@ -242,7 +307,7 @@ function candidate(c,i){
       const h=el('span');h.appendChild(el('span','lbl','require '+r.name+' '));h.appendChild(document.createTextNode(r.call+' '));
       h.appendChild(el('span','out '+(r.held?'ok':'bad'),r.held?'held':'did not hold'));if(r.why)h.appendChild(el('span','why',' · '+r.why));
       d.appendChild(fold(h,'require',x=>{valuesTable(x,r.values);(r.where||[]).forEach(w=>line(x,'cond','where ',w));requests(x,r.requests)}))});
-    if(c.value!==undefined)d.appendChild(fold('the candidate','cval',x=>{const j=el('div','json');j.appendChild(node(null,c.value,true));x.appendChild(j)}));
+    if(c.value!==undefined)d.appendChild(fold('the candidate','cval',x=>x.appendChild(jsonBox('the candidate',c.value))));
     (c.each||[]).forEach(v=>d.appendChild(visit(v)))})}
 function visit(v){
   const head=el('span');head.appendChild(el('b',null,v.node));
@@ -292,15 +357,11 @@ const found=[];
 Object.keys(data.timelines).sort((a,b)=>ORDER.indexOf(a)-ORDER.indexOf(b)).forEach(step=>{
   const list=data.timelines[step]||[];
   list.forEach((e,i)=>{const o=outcomeOf(e);if(KINDS.some(k=>k[0]===o))found.push({step:step,i:i,e:e,o:o,list:list})})});
-function raw(title,v){
-  const box=el('div','raw'),h=el('h4',null,title);
-  const text=typeof v==='string'?v:JSON.stringify(v,null,2);
-  const copy=el('button',null,'copy');copy.type='button';
-  copy.onclick=()=>{try{navigator.clipboard.writeText(text).then(()=>{copy.textContent='copied'},()=>{})}catch(_){}};
-  h.appendChild(copy);box.appendChild(h);box.appendChild(el('pre',null,text));return box}
+function raw(title,v){return jsonBox(title,v,'raw')}
 function mismatch(f){
   const e=f.e,head=el('span');
   head.appendChild(el('span','n',f.step+' #'+(f.i+1)+' '));head.appendChild(el('b',null,e.step||''));
+  if(e.op)head.appendChild(el('span','opid',' '+e.op));
   head.appendChild(document.createTextNode('  '+((e.method||'')+' '+(e.target||'')).trim()+'  → '+status(e)));
   const d=fold(head,'mm',d=>{
     const body=el('div');d.appendChild(body);
@@ -316,7 +377,7 @@ function mismatch(f){
     if(e.hasRequest)p.appendChild(raw('request',e.request));
     p.appendChild(raw('answer',e.answer===undefined||e.answer===null?'no body':e.answer));
     body.appendChild(p)});
-  d.dataset.text=((e.step||'')+' '+(e.method||'')+' '+(e.target||'')+' '+(e.result||'')+' '+(e.problems||[]).join(' ')+' '+JSON.stringify(e.diffs||[])).toLowerCase();
+  d.dataset.text=((e.step||'')+' '+(e.op||'')+' '+(e.method||'')+' '+(e.target||'')+' '+(e.result||'')+' '+(e.problems||[]).join(' ')+' '+JSON.stringify(e.diffs||[])).toLowerCase();
   return d}
 const mm=document.getElementById('mm'),mmBox=document.getElementById('mismatches');
 mm.textContent='Mismatches ('+found.length+')';if(found.length)mm.classList.add('some');

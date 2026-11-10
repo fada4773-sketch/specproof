@@ -208,6 +208,9 @@ func (d *ReviewDoc) next() string {
 		return "propose the tree:\n\n```\n" + tree + "\n```\n"
 	case d.sections[ReviewTree].failed:
 		return "fix the problems of tree.yaml (section 1), then check it again:\n\n```\n" + tree + " -dry-run\n```\n"
+	case d.sections[ReviewFetch] != nil && d.sections[ReviewFetch].failed && d.sections[ReviewFetch].outdated == "":
+		return "the fetch stopped (section 2): a request got no answer; check the log of the instance for it, then fetch again:\n\n```\n" +
+			tree + " -base-url <stage> -token-env <NAME>\n```\n"
 	case d.sections[ReviewScenario] != nil && d.sections[ReviewScenario].failed:
 		return "the records do not fit tree.yaml (section 3): fix order or the tree, or fetch again; check it with:\n\n```\n" + tree + " -dry-run\n```\n"
 	case stale(ReviewFetch):
@@ -487,6 +490,37 @@ func FetchSection(d *Data, stale []string) (string, string) {
 	return summary, b.String()
 }
 
+// FetchFailedSection is the section of a fetch that stopped: a request
+// got no answer (the connection failed or closed, a timeout, the API
+// crashed). It names the request and what was fetched up to it; the
+// timeline lists every request sent, the last one without answer.
+func FetchFailedSection(d *Data, why string) (string, string) {
+	var b strings.Builder
+	summary := fmt.Sprintf("stopped after %d requests: a request got no answer", d.Requests)
+	fmt.Fprintf(&b, "The fetch from %s stopped: a request got no answer, so tree-data_gen.yaml was not written.\n\n", d.Source)
+	fmt.Fprintf(&b, "**No answer:** %s\n\n", oneLine(why))
+	b.WriteString("The connection failed or closed, the request timed out, or the API crashed on it. " +
+		"Check the log of the instance for that request, fix it (or leave the node out with enabled: false), then fetch again.\n")
+	var lost []string
+	for _, ex := range d.Log {
+		if ex.Error != "" {
+			lost = append(lost, fmt.Sprintf("| %s | %s | %s %s | %s |", cell(ex.For), opOrDash(ex.OperationID), ex.Method, cell(ex.Target), cell(oneLine(ex.Error))))
+		}
+	}
+	if len(lost) > 0 {
+		fmt.Fprintf(&b, "\n### Requests without answer (%d)\n\n| For | Operation | Request | Error |\n|---|---|---|---|\n%s\n", len(lost), strings.Join(lost, "\n"))
+	}
+	fmt.Fprintf(&b, "\nUp to there: %d records.\n", len(d.Records))
+	return summary, b.String()
+}
+
+func opOrDash(id string) string {
+	if id == "" {
+		return "–"
+	}
+	return cell(id)
+}
+
 // ScenarioSection is the section of the built scenario: its steps by kind,
 // the seed the instance must hold, the decisions and gaps.
 func ScenarioSection(built *Built) (string, string) {
@@ -602,6 +636,23 @@ func RunSection(res *apitest.Result, baseURL string, unique bool) (string, strin
 			names = append(names, c.Name)
 		}
 		fmt.Fprintf(&b, "\nDid not pass (%d), in the order they ran: %s.\n", len(bad), strings.Join(names, ", "))
+	}
+	var lost, skipped []string
+	for _, c := range res.Cases {
+		switch {
+		case c.Status == apitest.StatusError && c.StatusCode == 0:
+			lost = append(lost, fmt.Sprintf("| %s | %s | %s |", cell(c.Name), opOrDash(c.Operation), cell(oneLine(c.Message))))
+		case c.Status == apitest.StatusSkipped:
+			skipped = append(skipped, c.Name)
+		}
+	}
+	if len(lost) > 0 {
+		fmt.Fprintf(&b, "\n### Steps without answer (%d)\n\nNo answer came: the connection failed or closed, the request timed out, the API crashed on it, "+
+			"or it was not sent (refused, a hook failed). Check the log of the instance; the steps that need their values were skipped.\n\n"+
+			"| Step | Operation | Error |\n|---|---|---|\n%s\n", len(lost), strings.Join(lost, "\n"))
+	}
+	if len(skipped) > 0 {
+		fmt.Fprintf(&b, "\nSkipped (%d), the timeline says why: %s.\n", len(skipped), strings.Join(skipped, ", "))
 	}
 	if res.Report != "" {
 		fmt.Fprintf(&b, "\nReport: %s\n", res.Report)

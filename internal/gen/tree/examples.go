@@ -171,7 +171,7 @@ func ExampleTimeline(s *spec.Spec, sc *scenario.Scenario, run []apitest.StepExch
 		if name == "" {
 			name = "the example"
 		}
-		out = append(out, Entry{Step: e.ex.ID, Method: e.op.Method, Target: e.op.Path, Status: e.ex.Status,
+		out = append(out, Entry{Step: e.ex.ID, OperationID: e.op.ID, Method: e.op.Method, Target: e.op.Path, Status: e.ex.Status,
 			Result: fmt.Sprintf("%s of %s, answer %d", name, e.op.ID, e.ex.Status)})
 	}
 	return out

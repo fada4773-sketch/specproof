@@ -427,3 +427,74 @@ func TestTreeFix(t *testing.T) {
 		t.Errorf("the line once:\n%s", b)
 	}
 }
+
+// crashing serves a Starport that crashes on the requests crash picks:
+// the connection closes without answer.
+func crashing(t *testing.T, stage bool, crash func(*http.Request) bool) string {
+	t.Helper()
+	first := 1
+	if stage {
+		first = 100
+	}
+	srv := testserver.NewStarport(starportToken, first)
+	if stage {
+		srv.Fill()
+	}
+	hs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if crash(r) {
+			panic(http.ErrAbortHandler)
+		}
+		srv.ServeHTTP(w, r)
+	}))
+	t.Cleanup(hs.Close)
+	return hs.URL + "/api"
+}
+
+// TestTreeReviewWithoutAnswer: a request the API does not answer (it
+// crashes on it) stands in the review with its operationId, in the fetch
+// and in the run; the steps skipped because of it stand there too.
+func TestTreeReviewWithoutAnswer(t *testing.T) {
+	specPath, file := treeProject(t)
+	dir := filepath.Dir(file)
+	if code, out, errOut := cli("tree", "-spec", specPath, "-file", file); code != 0 {
+		t.Fatalf("propose: %d\n%s%s", code, out, errOut)
+	}
+	read := func(name string, parts ...string) {
+		t.Helper()
+		b, _ := os.ReadFile(filepath.Join(dir, name))
+		for _, p := range parts {
+			if !strings.Contains(string(b), p) {
+				t.Errorf("%s lacks %q:\n%s", name, p, b)
+			}
+		}
+	}
+	// the fetch stops at the request without answer; the review keeps
+	// every request up to it
+	stage := crashing(t, true, func(r *http.Request) bool {
+		return r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/ships")
+	})
+	code, out, errOut := cli("tree", "-spec", specPath, "-file", file, "-base-url", stage, "-token", starportToken)
+	if code != 1 || !strings.Contains(errOut+out, "/ships") {
+		t.Fatalf("fetch with a crash: %d\n%s%s", code, out, errOut)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "tree-data_gen.yaml")); err == nil {
+		t.Error("a fetch that stopped writes no data")
+	}
+	read("tree-review_gen.md", "| 2. Fetch (tree-data_gen.yaml) | failed | stopped after", "### Requests without answer (1)",
+		"| listShips | GET /docks/", "no answer ✗", "**Next:** the fetch stopped")
+	read("tree-review_gen.html", `"op":"listShips"`, `"noAnswer":true`, `"op":"listDocks"`)
+	// a fetch that works, then a run whose instance crashes on the update
+	stage = crashing(t, true, func(*http.Request) bool { return false })
+	if code, out, errOut := cli("tree", "-spec", specPath, "-file", file, "-base-url", stage, "-token", starportToken); code != 0 {
+		t.Fatalf("fetch: %d\n%s%s", code, out, errOut)
+	}
+	read("tree-review_gen.md", "| 2. Fetch (tree-data_gen.yaml) | done |", "| # | Step | Operation | Request | Expect |")
+	empty := crashing(t, false, func(r *http.Request) bool { return r.Method == http.MethodPut })
+	code, out, errOut = cli("tree", "run", "-spec", specPath, "-file", file, "-base-url", empty, "-token", starportToken)
+	if code != 1 {
+		t.Fatalf("run with a crash: %d\n%s%s", code, out, errOut)
+	}
+	read("tree-review_gen.md", "### Steps without answer (", "| updateDock |", "| Step | Operation | Request | Status | ms | Result |",
+		"| updateDock | PUT /docks/", "no answer ✗")
+	read("tree-review_gen.html", `"op":"updateDock"`, `"noAnswer":true`)
+}

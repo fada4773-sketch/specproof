@@ -2,6 +2,7 @@ package apitest
 
 import (
 	"context"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
@@ -427,5 +428,44 @@ func TestScenarioStandalone(t *testing.T) {
 	}
 	if _, err := RunScenarioStandalone(context.Background(), cfg, StandaloneOptions{Run: "a["}); err == nil {
 		t.Error("an invalid -run pattern must be an error")
+	}
+}
+
+// TestScenarioOnStepWithoutAnswer: a step the API does not answer (it
+// crashes on the request, the connection closes) and the steps skipped
+// because of it reach OnStep too, in the order they ran: the review lists
+// them instead of leaving them out.
+func TestScenarioOnStepWithoutAnswer(t *testing.T) {
+	sc, golden := scenarioFiles(t, bookstoreScenario)
+	cfg := bookstoreScenarioConfig(t, testserver.Faults{}, sc, golden)
+	cfg.Update = true
+	inner := cfg.Handler
+	cfg.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/books") {
+			panic(http.ErrAbortHandler) // the connection closes without answer
+		}
+		inner.ServeHTTP(w, r)
+	})
+	var seen []StepExchange
+	cfg.OnStep = func(ex StepExchange) { seen = append(seen, ex) }
+	res, ft := runScenarioFake(t, cfg)
+	if !res.Failed {
+		t.Fatalf("a step without answer must fail:\n%s", ft.output())
+	}
+	if len(seen) != len(res.Cases) {
+		t.Fatalf("OnStep got %d steps, the run has %d", len(seen), len(res.Cases))
+	}
+	i := slices.IndexFunc(seen, func(ex StepExchange) bool { return ex.ID == "book1.create" })
+	if i < 0 {
+		t.Fatalf("OnStep lacks the step without answer: %+v", seen)
+	}
+	if ex := seen[i]; ex.Answered || !ex.Sent || ex.Status != 0 || ex.Outcome != StatusError || ex.OperationID != "createBook" || ex.Method != http.MethodPost || ex.Target == "" {
+		t.Errorf("the step without answer: %+v", ex)
+	}
+	if ex := seen[i+1]; ex.ID != "book1.read" || ex.Sent || ex.Answered || ex.Outcome != StatusSkipped || ex.Target != "/books/{bookId}" {
+		t.Errorf("the step skipped because of it: %+v", ex)
+	}
+	if !seen[0].Answered || !seen[0].Sent || seen[0].Status != 201 {
+		t.Errorf("a step with answer: %+v", seen[0])
 	}
 }

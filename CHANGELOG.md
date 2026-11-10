@@ -326,6 +326,30 @@ contain breaking changes, which are listed here.
     The new node key `fields` says where a body field comes from
     (`fields: {pilotId: .log.lastPilotId}`), over the record, `order` and
     the search; `tree check` names a field no body of the node has.
+  - The review of `apitest-gen tree` names the operationId of every
+    request and step: a column "Operation" in each timeline of
+    `tree-review_gen.md` and of `tree-review_gen.html` (search finds it,
+    the mismatches show it too).
+  - `tree-review_gen.html`: every body (request, answer, result, the
+    candidate of the fetch tree, the raw JSON of the mismatches) is a box
+    that folds, with its size, *tree* / *raw*, *open all* / *close all*
+    and *copy* (the raw JSON; also without clipboard API, as from a
+    `file://` page). A closed object shows its first keys, every object
+    and list has its own *copy*, strings over 240 characters are cut until
+    *show all*, and the tree has indent guides.
+  - A request without answer (the connection fails or closes, a timeout,
+    the API crashes on it) stays in the review of `apitest-gen tree`.
+    Before, a step of `tree run` without answer and the steps skipped
+    because of it were missing from the timelines, and a fetch that hit
+    one stopped without writing the review. Now the run lists it as `no
+    answer ✗` (section "Steps without answer") and the skipped steps as
+    `not sent` with the reason; a fetch writes the review with the
+    section *failed*, every request up to it and the request without
+    answer; an answer that breaks off after its status is logged too
+    (before: not in the log). `ScenarioConfig.OnStep` is called for every
+    step: `StepExchange.Answered` and `Sent` tell a step without answer
+    from one that was not sent; before, only steps with an answer were
+    passed.
   - Token flags for both: `-token`, `-token-env`, `-forbidden-token`,
     `-forbidden-token-env`, `-header`. The settings file of a run is
     optional (spec, base URL, health, tokens, headers, report, unique).
