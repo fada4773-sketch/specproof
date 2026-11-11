@@ -105,7 +105,7 @@ func TestOrderCheck(t *testing.T) {
 		"other case":    {"  - pilots\n", "  - Pilots\n", "order: Pilots is no node of the tree", "Pilots → pilots", true},
 		"twice":         {"  - pilots\n", "  - pilots\n  - pilots\n", "order: pilots is listed twice", "remove the line (- pilots)", true},
 		"no create":     {"  - pilots\n", "  - pilots\n  - planets\n", "order: planets creates nothing", "remove the line (- planets)", true},
-		"no place":      {"  - pilots\n", "", "pilots: its create has no place in order", "", false},
+		"no place":      {"  - pilots\n", "", "pilots: its create has no place in order", "add - pilots to order, after its creates (-fix does it)", true},
 		"no body field": {"{pilotId: shipPilot.id}", "{pilotId: shipPilot.id, captain: shipPilot.id}", "order: ships: the body of POST /docks/{dockId}/ships has no field captain", "remove captain: shipPilot.id", true},
 		"no reference":  {"{pilotId: shipPilot.id}", "{pilotId: 7}", "order: ships.pilotId: 7 is no reference to a node", "pilotId: 7 → pilotId: <node>.<field>", false},
 		"no relation":   {"{pilotId: shipPilot.id}", "{pilotId: pilots.id}", "order: ships.pilotId: pilots is neither below nor above ships", "remove pilotId: pilots.id", true},

@@ -44,6 +44,7 @@ func (p *proposer) conditions() {
 		c.children()
 		c.own(op)
 		c.actions()
+		c.alternatives()
 		if len(c.reqs) > 0 {
 			n.Require = c.reqs
 			if n.Candidates == 0 {
@@ -80,6 +81,25 @@ func (c *cond) where(field string, test any, note string) {
 		return
 	}
 	c.n.Where = append(c.n.Where, Clause{Field: field, Test: test, Note: note})
+}
+
+// alternatives turns the conditions for several children that read a
+// field of the record ("moon reads it", "seed reads it") into
+// alternatives (where any: one must hold): records that name all of them
+// are rare, one that names one of them gives its child a record to read.
+func (c *cond) alternatives() {
+	var reads, rest []Clause
+	for _, cl := range c.n.Where {
+		if readsItRe.MatchString(cl.Note) {
+			reads = append(reads, cl)
+		} else {
+			rest = append(rest, cl)
+		}
+	}
+	if len(reads) < 2 || len(c.n.WhereAny) > 0 {
+		return
+	}
+	c.n.Where, c.n.WhereAny = rest, reads
 }
 
 // ownFields are the fields of the record above a node reads (".name").

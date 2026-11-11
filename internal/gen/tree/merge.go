@@ -314,7 +314,7 @@ func (m *merger) bound(p *Node) bool {
 	if p.Parent == nil {
 		return false
 	}
-	for _, c := range p.Parent.Where {
+	for _, c := range slices.Concat(p.Parent.Where, p.Parent.WhereAny) {
 		if c.Note == p.Name+" reads it" {
 			return true
 		}
@@ -779,12 +779,14 @@ func (m *merger) nameTree(c *Node) {
 	}
 	var walk func(x *Node)
 	walk = func(x *Node) {
-		x.Where = slices.Clone(x.Where)
-		for i, cl := range x.Where {
-			if mm := readsItRe.FindStringSubmatch(cl.Note); mm != nil && renamed[mm[1]] != "" {
-				x.Where[i].Note = renamed[mm[1]] + " reads it"
+		x.Where, x.WhereAny = slices.Clone(x.Where), slices.Clone(x.WhereAny)
+		for _, list := range [][]Clause{x.Where, x.WhereAny} {
+			for i, cl := range list {
+				if mm := readsItRe.FindStringSubmatch(cl.Note); mm != nil && renamed[mm[1]] != "" {
+					list[i].Note = renamed[mm[1]] + " reads it"
+				}
+				list[i].Test = follow(cl.Test)
 			}
-			x.Where[i].Test = follow(cl.Test)
 		}
 		for _, vals := range []map[string]any{x.Path, x.Query} {
 			for k, v := range vals {
@@ -867,6 +869,14 @@ func renameReader(parent *Node, from, to string) {
 	for i := 1; i < len(where.Content); i += 2 {
 		if v := where.Content[i]; v.LineComment == comment(from+" reads it") {
 			v.LineComment = comment(to + " reads it")
+		}
+	}
+	// the alternatives (any: …)
+	if anyOf := valueOf(where, "any"); anyOf != nil && anyOf.Kind == yaml.MappingNode {
+		for i := 1; i < len(anyOf.Content); i += 2 {
+			if v := anyOf.Content[i]; v.LineComment == comment(from+" reads it") {
+				v.LineComment = comment(to + " reads it")
+			}
 		}
 	}
 }

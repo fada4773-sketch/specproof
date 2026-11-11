@@ -566,6 +566,9 @@ func (d *detector) params() []open {
 			field := ""
 			if r != nil {
 				field = d.paramField(r, p.Name)
+				if field == "" {
+					field = d.patternField(r, p)
+				}
 			}
 			if field == "" {
 				rest = append(rest, open{o, p.Name, r})
@@ -575,6 +578,45 @@ func (d *detector) params() []open {
 		}
 	}
 	return rest
+}
+
+// patternField is the field of r's read DTO a path parameter holds whose
+// name is the resource's name and a word no field has ({dockNumber}
+// for RegistryNumber): the only text field that ends with that word and has
+// the same pattern as the parameter. "" when none or several; a name that
+// says nothing of the resource ({registry}) is mapped by "$model".
+func (d *detector) patternField(r *Resource, p *openapi3.Parameter) string {
+	if p.Schema == nil || p.Schema.Value == nil || p.Schema.Value.Pattern == "" || len(r.Schemas) == 0 {
+		return ""
+	}
+	word := ""
+	for _, name := range []string{r.Name, singular(r.Name)} {
+		if hasPrefixFold(p.Name, name) {
+			word = p.Name[len(name):]
+			break
+		}
+	}
+	if word == "" {
+		return ""
+	}
+	ref := d.schemas()[r.Schemas[0]]
+	if ref == nil || ref.Value == nil {
+		return ""
+	}
+	props, _ := dict.Properties(ref.Value)
+	found := ""
+	for _, k := range sortedKeys(props) {
+		v := props[k]
+		if v == nil || v.Value == nil || v.Value.Pattern != p.Schema.Value.Pattern || len(k) < len(word) ||
+			!strings.EqualFold(k[len(k)-len(word):], word) {
+			continue
+		}
+		if found != "" {
+			return ""
+		}
+		found = r.Field(k)
+	}
+	return found
 }
 
 // ownKey reports whether the last segment of o's path is the parameter,
@@ -940,11 +982,17 @@ func (d *detector) relations() {
 		r.refs = map[string]relation{}
 		above := r.Ancestors()
 		for _, f := range r.FieldNames() {
-			if slices.Contains(r.Keys, f) {
-				continue
-			}
 			s := r.fields[f]
 			if s == nil || s.Value == nil {
+				continue
+			}
+			if slices.Contains(r.Keys, f) {
+				// a key of its own may still hold the code of another
+				// record by a short name (plaCode of a ship)
+				if to, key := d.abbreviated(r, f); to != nil {
+					r.Relations = append(r.Relations, f)
+					r.refs[f] = relation{to, key}
+				}
 				continue
 			}
 			if _, ok := dict.Primitive(s.Value); !ok {
@@ -955,12 +1003,65 @@ func (d *detector) relations() {
 				d.nested(r, f, f, s.Value, above, 1, false)
 				continue
 			}
-			if to, key := d.refers(r, f, above); to != nil {
+			to, key := d.refers(r, f, above)
+			if to == nil {
+				to, key = d.abbreviated(r, f)
+			}
+			if to != nil {
 				r.Relations = append(r.Relations, f)
 				r.refs[f] = relation{to, key}
 			}
 		}
 	}
+}
+
+// abbreviated finds the key of another resource a field holds by a short
+// name: the start of the resource's name (three letters at least) and the
+// rest of a key that begins with that name (plaCode for
+// Planet.planetCode). The type must agree, and only one resource
+// may fit; an id never counts.
+func (d *detector) abbreviated(r *Resource, field string) (*Resource, string) {
+	var found *Resource
+	key := ""
+	for _, x := range d.m.Resources {
+		if x == r {
+			continue
+		}
+		for _, k := range x.Keys {
+			if !hasPrefixFold(k, x.Name) {
+				continue
+			}
+			rest := k[len(x.Name):]
+			if len(field) <= len(rest) || strings.EqualFold(rest, "id") || !strings.EqualFold(field[len(field)-len(rest):], rest) {
+				continue
+			}
+			short := field[:len(field)-len(rest)]
+			if len(short) < 3 || len(short) >= len(x.Name) || !hasPrefixFold(x.Name, short) {
+				continue
+			}
+			fs, ks := r.Schema(field), x.Schema(k)
+			if fs == nil || ks == nil || fs.Value == nil || ks.Value == nil || !sameType(fs.Value, ks.Value) {
+				continue
+			}
+			if found != nil && found != x {
+				return nil, ""
+			}
+			found, key = x, k
+		}
+	}
+	return found, key
+}
+
+// sameType reports whether two schemas have the same type.
+func sameType(a, b *openapi3.Schema) bool {
+	return a.Type != nil && b.Type != nil && a.Type.Permits(firstType(b))
+}
+
+func firstType(s *openapi3.Schema) string {
+	if s.Type == nil || len(*s.Type) == 0 {
+		return ""
+	}
+	return (*s.Type)[0]
 }
 
 // maxNested is how deep relations inside object fields are searched.
@@ -1018,6 +1119,11 @@ func (d *detector) nested(r *Resource, path, owner string, s *openapi3.Schema, a
 		}
 		if to == nil {
 			to, key = d.refers(r, owner+k, above)
+			if to == nil && embedded != nil {
+				// the field names the resource in the plural (docks: [{id}]):
+				// docks + id is no key, dock + id is
+				to, key = d.refers(r, embedded.Name+k, above)
+			}
 			if embedded != nil && to != embedded {
 				to = nil
 			}

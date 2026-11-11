@@ -87,6 +87,9 @@ type builder struct {
 	schemes openapi3.SecuritySchemes
 	out     *Built
 
+	// wrapped are the steps whose body wraps the record in its one field
+	// (step id → field), for the check of the read after them
+	wrapped map[string]string
 	canon   map[*Record]*Record // record → the record that stands for it
 	created map[*Record]bool
 	keyVar  map[*Record]map[string]string
@@ -192,8 +195,13 @@ func Build(s *spec.Spec, t *Tree, d *Data) (*Built, error) {
 	b.afterSaves()
 	b.sameCreates()
 	b.lostSources()
+	b.starvedWheres()
+	b.starvedRequires()
+	b.ignoreDerived()
 	if len(b.problems) > 0 {
-		return nil, &FindingError{Problems: b.problems, Fixes: b.fixes}
+		// the changes the fetch asks for (a where that left a node
+		// without records) come with the problems: the next round needs them
+		return nil, &FindingError{Problems: b.problems, Fixes: append(b.fixes, b.out.Fixes...)}
 	}
 	sc := &scenario.Scenario{Steps: b.steps}
 	for _, r := range order {
@@ -345,6 +353,298 @@ func (b *builder) eachSource(step string, r *Record, e *OrderEntry, field string
 		b.noteAt(LevelError, step, fmt.Sprintf("%s = %s stays as it is", name, strings.Join(missing, ", ")),
 			fmt.Sprintf("no record of %s below %s has it; see the notes of the fetch of %s", ref.Node, r.ID, ref.Node))
 	}
+	b.alignEmbedded(e, field, body, name)
+}
+
+// alignEmbedded follows the records the elements of a list name when each
+// element is a record of the source's resource itself (seeds: [{Id,
+// PersonId, Person: {Id, Code}}], the source a read of the seeds): besides
+// its key, the element's references (PersonId, Person.Id: by the model of
+// that resource) take the placeholders of the records the test creates,
+// when a value is the key of exactly one of them; a code the client gives
+// stays. The answers then hold what the create sent.
+func (b *builder) alignEmbedded(e *OrderEntry, field string, body map[string]any, name string) {
+	ref, ok := ParseRef(e.Values[field], b.scope)
+	src := b.t.Node(ref.Node)
+	if !ok || src == nil {
+		return
+	}
+	res := b.resourceOf(src)
+	listPath, key, hasList := strings.Cut(name, ".")
+	if res == nil || !hasList || strings.Contains(key, ".") ||
+		!slices.ContainsFunc(res.Keys, func(k string) bool { return strings.EqualFold(k, key) }) {
+		return
+	}
+	var fields []string
+	for _, f := range slices.Concat(res.Relations, res.Nested) {
+		if to, k := res.Ref(f); to != nil && k != "" {
+			fields = append(fields, f)
+		}
+	}
+	if len(fields) == 0 {
+		return
+	}
+	_, list, ok := foldEntry(body, listPath)
+	elems, _ := list.([]any)
+	if !ok {
+		return
+	}
+	for _, el := range elems {
+		m, isMap := el.(map[string]any)
+		if !isMap {
+			continue
+		}
+		for _, f := range fields {
+			to, k := res.Ref(f)
+			if name, found := b.createdKey(to, k, fieldValue(m, f)); found {
+				eachSet(m, f, func(any) any { return "{{" + name + "}}" })
+			}
+		}
+	}
+}
+
+// ignoreDerived leaves out of each check equals the copies of other
+// records the body carries, which the answer derives from those records:
+// an object of the body that is a record of another resource (the team of
+// a ship: /pilot), and inside the records a list of the body holds (the
+// seeds of a garden) the records they embed in turn (/Seeds/*/Person). The
+// keys and references stay checked; after an update of the person its
+// garden answers the new name, which the update of the garden did not
+// send.
+func (b *builder) ignoreDerived() {
+	names := func(path string, to *model.Resource) bool {
+		seg := path[strings.LastIndex(path, ".")+1:]
+		return strings.EqualFold(seg, to.Name) || strings.EqualFold(singular(seg), to.Name)
+	}
+	embedded := func(r *model.Resource, fields []string) map[string]*model.Resource {
+		out := map[string]*model.Resource{}
+		for _, f := range fields {
+			i := strings.LastIndex(f, ".")
+			if i < 0 {
+				continue
+			}
+			if to, _ := r.Ref(f); to != nil && to != r && names(f[:i], to) {
+				out[f[:i]] = to
+			}
+		}
+		return out
+	}
+	pointer := func(path string) string { return "/" + strings.ReplaceAll(path, ".", "/") }
+	for _, st := range b.steps {
+		if st.Equals == "" {
+			continue
+		}
+		sent := b.stepByID(st.Equals)
+		if sent == nil {
+			continue
+		}
+		op := lookupOp(b.s, sent.Call)
+		if op == nil {
+			continue
+		}
+		own := resourceOf(b.m, op)
+		if own == nil {
+			continue
+		}
+		var ignore []string
+		for _, path := range sortedKeys(embedded(own, own.Nested)) {
+			ignore = append(ignore, pointer(path))
+		}
+		listed := embedded(own, own.Listed)
+		for _, path := range sortedKeys(listed) {
+			el := listed[path]
+			for _, inner := range sortedKeys(embedded(el, el.Nested)) {
+				ignore = append(ignore, pointer(path)+"/*"+pointer(inner))
+			}
+			// the other fields of each embedded record are that record's
+			// (its version, changed by its own update): its key and its
+			// references stay checked
+			for _, f := range el.FieldNames() {
+				if slices.Contains(el.Keys, f) || slices.Contains(el.Relations, f) || el.Field("id") == f {
+					continue
+				}
+				if _, isEmbedded := embedded(el, el.Nested)[f]; isEmbedded {
+					continue
+				}
+				ignore = append(ignore, pointer(path)+"/*/"+f)
+			}
+		}
+		if name := b.wrapped[st.Equals]; name != "" {
+			// the read answers the record the body wraps: another form
+			ignore = append(ignore, "/"+name)
+		}
+		st.Ignore = ignore
+	}
+}
+
+// ownSourcesReady reports whether a record that hangs below none of the
+// nodes its create takes path values of (it takes them from its own
+// fields: ownSource) can be rebuilt: each record a source of order names
+// for it was fetched somewhere (by the source's resource and key). Else it
+// is not rebuilt, as before a record could take such values.
+func (b *builder) ownSourcesReady(r *Record, w *Write) bool {
+	viaOwn := false
+	for _, v := range w.Path {
+		if str, ok := v.(string); ok {
+			if ref, isRef := ParseRef(str, b.scope); isRef && ref.Node != "" && r.Node.Ancestor(ref.Node) == nil {
+				viaOwn = true
+			}
+		}
+	}
+	owner := createOwner(b.s, b.m, b.t, r.Node)
+	if !viaOwn || owner == nil || !b.strict {
+		return true
+	}
+	e := b.t.Entry(owner.Name)
+	if e == nil {
+		return true
+	}
+	for _, field := range sortedKeys(e.Values) {
+		ref, ok := ParseRef(e.Values[field], b.scope)
+		src := b.t.Node(ref.Node)
+		if !ok || src == nil {
+			continue
+		}
+		res := b.resourceOf(src)
+		for _, v := range asList(fieldValue(asMap(r.Value), field)) {
+			if v == nil || text(v) == "" {
+				continue
+			}
+			if !slices.ContainsFunc(b.d.Records, func(x *Record) bool {
+				got, has := x.Get(ref.Field)
+				return has && text(got) == text(v) && (x.Node == src || res != nil && b.resourceOf(x.Node) == res)
+			}) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// asList is a value as a list: its elements, or the value alone.
+func asList(v any) []any {
+	if l, ok := v.([]any); ok {
+		return l
+	}
+	return []any{v}
+}
+
+// asMap is a record as a map, nil for any other value.
+func asMap(v any) map[string]any {
+	m, _ := v.(map[string]any)
+	return m
+}
+
+// copyKeys gives an action that creates another record of the resource
+// (POST /groups/{id}/clone) keys of its own: a code the client gives gets
+// "copy" after it, else the new record would take the code of the one it
+// copies (409).
+func (b *builder) copyKeys(op *spec.Operation, body any) {
+	mo := b.m.Op(op)
+	m, isMap := body.(map[string]any)
+	if mo == nil || mo.Role != model.RoleCreate || mo.Resource == nil || !isMap {
+		return
+	}
+	for _, k := range mo.Resource.Keys {
+		name, v, found := foldEntry(m, k)
+		if s, isText := v.(string); found && isText && clientKey(op, k) && !strings.Contains(s, "{{") {
+			m[name] = s + "copy"
+		}
+	}
+}
+
+// isListValue reports whether a value is a list.
+func isListValue(v any) bool { _, ok := v.([]any); return ok }
+
+// listedPathValues sets a path value the node reads with from a list of
+// the record above (seedId=.Seeds.Id: one request per seed) to the value
+// this record was read with: its own field of that name, the saved key
+// when the test creates it. Resolved from the record above it would be the
+// whole list.
+func (b *builder) listedPathValues(st *scenario.Step, r, e *Record) {
+	for p, v := range r.Node.Path {
+		str, ok := v.(string)
+		if !ok || !strings.HasPrefix(str, ".") || r.Parent == nil {
+			continue
+		}
+		if got, found := Field(r.Parent.Value, str[1:]); !found || !isListValue(got) {
+			continue
+		}
+		field := str[strings.LastIndex(str, ".")+1:]
+		if name := b.keyVar[e][field]; b.created[e] && name != "" {
+			st.Path[p] = "{{" + name + "}}"
+		} else if own, found := r.Get(field); found {
+			st.Path[p] = own
+		}
+	}
+}
+
+// ownPathSources sets a path value of a create that takes a node above
+// the creating node, when the record hangs below no such node: the value
+// of the record's own field that names that record (ownSource), as the
+// placeholder of the record the test creates (a seed read below a garden,
+// created at /persons/{id}/seeds with the person its PersonId names).
+func (b *builder) ownPathSources(st *scenario.Step, w *Write, r *Record) {
+	for _, p := range sortedKeys(w.Path) {
+		str, ok := w.Path[p].(string)
+		if !ok {
+			continue
+		}
+		ref, isRef := ParseRef(str, b.scope)
+		if !isRef || ref.Node == "" || r.Node.Ancestor(ref.Node) != nil {
+			continue
+		}
+		f := ownSource(b.s, b.m, b.t, r.Node, ref)
+		if f == "" {
+			continue
+		}
+		v, _ := r.Get(f)
+		src := b.t.Node(ref.Node)
+		if name, found := b.createdKey(b.resourceOf(src), ref.Field, v); found {
+			st.Path[p] = "{{" + name + "}}"
+		} else if v != nil {
+			st.Path[p] = v
+		}
+	}
+}
+
+// createdKey is the saved key of the record of resource to the test
+// creates whose field key has the value of the stage v; a key the client
+// gives does not count (it stays as it is).
+func (b *builder) createdKey(to *model.Resource, key string, v any) (string, bool) {
+	if to == nil || v == nil {
+		return "", false
+	}
+	for _, kr := range b.byValue[text(v)] {
+		if b.resourceOf(kr.rec.Node) != to && b.resourceOf(b.entity(kr.rec).Node) != to {
+			continue
+		}
+		if !strings.EqualFold(kr.field, key) && !strings.EqualFold(kr.field, to.Field(key)) || b.clientKey(kr) {
+			continue
+		}
+		if name := b.keyVar[kr.rec][kr.field]; name != "" {
+			return name, true
+		}
+	}
+	return "", false
+}
+
+// fieldValue is the value of a field of a map by its path (Person.Id), nil
+// when it has none.
+func fieldValue(m map[string]any, path string) any {
+	var cur any = m
+	for _, seg := range strings.Split(path, ".") {
+		x, isMap := cur.(map[string]any)
+		if !isMap {
+			return nil
+		}
+		_, v, ok := foldEntry(x, seg)
+		if !ok {
+			return nil
+		}
+		cur = v
+	}
+	return cur
 }
 
 // sourceOf are the values order gives a field of a record's body: of the
@@ -399,6 +699,13 @@ func (b *builder) sourceValues(r *Record, e *OrderEntry, field string) ([]any, [
 		// fetch took elsewhere, by the values the record names
 		if vals, stage, ok := b.sourceByValue(v, ref); ok {
 			return vals, stage, true
+		}
+		if src := b.t.Node(ref.Node); src != nil {
+			if res := b.resourceOf(src); res != nil && clientKeyOf(res, res.Field(ref.Field)) {
+				// a code the client gives: the empty instance has the
+				// value of the stage, the body sends it as it is
+				return nil, nil, false
+			}
 		}
 		_, many := v.([]any)
 		b.noSource(r, e, field, ref, many)
@@ -551,7 +858,7 @@ func (b *builder) readBelowFix(g *sourceGap, nodes []*Node, e *OrderEntry, field
 	if k := to.Field(ref.Field); k != "" {
 		need.key = k
 	}
-	taken := map[string]bool{}
+	var taken map[string]bool // the names other fixes of the tree add (Tree.reserved)
 	var adds []*Node
 	var parts []string
 	for _, n := range nodes {
@@ -586,12 +893,13 @@ func (b *builder) sourceByValue(v any, ref Ref) ([]any, []any, bool) {
 	if src == nil {
 		return nil, nil, false
 	}
-	if !slices.ContainsFunc(b.d.Records, func(c *Record) bool { return c.Node.Name == ref.Node }) {
-		// the source has no record at all: the data is older than the
-		// tree, fetch again
+	res := b.resourceOf(src)
+	if _, fetched := b.d.Picked[ref.Node]; !fetched && !slices.ContainsFunc(b.d.Records, func(c *Record) bool { return c.Node.Name == ref.Node }) {
+		// the source has no record at all and was not fetched: the data is
+		// older than the tree, fetch again. Fetched without records, the
+		// records of its resource the fetch took elsewhere stand in.
 		return nil, nil, false
 	}
-	res := b.resourceOf(src)
 	values, isList := v.([]any)
 	if !isList {
 		values = []any{v}
@@ -789,9 +1097,10 @@ func (b *builder) sameRecords() (map[string][]*Record, []string) {
 			kind = res.Name
 		}
 		list = append(list, rec{r, kind})
-		k := keyOf(r.Node)
-		if !slices.ContainsFunc(keysOf[kind], func(x []string) bool { return slices.Equal(x, k) }) {
-			keysOf[kind] = append(keysOf[kind], k)
+		for _, k := range [][]string{keyOf(r.Node), r.Node.implied} {
+			if len(k) > 0 && !slices.ContainsFunc(keysOf[kind], func(x []string) bool { return slices.Equal(x, k) }) {
+				keysOf[kind] = append(keysOf[kind], k)
+			}
 		}
 	}
 	// union of the records that agree in a shared key list
@@ -808,7 +1117,15 @@ func (b *builder) sameRecords() (map[string][]*Record, []string) {
 	}
 	first := map[string]int{}
 	for i, x := range list {
-		own := keyOf(x.r.Node)
+		// the keys its node names, and those of its resource: a node -fix
+		// added that names the code and the list that names the id read
+		// the same record
+		own := slices.Clone(keyOf(x.r.Node))
+		for _, p := range x.r.Node.implied {
+			if !slices.Contains(own, p) {
+				own = append(own, p)
+			}
+		}
 		for _, other := range keysOf[x.kind] {
 			shared := slices.DeleteFunc(slices.Clone(own), func(p string) bool { return !slices.Contains(other, p) })
 			text := KeyText(x.r.Value, shared)
@@ -890,7 +1207,7 @@ func (b *builder) entities() {
 		if b.isView(r) || b.canon[r] != nil {
 			continue
 		}
-		if w, _ := b.createOf(r.Node); w == nil {
+		if w, _ := b.createOf(r.Node); w == nil || !b.ownSourcesReady(r, w) {
 			continue
 		}
 		b.created[r] = true
@@ -1001,6 +1318,54 @@ func (b *builder) readBy(n *Node, field string) bool {
 	return false
 }
 
+// starvedRequires lets a require the generator proposed go when the node
+// took no record at all because of it: a read about the record that
+// answers 404 for every candidate (another record by the same value, a
+// read of other records), or a list below it that is empty for each. The
+// node is fetched again.
+func (b *builder) starvedRequires() {
+	if b.d == nil || len(b.d.Required) == 0 {
+		return
+	}
+	b.t.Walk(func(n *Node) {
+		if n.IsRequire || n.Gone || b.d.Required[n.Name] == 0 || b.d.Picked[n.Name] > 0 {
+			return
+		}
+		var gone []string
+		for _, r := range n.Require {
+			why := r.Note
+			if why == "" {
+				why = callComment(r)
+			}
+			if strings.Contains(why, " answers 404 without it") || strings.Contains(why, "only "+n.Name+" with ") {
+				gone = append(gone, r.Name)
+			}
+		}
+		if len(gone) == 0 {
+			return
+		}
+		b.noteAt(LevelWarn, n.Name, n.Name+": no record",
+			fmt.Sprintf("the require the generator proposed (%s) left out every candidate", strings.Join(gone, ", ")))
+		b.out.Fixes = append(b.out.Fixes, Fix{Line: n.Line, fetch: []string{n.Name},
+			Change: fmt.Sprintf("remove %s from the require of %s (proposed, no candidate passes it); then fetch again with -node %s", strings.Join(gone, ", "), n.Name, n.Name),
+			apply: func(t *Tree) bool {
+				for _, r := range gone {
+					if !removeRequire(n.Name, r)(t) {
+						return false
+					}
+				}
+				return true
+			}})
+	})
+}
+
+// clientKey reports whether the create of a record gives the key itself
+// (a code in its body or path): the empty instance has the same value.
+func (b *builder) clientKey(kr keyRef) bool {
+	_, op := b.createOf(kr.rec.Node)
+	return clientKey(op, kr.field)
+}
+
 // placeholderFor replaces a value of the stage by the saved key of the
 // record the scenario creates for it, when the field name refers to that
 // record: pilotId 3 → {{pilots2.id}}. Without a fitting record the value
@@ -1019,7 +1384,10 @@ func (b *builder) placeholderFor(v any, fields []string, at string, exclude *Rec
 		what = at // a field of a body by its path (crew.pilotId)
 	}
 	if b.strict {
-		// the file says where values come from: a match is only a hint
+		// the file says where values come from: a match is only a hint;
+		// a key the client gives (a code) has the same value in the empty
+		// instance, no hint
+		best = slices.DeleteFunc(slices.Clone(best), b.clientKey)
 		switch {
 		case b.inEmbedded(exclude, at):
 		case len(best) == 1:
@@ -1188,6 +1556,82 @@ func (b *builder) lostSources() {
 				return setOrderSource(line, field, "")(t) && removeNode(c.Name)(t) && seed.apply(t)
 			}}
 		b.out.Fixes = append(b.out.Fixes, f)
+	})
+}
+
+// starvedWheres lets a where the generator proposed go when it left a
+// node with fewer records than pick asks for. Conditions for the nodes
+// below that read a field ("moon reads it") become alternatives (any: one
+// must hold) when several must hold together; when the node took no
+// record at all, the conditions the generator proposed go. A record
+// without such a field needs no source of it; one with the field whose
+// source the fetch cannot read is dropped by the fetch anyway. The node is
+// fetched again.
+func (b *builder) starvedWheres() {
+	if b.d == nil || len(b.d.Starved) == 0 {
+		return
+	}
+	b.t.Walk(func(n *Node) {
+		if n.IsRequire || n.Gone || b.d.Starved[n.Name] == 0 {
+			return
+		}
+		reader := func(c Clause) string {
+			if m := readsItRe.FindStringSubmatch(c.Note); m != nil {
+				return m[1]
+			}
+			return ""
+		}
+		var reads []string
+		for _, c := range n.Where {
+			if reader(c) != "" {
+				reads = append(reads, c.Field)
+			}
+		}
+		if len(reads) >= 2 && len(n.WhereAny) == 0 {
+			b.noteAt(LevelWarn, n.Name, n.Name+": fewer records than pick asks for",
+				fmt.Sprintf("the where of %s must hold together (%s), which the records do not", n.Name, strings.Join(reads, ", ")))
+			b.out.Fixes = append(b.out.Fixes, Fix{Line: n.Line, fetch: []string{n.Name},
+				Change: fmt.Sprintf("%s: where %s → where any (one of them must hold); then fetch again with -node %s", n.Name, strings.Join(reads, ", "), n.Name),
+				apply:  foldWhereAny(n.Name, reads)})
+			return
+		}
+		if b.d.Picked[n.Name] > 0 {
+			return
+		}
+		op := lookupOp(b.s, n.Call)
+		proposed := func(c Clause) bool {
+			if reader(c) != "" {
+				return true
+			}
+			return op != nil && (strings.HasPrefix(c.Note, op.ID+": ") || strings.HasPrefix(c.Note, op.ID+" filters by it")) ||
+				strings.Contains(c.Note, " starts from it, and the create sends ")
+		}
+		var gone []string
+		for _, c := range n.Where {
+			if proposed(c) {
+				gone = append(gone, c.Field)
+			}
+		}
+		anyGone := len(n.WhereAny) > 0 && !slices.ContainsFunc(n.WhereAny, func(c Clause) bool { return !proposed(c) })
+		if len(gone) == 0 && !anyGone {
+			return
+		}
+		what := slices.Clone(gone)
+		if anyGone {
+			what = append(what, "any")
+		}
+		b.noteAt(LevelWarn, n.Name, n.Name+": no record",
+			fmt.Sprintf("the where the generator proposed (%s) left out every candidate", strings.Join(what, ", ")))
+		b.out.Fixes = append(b.out.Fixes, Fix{Line: n.Line, fetch: []string{n.Name},
+			Change: fmt.Sprintf("remove %s from the where of %s (proposed, no record holds it); then fetch again with -node %s", strings.Join(what, ", "), n.Name, n.Name),
+			apply: func(t *Tree) bool {
+				for _, f := range gone {
+					if !removeWhere(n.Name, f)(t) {
+						return false
+					}
+				}
+				return !anyGone || removeWhereAny(n.Name, "")(t)
+			}})
 	})
 }
 
@@ -1512,6 +1956,7 @@ func (b *builder) creates() []*Record {
 		st := &scenario.Step{ID: b.id(r.ID + ".create"), Call: callOf(op), Expect: expect,
 			Why: fmt.Sprintf("rebuilds %s (%s)", r.ID, r.Request)}
 		b.params(st, op, w.Path, w.Query, w.Header, r, r.Node, r)
+		b.ownPathSources(st, w, r)
 		if ref := requestRef(op); ref != nil || w.HasBody {
 			body, unique := b.body(st.ID, r, w, ref)
 			b.ownGenerated(st.ID, r, body, true)
@@ -1543,8 +1988,19 @@ func (b *builder) creates() []*Record {
 		for _, p := range list {
 			for _, name := range p.uses {
 				if o := owner[name]; o != nil && o != p.r && !done[o] {
-					b.problem("order: %s is created before %s, but its create takes {{%s}}; move %s above %s in order",
-						p.r.ID, o.ID, name, ownerName(b, o), ownerName(b, p.r))
+					up, down := ownerName(b, o), ownerName(b, p.r)
+					msg := fmt.Sprintf("order: %s is created before %s, but its create takes {{%s}}; move %s above %s in order",
+						p.r.ID, o.ID, name, up, down)
+					i, j := b.t.OrderIndex(up), b.t.OrderIndex(down)
+					if i >= 0 && j >= 0 && i > j {
+						f := Fix{Line: b.t.Order[i].Line, Change: fmt.Sprintf("move - %s above - %s (line %d)", up, down, b.t.Order[j].Line),
+							apply: moveOrderLine(b.t.Order[i].Line, b.t.Order[j].Line)}
+						if !slices.ContainsFunc(b.fixes, func(x Fix) bool { return x.Change == f.Change }) {
+							b.fixes = append(b.fixes, f)
+						}
+						msg += f.change()
+					}
+					b.problem("%s", msg)
 				}
 			}
 			take(p)
@@ -1862,8 +2318,43 @@ func (b *builder) body(step string, r *Record, w *Write, ref *openapi3.SchemaRef
 			}
 		}
 	}
+	if len(props) == 1 && len(m) == 0 {
+		// a request that wraps the record ({settings: {…}}) where the read
+		// answers the record itself: the record goes into its one field
+		for name, p := range props {
+			if rec, isMap := r.Value.(map[string]any); isMap && len(rec) > 0 && p != nil && p.Value != nil && value.Type(p.Value) == "object" {
+				m[name] = maps.Clone(rec)
+				if b.wrapped == nil {
+					b.wrapped = map[string]string{}
+				}
+				b.wrapped[step] = name
+			}
+		}
+	}
+	for _, f := range w.Leave {
+		// the write leaves it out (a create before the record it names)
+		if _, k, ok := bodyField(props, f); ok {
+			deletePath(m, k)
+		}
+	}
 	b.validate(step, r, m, ref.Value, dto, rules)
 	return m, unique
+}
+
+// deletePath removes a field of a body by its path (crew.pilotId).
+func deletePath(m map[string]any, path string) {
+	seg, rest, more := strings.Cut(path, ".")
+	k, v, ok := foldEntry(m, seg)
+	if !ok {
+		return
+	}
+	if !more {
+		delete(m, k)
+		return
+	}
+	if inner, isMap := v.(map[string]any); isMap {
+		deletePath(inner, rest)
+	}
 }
 
 // fieldRules are the fields of the node of r (and of its entity, when r
@@ -2441,6 +2932,7 @@ func (b *builder) readStep(r *Record, op *spec.Operation) {
 	b.params(st, op, n.Path, singleValues(n.Query), n.Header, r.Parent, n.Parent, nil)
 	b.stepOwn = nil
 	b.ownKeys(st, r, e)
+	b.listedPathValues(st, r, e)
 	if n.HasBody {
 		st.Body, st.HasBody = b.resolve(n.Body, r.Parent, n.Parent, "", st.ID, nil), true
 	}
@@ -2623,6 +3115,9 @@ func (b *builder) update(r *Record, w *Write, op *spec.Operation, kind string) {
 			for range slices.Index(r.Node.KindsOf(KindBase(kind)), kind) + 1 {
 				body, changed = b.change(body, schemaOf(ref), r, w.Change, full)
 			}
+		}
+		if action && !w.HasBody {
+			b.copyKeys(op, body)
 		}
 		st.Body, st.HasBody = body, true
 		st.Unique = slices.DeleteFunc(st.Unique, func(ptr string) bool { return !hasField(body, strings.TrimPrefix(ptr, "/")) })

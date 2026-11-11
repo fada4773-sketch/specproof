@@ -1,0 +1,408 @@
+openapi: 3.0.3
+info:
+  title: Garden registry
+  version: "1.0"
+  description: >-
+    Test API of apitest-gen tree (internal/testserver/garden.go): persons
+    with a code they choose, seeds of a person, moons read by their number,
+    and gardens that bundle seeds (a list of embedded seeds), are tended by
+    persons (inside an embedded kind) and lie on a moon.
+servers:
+  - url: /api
+tags:
+  - name: Person
+  - name: Seed
+  - name: Moon
+  - name: Garden
+  - name: GardenKind
+paths:
+  /persons:
+    get:
+      operationId: listPersons
+      tags: [Person]
+      responses:
+        "200":
+          description: the persons
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/PersonRead'}}
+    post:
+      operationId: createPerson
+      tags: [Person]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PersonWrite'}
+      responses:
+        "200":
+          description: created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Response'}
+        "409": {$ref: '#/components/responses/Error'}
+  /persons/{id}:
+    parameters:
+      - {name: id, in: path, required: true, schema: {type: integer, minimum: 1}}
+    get:
+      operationId: getPerson
+      tags: [Person]
+      responses:
+        "200":
+          description: the person
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PersonRead'}
+        "404": {$ref: '#/components/responses/Error'}
+    put:
+      operationId: updatePerson
+      tags: [Person]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PersonWrite'}
+      responses:
+        "200":
+          description: updated
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Response'}
+        "404": {$ref: '#/components/responses/Error'}
+    delete:
+      operationId: deletePerson
+      tags: [Person]
+      responses:
+        "200":
+          description: deleted
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Response'}
+        "404": {$ref: '#/components/responses/Error'}
+  /personCodes/{code}:
+    parameters:
+      - {name: code, in: path, required: true, schema: {type: string, pattern: '^[a-z_]+$'}}
+    get:
+      operationId: getPersonByCode
+      tags: [Person]
+      responses:
+        "200":
+          description: the person
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PersonRead'}
+        "404": {$ref: '#/components/responses/Error'}
+  /persons/{id}/seeds:
+    parameters:
+      - {name: id, in: path, required: true, schema: {type: integer, minimum: 1}}
+    get:
+      operationId: listSeedsOfPerson
+      tags: [Seed]
+      responses:
+        "200":
+          description: the seeds of the person
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/SeedRead'}}
+        "404": {$ref: '#/components/responses/Error'}
+    post:
+      operationId: createSeed
+      tags: [Seed]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SeedWrite'}
+      responses:
+        "200":
+          description: created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Response'}
+        "404": {$ref: '#/components/responses/Error'}
+  /seeds/{seedId}:
+    parameters:
+      - {name: seedId, in: path, required: true, schema: {type: integer, minimum: 1}}
+    get:
+      operationId: getSeed
+      tags: [Seed]
+      responses:
+        "200":
+          description: the seed
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SeedRead'}
+        "404": {$ref: '#/components/responses/Error'}
+    delete:
+      operationId: deleteSeed
+      tags: [Seed]
+      responses:
+        "200":
+          description: deleted
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Response'}
+        "404": {$ref: '#/components/responses/Error'}
+        "409": {$ref: '#/components/responses/Error'}
+  /moons:
+    get:
+      operationId: listMoons
+      tags: [Moon]
+      responses:
+        "200":
+          description: the moons
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/MoonRead'}}
+    post:
+      operationId: createMoon
+      tags: [Moon]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Moon'}
+      responses:
+        "200":
+          description: created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Response'}
+        "409": {$ref: '#/components/responses/Error'}
+  /moons/{moonNumber}:
+    parameters:
+      - {name: moonNumber, in: path, required: true, description: the number of the moon, schema: {type: string, pattern: '^M[0-9]{3}$'}}
+    get:
+      operationId: getMoon
+      tags: [Moon]
+      responses:
+        "200":
+          description: the moon
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MoonRead'}
+        "404": {$ref: '#/components/responses/Error'}
+    put:
+      operationId: updateMoon
+      tags: [Moon]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Moon'}
+      responses:
+        "200":
+          description: updated
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Response'}
+        "404": {$ref: '#/components/responses/Error'}
+  /gardens:
+    get:
+      operationId: listGardens
+      tags: [Garden]
+      responses:
+        "200":
+          description: the gardens
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/GardenRead'}}
+    post:
+      operationId: createGarden
+      tags: [Garden]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/GardenWrite'}
+      responses:
+        "200":
+          description: created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Response'}
+        "404": {$ref: '#/components/responses/Error'}
+        "409": {$ref: '#/components/responses/Error'}
+  /gardens/{id}:
+    parameters:
+      - {name: id, in: path, required: true, schema: {type: integer, minimum: 1}}
+    get:
+      operationId: getGarden
+      tags: [Garden]
+      responses:
+        "200":
+          description: the garden
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/GardenRead'}
+        "404": {$ref: '#/components/responses/Error'}
+    put:
+      operationId: updateGarden
+      tags: [Garden]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/GardenWrite'}
+      responses:
+        "200":
+          description: updated
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Response'}
+        "404": {$ref: '#/components/responses/Error'}
+  /close/gardens/{id}:
+    parameters:
+      - {name: id, in: path, required: true, schema: {type: integer, minimum: 1}}
+    get:
+      operationId: closeGarden
+      tags: [Garden]
+      description: closes the garden (a GET that changes it)
+      responses:
+        "200":
+          description: closed
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Response'}
+        "404": {$ref: '#/components/responses/Error'}
+  /gardens/slug/{slug}:
+    parameters:
+      - {name: slug, in: path, required: true, schema: {type: string, pattern: '^[a-z]+$'}}
+    get:
+      operationId: getGardenBySlug
+      tags: [Garden]
+      responses:
+        "200":
+          description: the garden
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/GardenRead'}
+        "404": {$ref: '#/components/responses/Error'}
+    delete:
+      operationId: deleteGarden
+      tags: [Garden]
+      responses:
+        "200":
+          description: deleted
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Response'}
+        "404": {$ref: '#/components/responses/Error'}
+  /gardenKinds:
+    get:
+      operationId: listGardenKinds
+      tags: [GardenKind]
+      responses:
+        "200":
+          description: the kinds
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/GardenKindRead'}}
+    post:
+      operationId: createGardenKind
+      tags: [GardenKind]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/GardenKind'}
+      responses:
+        "200":
+          description: created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Response'}
+components:
+  responses:
+    Error:
+      description: an error
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+  schemas:
+    Response:
+      type: object
+      required: [Id, Message]
+      properties:
+        Id: {type: integer, minimum: 1}
+        Message: {type: string}
+    Error:
+      type: object
+      required: [Code, Message]
+      properties:
+        Code: {type: string}
+        Message: {type: string}
+    PersonWrite:
+      type: object
+      required: [Name]
+      properties:
+        Code: {type: string, pattern: '^[a-z_]+$'}
+        Name: {type: string}
+    PersonRead:
+      type: object
+      allOf:
+        - $ref: '#/components/schemas/PersonWrite'
+        - properties:
+            Id: {type: integer, minimum: 1}
+    SeedWrite:
+      type: object
+      required: [Version]
+      properties:
+        Id: {type: integer, minimum: 1, nullable: true}
+        PersonId: {type: integer, minimum: 1, nullable: true}
+        Version: {type: string}
+    SeedRead:
+      type: object
+      allOf:
+        - $ref: '#/components/schemas/SeedWrite'
+        - properties:
+            Person: {$ref: '#/components/schemas/PersonRead'}
+    Moon:
+      type: object
+      required: [Name, Number]
+      properties:
+        Name: {type: string}
+        Number: {type: string, pattern: '^M[0-9]{3}$'}
+    MoonRead:
+      type: object
+      allOf:
+        - $ref: '#/components/schemas/Moon'
+        - properties:
+            Id: {type: integer, minimum: 1}
+    GardenKind:
+      type: object
+      properties:
+        Label: {type: string}
+        Tenders:
+          type: array
+          nullable: true
+          items: {$ref: '#/components/schemas/Tender'}
+    GardenKindRead:
+      type: object
+      allOf:
+        - $ref: '#/components/schemas/GardenKind'
+        - properties:
+            Id: {type: integer}
+    Tender:
+      type: object
+      properties:
+        PersonId: {type: integer, nullable: true}
+    GardenWrite:
+      type: object
+      required: [Slug, Name]
+      properties:
+        Slug: {type: string, pattern: '^[a-z]+$'}
+        Name: {type: string}
+        Seeds:
+          type: array
+          nullable: true
+          items: {$ref: '#/components/schemas/SeedRead'}
+        GardenKind: {$ref: '#/components/schemas/GardenKind'}
+        MoonId: {type: integer, minimum: 1, nullable: true}
+        PersonCode: {type: string, nullable: true}
+    GardenRead:
+      type: object
+      allOf:
+        - $ref: '#/components/schemas/GardenWrite'
+        - properties:
+            Id: {type: integer, minimum: 1}

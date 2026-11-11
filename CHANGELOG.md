@@ -424,9 +424,67 @@ contain breaking changes, which are listed here.
     with `-base-url`; it also stops after 3 rounds without fewer errors
     and changes left. Each round prints what is left; the errors left are
     counted by kind with why `-fix` cannot change them.
+  - `apitest-gen tree -fix` repairs a `tree.yaml` an earlier version
+    proposed until the test runs: conditions for the reads below a node
+    (`moon reads it`) are proposed as alternatives (`where: any`), and
+    `-fix` turns them into alternatives or removes them (with the `require`
+    and state words the generator proposed) when they leave a node without
+    records; a read by another key than its value holds (`GET
+    /moons/{moonNumber}` with `.MoonId`, also in a write) is replaced by
+    the read by that key or the list with `where` (off when none is in
+    reach); a GET that changes what it names (`closeGarden`: `GET /close/gardens/{id}`)
+    becomes an action of the node above and is never fetched; a create
+    without a line in `order` gets one; the updates of records the test
+    never creates get `onSeed: true`, and a PUT on the very path a node
+    reads becomes its create when nothing else creates the records (an
+    upsert). Repair goes on after its defaults until neither changes the
+    file.
+  - `apitest-gen tree`: a key the client gives in the create (a code, a
+    slug, or a value of its path) keeps the value of the stage in an
+    empty instance: a field that holds it needs no source and no
+    placeholder, only the create of its record first (the check moves it
+    above). Two creates that name each other by such keys (a cycle) are
+    solved by `-fix`: the first is created without the field (`leave:
+    [field]`, a new key of a write) and an update after the other sends
+    it.
+  - `apitest-gen tree`: a list of embedded records (`seeds: [{Id,
+    PersonId, Person}]`) takes the placeholders of the records the test
+    creates for each element's key and references; the check of the read
+    after it leaves out what the answer derives from other records
+    (`check: {equals: …, ignore: [/Seeds/*/Person]}`, a new key of a
+    scenario step).
+  - `apitest-gen tree`: a record whose create takes a path value from a
+    node above (`POST /persons/{id}/seeds`) is created also when it hangs
+    below another node: the value comes from its own field (`PersonId`).
+    A node without `key` takes the keys of its resource, so a record read
+    by two nodes is created once. An action that creates a record of its
+    resource (`clone`) sends codes of its own (`…copy`), and a body that
+    wraps the record in its one field (`{settings: {…}}`) is built so.
+  - Model: a list named in the plural (`seeds: [{id}]`) refers by the
+    key of each element (`Id`); a path parameter named after the resource
+    and a word (`{dockNumber}`) holds the field that ends with that word
+    and has its pattern (`RegistryNumber`); a short name of another
+    resource's key (`plaCode` for `planetCode`) and a plural of codes
+    (`moons` for `moonCode`) refer to it.
 
 ### Fixed
 
+- `apitest-gen tree -fix`: it stopped after three changes that differed
+  only in a number (`off` for `node2` … `node20`), and two fixes of one
+  round could add nodes of the same name and leave an invalid file. A
+  change of the defaults (the node above) that brought a new problem was
+  left for the user.
+- `apitest-gen tree`: the scope check set off a read through an embedded
+  object named like a resource the scope excludes even when the object is
+  a value of the record (no key of that resource); the records it names
+  are the test's own.
+- `apitest-gen tree`: a source in `order` whose node took no record now
+  takes the records of its resource the fetch took elsewhere; a read
+  below a list path (`seedId=.Seeds.Id`) reads by the value of its own
+  record; the facts of a fetch (where and require that left a node
+  without records) survive a round without fetch and a fetch of one node.
+- `apitest-gen tree`: a create that takes a value a later create saves
+  stops the build with the move to make in `order`, which `-fix` makes.
 - `apitest-gen tree`: the read of a record the test creates, by its own
   key, was noted as "is a key of the stage" (no fix) although the step
   sends the key of its create; such a path value takes the placeholder

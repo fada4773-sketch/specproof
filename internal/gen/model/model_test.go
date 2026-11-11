@@ -348,3 +348,90 @@ func TestDetectNested(t *testing.T) {
 		t.Error("a nested relation is no field of the record: updates may change crew")
 	}
 }
+
+// TestDetectListedPlural: a list of embedded records named in the plural
+// (docks: [{id, planetCode}]) refers to Dock by the key of each element,
+// though the key is only called id: docks + id names no field, dock + id
+// does.
+func TestDetectListedPlural(t *testing.T) {
+	src := strings.Replace(nestedSpec, "        berth:\n",
+		"        docks:\n          type: array\n          items: {$ref: \"#/components/schemas/Dock\"}\n        berth:\n", 1)
+	path := filepath.Join(t.TempDir(), "plural.yaml")
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s, err := spec.Load(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := Detect(s, nil)
+	ship := m.Resource("Ship")
+	if !slices.Contains(ship.Listed, "docks.id") {
+		t.Fatalf("listed: %v", ship.Listed)
+	}
+	if to, key := ship.Ref("docks.id"); to != m.Resource("Dock") || key != "id" {
+		t.Errorf("docks.id → %v %s", to, key)
+	}
+	if slices.Contains(ship.Listed, "docks.planetCode") {
+		t.Error("the relations of the embedded dock are its own")
+	}
+}
+
+// TestDetectParamByPattern: {dockNumber} names the dock and a word no field
+// has; the only field that ends with that word and has the parameter's
+// pattern (RegistryNumber) is the field it holds. A field with the pattern
+// but another word, or a parameter that does not name the resource, is
+// not taken.
+func TestDetectParamByPattern(t *testing.T) {
+	src := strings.NewReplacer(
+		"  /ships:\n",
+		"  /docks/number/{dockNumber}:\n    get:\n      operationId: getDockByNumber\n      parameters: [{name: dockNumber, in: path, required: true, schema: {type: string, pattern: '^D[0-9]{3}$'}}]\n      responses: {\"200\": {description: ok, content: {application/json: {schema: {$ref: \"#/components/schemas/Dock\"}}}}}\n"+
+			"  /docks/berth/{berth}:\n    get:\n      operationId: getDockByBerth\n      parameters: [{name: berth, in: path, required: true, schema: {type: string, pattern: '^D[0-9]{3}$'}}]\n      responses: {\"200\": {description: ok, content: {application/json: {schema: {$ref: \"#/components/schemas/Dock\"}}}}}\n  /ships:\n",
+		"      properties: {id: {type: integer}, planetCode: {type: string}}",
+		"      properties: {id: {type: integer}, planetCode: {type: string}, RegistryNumber: {type: string, pattern: '^D[0-9]{3}$'}, Label: {type: string, pattern: '^D[0-9]{3}$'}}",
+	).Replace(nestedSpec)
+	path := filepath.Join(t.TempDir(), "pattern.yaml")
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s, err := spec.Load(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := Detect(s, nil)
+	if p := m.OpByID("getDockByNumber").Param("dockNumber"); p == nil || p.Field != "RegistryNumber" {
+		t.Errorf("{dockNumber}: %+v", p)
+	}
+	if p := m.OpByID("getDockByBerth").Param("berth"); p != nil {
+		t.Errorf("{berth} names no dock: %+v", p)
+	}
+}
+
+// TestDetectAbbreviated: plaCode holds the planetCode of a planet by a
+// short name (the start of Planet and the rest of its key); two letters
+// (plCode) are too short, and a short name of an id never counts.
+func TestDetectAbbreviated(t *testing.T) {
+	src := strings.Replace(nestedSpec, "        name: {type: string}\n        crew:\n",
+		"        name: {type: string}\n        plaCode: {type: string}\n        plCode: {type: string}\n        pilId: {type: integer}\n        crew:\n", 1)
+	if !strings.Contains(src, "plaCode") {
+		t.Fatal("the nested spec changed")
+	}
+	path := filepath.Join(t.TempDir(), "short.yaml")
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s, err := spec.Load(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := Detect(s, nil)
+	ship := m.Resource("Ship")
+	if to, key := ship.Ref("plaCode"); to != m.Resource("Planet") || key != "planetCode" {
+		t.Errorf("plaCode → %v %s (relations %v)", to, key, ship.Relations)
+	}
+	for _, f := range []string{"plCode", "pilId"} {
+		if to, _ := ship.Ref(f); to != nil {
+			t.Errorf("%s names no record: %v", f, to.Name)
+		}
+	}
+}

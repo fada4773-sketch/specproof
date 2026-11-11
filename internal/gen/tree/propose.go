@@ -83,6 +83,12 @@ func propose(full *spec.Spec, ops []*spec.Operation) *Tree {
 	}
 	t := &Tree{Seed: 1, Budget: DefaultBudget, Params: map[string]any{}, ParamNotes: map[string]string{}}
 	p.t = t
+	for _, op := range s.Ops {
+		if changingGET(op) {
+			// no node: an action of the node of its records (attachWrites)
+			p.used[op] = true
+		}
+	}
 	for _, r := range p.m.Resources {
 		if r.Parent != nil {
 			continue
@@ -184,6 +190,9 @@ type proposer struct {
 	names map[string]int
 	// res is the resource of each node, nil for a read of no resource.
 	res map[*Node]*model.Resource
+	// rootOwns are reads of a record whose resource has a root of its own:
+	// the lists of the resources that belong to it hang below that root
+	rootOwns map[*Node]bool
 	// home is the node that holds the write block of a resource.
 	home map[*model.Resource]*Node
 	// written are the writes the tree has.
@@ -450,7 +459,7 @@ func (p *proposer) children(n *Node, r *model.Resource, here *chain) {
 		p.createdReferences(c, op)
 	}
 	for _, child := range p.m.Resources {
-		if child.Parent != r || here.has(child) {
+		if child.Parent != r || here.has(child) || p.rootOwns[n] {
 			continue
 		}
 		// the list below the record (by its key in the path) before a list
@@ -539,6 +548,15 @@ func (p *proposer) listedKeys(field, typ string) (*model.Resource, string) {
 			return t, k
 		}
 	}
+	// else a field that is the resource's name and a word of a key
+	// (moonCode for moons: [phobos]), though no read takes it
+	for _, k := range t.FieldNames() {
+		lower := strings.ToLower(k)
+		if s := t.Schema(k); s != nil && s.Value != nil && value.Type(s.Value) == typ &&
+			slices.ContainsFunc([]string{"code", "key", "number"}, func(w string) bool { return lower == strings.ToLower(t.Name)+w }) {
+			return t, k
+		}
+	}
 	return nil, ""
 }
 
@@ -565,7 +583,8 @@ func (p *proposer) references(n *Node, r *model.Resource, here *chain, lean bool
 			if len(pathParams(mo.Op)) != 1 {
 				continue
 			}
-			if exact := ref.key != "" && strings.EqualFold(byField(mo), ref.key); op == nil || exact {
+			exact, fits := readsByKey(t, mo, ref.key)
+			if exact || op == nil && fits {
 				op = mo.Op
 				if exact {
 					break
@@ -619,6 +638,15 @@ func (p *proposer) references(n *Node, r *model.Resource, here *chain, lean bool
 		}
 		p.refBy[c] = reference{field: ref.field, to: t, key: key, many: ref.many}
 		next := &chain{res: t, node: c, up: here}
+		if t.Parent == nil && p.freeList(t) != nil {
+			// a resource with a root of its own (the persons a garden
+			// names): its root takes the resources that belong to it (the
+			// seeds of a person), not this read of one of its records
+			if p.rootOwns == nil {
+				p.rootOwns = map[*Node]bool{}
+			}
+			p.rootOwns[c] = true
+		}
 		if lean {
 			p.referenced[c] = true
 			p.references(c, t, next, true)
@@ -1469,6 +1497,35 @@ func keyRank(r *model.Resource, mo *model.Op) int {
 
 // byField is the field of the record the last path parameter of an
 // operation takes ("name" of PUT /gardens/name/{name}).
+// readsByKey reports whether a read of one record takes the key a
+// reference holds (exact): the field its last path parameter holds is that
+// key. fits: the model knows no field for the parameter, the resource has
+// no other key, and the types agree (a number for an id); a read by another
+// key (GET /moons/{moonNumber} for a moonId) never fits.
+func readsByKey(t *model.Resource, mo *model.Op, key string) (exact, fits bool) {
+	field := byField(mo)
+	if key != "" && strings.EqualFold(field, key) {
+		return true, true
+	}
+	if t.Field(field) != "" || len(t.Keys) > 1 || len(mo.Params) == 0 {
+		return false, false
+	}
+	if key == "" {
+		return false, true
+	}
+	want := t.Schema(t.Field(key))
+	last := pathParams(mo.Op)
+	if want == nil || want.Value == nil || len(last) == 0 {
+		return false, true
+	}
+	for _, prm := range mo.Op.Params {
+		if prm.Name == last[len(last)-1] && prm.Schema != nil && prm.Schema.Value != nil {
+			return false, value.Type(prm.Schema.Value) == value.Type(want.Value)
+		}
+	}
+	return false, true
+}
+
 func byField(mo *model.Op) string {
 	if len(mo.Params) == 0 {
 		return ""
@@ -1828,10 +1885,14 @@ func lowerFirst(s string) string {
 // with read: true. The rest goes to ignore, with the reason.
 func (p *proposer) attachWrites() {
 	for _, op := range p.s.Ops {
-		if op.Method == http.MethodGet || p.written[op] || p.used[op] {
+		changing := changingGET(op)
+		if op.Method == http.MethodGet && !changing || p.written[op] || p.used[op] && !changing {
 			continue
 		}
 		kind := actionName(p.s, op)
+		if kind == "" && changing {
+			kind = parseOpName(op.ID).verb
+		}
 		if kind == "" {
 			kind = writeKind(op.Method)
 		}

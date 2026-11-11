@@ -397,6 +397,11 @@ func writeYAML(w *Write, n *Node) *yaml.Node {
 	case len(w.Change) > 0:
 		add("change", valueYAML(w.Change, true))
 	}
+	if len(w.Leave) > 0 {
+		l := stringsYAML(w.Leave)
+		setFlow(l)
+		add("leave", l)
+	}
 	if w.Expect != 0 {
 		add("expect", scalar(strconv.Itoa(w.Expect)))
 	}

@@ -200,6 +200,8 @@ KEYS OF write
     body          sent as it is, or "from <node>": built from that record
     change        update/patch: {field: value}, or auto (one field changed);
                   -fix gives an update without it {name: '{{.name}}-neu'}
+    leave         fields of the body built from the record it does not send
+                  (a create before the records they name; -fix for a cycle)
     expect        the status (default: the lowest documented 2xx)
     save          values of the answer, read later as $name
     onSeed        true: an update, patch or action also runs on a record
@@ -563,7 +565,7 @@ func (o *treeOptions) buildProblems(fe *tree.FindingError, review *tree.ReviewDo
 
 // fetchRecords fetches the records of the tree (only that node again when
 // only is set), writes tree-data_gen.yaml and the fetch into the review.
-func (o *treeOptions) fetchRecords(ctx context.Context, s *spec.Spec, t *tree.Tree, review *tree.ReviewDoc, only string, out io.Writer) (*tree.Data, int, error) {
+func (o *treeOptions) fetchRecords(ctx context.Context, s *spec.Spec, t *tree.Tree, review *tree.ReviewDoc, only string, prev *tree.Data, out io.Writer) (*tree.Data, int, error) {
 	dataPath := o.next(treeDataFile)
 	tok, err := resolveToken(o.tok.token, o.tok.tokenEnv, "", "token")
 	if err != nil {
@@ -576,6 +578,8 @@ func (o *treeOptions) fetchRecords(ctx context.Context, s *spec.Spec, t *tree.Tr
 			if opt.Before, _, err = tree.LoadData(dataPath, t); err != nil {
 				return nil, 1, err
 			}
+			// what the fetch before noted besides the records (-fix)
+			opt.Before.Carry(prev, t)
 		}
 	}
 	data, err := tree.Fetch(ctx, s, t, opt)
@@ -727,7 +731,7 @@ func treeMain(o *treeOptions, out io.Writer) (int, error) {
 	switch {
 	case o.baseURL != "":
 		var code int
-		if data, code, err = o.fetchRecords(ctx, s, t, review, o.only, out); err != nil {
+		if data, code, err = o.fetchRecords(ctx, s, t, review, o.only, nil, out); err != nil {
 			return code, err
 		}
 	default:
@@ -838,15 +842,18 @@ func treeMain(o *treeOptions, out io.Writer) (int, error) {
 		case len(again) > 0:
 			for _, n := range again {
 				var code int
-				if data, code, err = o.fetchRecords(ctx, s, t, review, n, out); err != nil {
+				if data, code, err = o.fetchRecords(ctx, s, t, review, n, data, out); err != nil {
 					return code, err
 				}
 			}
 		default:
-			// the same records, read for the changed tree
+			// the same records, read for the changed tree; what the fetch
+			// noted besides them stays
+			before := data
 			if data, _, err = tree.LoadData(dataPath, t); err != nil {
 				return 1, err
 			}
+			data.Carry(before, t)
 		}
 	}
 	text, err := built.Scenario.Encode(testHead(o.file))

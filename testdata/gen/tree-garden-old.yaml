@@ -1,0 +1,83 @@
+# The tree.yaml an earlier apitest-gen proposed for tree-garden.yaml: the
+# conditions for the reads below the gardens must hold together, the moon
+# is read by its number with the id a garden holds, and the seeds of a
+# person hang below the person of a garden. -fix makes a test of it that
+# runs on an empty instance (registry_test.go).
+order:
+  - moons
+  - listPersons
+  - seeds: {PersonId: person.Id}
+  - gardens: {GardenKind.Tenders.PersonId: gardenPerson.Id, MoonId: moon.Id, PersonCode: person.Code, Seeds.Id: gardenSeed.Id}
+scope:
+  exclude:
+    tags: [GardenKind]
+seed: 1
+budget: 2000
+tree:
+  moons:
+    call: GET /moons # listMoons
+    pick: 3
+    key: [/Number, /Id]
+    write:
+      create: POST /moons # createMoon
+      update: PUT /moons/{moonNumber} # updateMoon
+  listPersons:
+    call: GET /persons # listPersons
+    pick: 3
+    key: [/Id, /Code]
+    write:
+      create: POST /persons # createPerson
+      update: PUT /persons/{id} # updatePerson
+      delete: DELETE /persons/{id} # deletePerson
+  gardens:
+    call: GET /gardens # listGardens
+    pick: 3
+    where:
+      MoonId: present # moon reads it
+      PersonCode: present # person reads it
+      GardenKind.Tenders.PersonId: present # gardenPerson reads it
+      Seeds.Id: present # gardenSeed reads it
+    key: [/Id, /Slug]
+    write:
+      create: POST /gardens # createGarden
+      update: PUT /gardens/{id} # updateGarden
+      delete: DELETE /gardens/slug/{slug} # deleteGarden
+    each:
+      moon:
+        call: GET /moons/{moonNumber} # getMoon
+        path: {moonNumber: .MoonId}
+        key: [/Number]
+      gardenPerson:
+        call: GET /persons/{id} # getPerson
+        path: {id: .GardenKind.Tenders.PersonId}
+        pick: all
+        key: [/Id, /Code]
+      person:
+        call: GET /personCodes/{code} # getPersonByCode
+        path: {code: .PersonCode}
+        key: [/Id, /Code]
+        each:
+          persons: GET /persons/{id} id=.Id # getPerson
+          seeds:
+            call: GET /persons/{id}/seeds # listSeedsOfPerson
+            path: {id: .Id}
+            pick: 3
+            key: [/Id]
+            write:
+              create: POST /persons/{id}/seeds # createSeed
+              delete: DELETE /seeds/{seedId} # deleteSeed
+            each:
+              seed: GET /seeds/{seedId} seedId=.Id # getSeed
+      gardenSeed:
+        call: GET /seeds/{seedId} # getSeed
+        path: {seedId: .Seeds.Id}
+        pick: all
+        key: [/Id]
+        each:
+          seedPerson:
+            call: GET /persons/{id} # getPerson
+            path: {id: .PersonId}
+            key: [/Id, /Code]
+      closed: GET /close/gardens/{id} id=.Id # closeGarden
+      garden: GET /gardens/{id} id=.Id # getGarden
+      gardenBySlug: GET /gardens/slug/{slug} slug=.Slug # getGardenBySlug

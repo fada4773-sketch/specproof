@@ -21,6 +21,10 @@ type refNeed struct {
 	to    *model.Resource // the resource it refers to (Author)
 	key   string          // the field of to it holds (id)
 	many  bool            // a list of keys (pilotIds)
+	// client: the create of to gives the key itself (a code): the empty
+	// instance has the value of the stage, the field needs no source, only
+	// the creates of to must come first
+	client bool
 	// source is the node below or above the created record that gives it
 	// ("bookAuthor.id"), "" when the tree has none
 	source string
@@ -106,15 +110,18 @@ func refNeeds(s *spec.Spec, m *model.Model, t *Tree, n *Node, w *Write, op *spec
 			continue
 		}
 		to := p.creatable(ref.to, ref.key)
-		if to == res || !created[to] || w.HasBody && !bodySends(w.Body, name, t.names()) {
+		if to == res || !created[to] || w.HasBody && !bodySends(w.Body, name, t.names()) ||
+			slices.ContainsFunc(w.Leave, func(f string) bool { return strings.EqualFold(f, name) }) {
 			continue
 		}
 		key := to.Field(ref.key)
 		if key == "" {
 			key = ref.key
 		}
-		need := refNeed{field: name, to: to, key: key, many: ref.many}
-		need.source = refSource(s, m, t, n, need, ref.field)
+		need := refNeed{field: name, to: to, key: key, many: ref.many, client: clientKeyOf(to, key)}
+		if !need.client {
+			need.source = refSource(s, m, t, n, need, ref.field)
+		}
 		out = append(out, need)
 	}
 	slices.SortFunc(out, func(a, b refNeed) int { return strings.Compare(a.field, b.field) })
@@ -287,6 +294,43 @@ func checkReferences(s *spec.Spec, t *Tree) ([]string, []Fix) {
 				"order: %s.%s: %s is not fetched (off, or excluded by scope): no record of it gives the value", e.Node, field, ref.Node)
 		}
 		for _, need := range needs {
+			if need.client {
+				// a key the client gives (a code): the empty instance has
+				// the value of the stage; the records must exist first
+				for _, c := range creators(s, m, t, need.to) {
+					j := t.OrderIndex(c.Name)
+					if j <= t.OrderIndex(e.Node) || c == n {
+						continue
+					}
+					why := fmt.Sprintf("order: %s comes before %s, but the create of %s sends %s, the %s of %s %s creates",
+						e.Node, c.Name, e.Node, need.field, need.key, article(lowerFirst(need.to.Name)), c.Name)
+					own := nodeResource(s, m, n)
+					if mo := m.Op(op); mo != nil && mo.Resource != nil {
+						own = mo.Resource
+					}
+					if cw, cop := ownCreate(s, c); cw != nil && own != nil && slices.ContainsFunc(refNeeds(s, m, t, c, cw, cop, created), func(x refNeed) bool {
+						return x.to == own
+					}) {
+						// each needs the other first: one of them is created
+						// without the field and gets it by an update later
+						add := Fix{Line: e.Line, Change: fmt.Sprintf("%s.write.create: leave: [%s], and - %s.update below - %s (line %d): the create without it, the update sends it once %s exists",
+							e.Node, need.field, e.Node, c.Name, t.Order[j].Line, c.Name),
+							why: "the creates of " + e.Node + " and " + c.Name + " name each other"}
+						if u := n.Write[WriteUpdate]; u != nil && !u.Off && !u.None && !bodyRequires(op, need.field) {
+							line := t.Order[j].Line
+							add.apply = func(t *Tree) bool {
+								return setWriteLeave(e.Node, WriteCreate, need.field)(t) && insertOrderStep(line, e.Node+"."+WriteUpdate)(t)
+							}
+						} else {
+							add.why += ", and " + e.Node + " has no update that could send it later (or the create requires it)"
+						}
+						fix(add, "%s, and %s names %s records as well: they need each other", why, c.Name, e.Node)
+						continue
+					}
+					fix(Fix{Line: t.Order[j].Line, Change: fmt.Sprintf("move - %s above - %s (line %d)", c.Name, e.Node, e.Line), apply: moveOrderLine(t.Order[j].Line, e.Line)}, "%s", why)
+				}
+				continue
+			}
 			what := fmt.Sprintf("the %s of %s %s", need.key, article(lowerFirst(need.to.Name)), "the test creates")
 			if field, v, has := foldEntry(e.Values, need.field); has {
 				ref, ok := ParseRef(v, scope)
@@ -448,8 +492,8 @@ func sourceNode(s *spec.Spec, t *Tree, n *Node, need refNeed, taken map[string]b
 			if len(pathParams(mo.Op)) != 1 || excluded(mo.Op) {
 				continue
 			}
-			exact := strings.EqualFold(byField(mo), need.key)
-			if exact || read == nil && len(need.to.Keys) <= 1 {
+			exact, fits := readsByKey(need.to, mo, need.key)
+			if exact || read == nil && fits {
 				read = mo.Op
 				if exact {
 					break
@@ -469,20 +513,29 @@ func sourceNode(s *spec.Spec, t *Tree, n *Node, need refNeed, taken map[string]b
 				continue
 			}
 			last := params[len(params)-1]
-			if path, query, ok := chainValues(s, t, n, mo.Op, last); ok {
+			beside := ""
+			if i := strings.LastIndex(need.field, "."); i > 0 {
+				beside = need.field[:i]
+			}
+			if path, query, ok := chainValues(s, t, n, mo.Op, last, beside); ok {
 				read, nestedPath, nestedQuery = mo.Op, path, query
 				nestedPath[last] = "." + need.field
 				break
 			}
 		}
 	}
+	if taken == nil {
+		// the names other fixes found on this tree add
+		if t.reserved == nil {
+			t.reserved = map[string]bool{}
+		}
+		taken = t.reserved
+	}
 	name := freeNodeName(t, lowerFirst(need.to.Name), lowerFirst(singular(n.Name))+need.to.Name)
 	for i := 2; taken[name]; i++ {
 		name = freeNodeName(t, fmt.Sprintf("%s%s%d", lowerFirst(singular(n.Name)), need.to.Name, i))
 	}
-	if taken != nil {
-		taken[name] = true
-	}
+	taken[name] = true
 	if read != nil {
 		path := nestedPath
 		if path == nil {
@@ -507,7 +560,7 @@ func sourceNode(s *spec.Spec, t *Tree, n *Node, need refNeed, taken map[string]b
 		}
 		// a list below another resource (GET /planets/{code}/docks), or
 		// one with a required filter: the nodes above give the values
-		if path, query, ok := chainValues(s, t, n, mo.Op, ""); ok && list == nil {
+		if path, query, ok := chainValues(s, t, n, mo.Op, "", ""); ok && list == nil {
 			list, listPath, listQuery = mo.Op, path, query
 		}
 	}
@@ -535,7 +588,7 @@ func sourceNode(s *spec.Spec, t *Tree, n *Node, need refNeed, taken map[string]b
 // for a node added below n: the record of n (".field"), a node above it
 // ("planets.code") or a value of params ("$season"). ok is false when one
 // has none.
-func chainValues(s *spec.Spec, t *Tree, n *Node, op *spec.Operation, skip string) (path, query map[string]any, ok bool) {
+func chainValues(s *spec.Spec, t *Tree, n *Node, op *spec.Operation, skip, beside string) (path, query map[string]any, ok bool) {
 	m := modelOf(s)
 	p := &proposer{s: s, m: m, all: m, res: map[*Node]*model.Resource{}}
 	for x := n; x != nil; x = x.Parent {
@@ -544,6 +597,10 @@ func chainValues(s *spec.Spec, t *Tree, n *Node, op *spec.Operation, skip string
 	vals, missing := p.paramValues(op, p.chainOf(n))
 	for _, nd := range missing {
 		if nd.name == skip {
+			continue
+		}
+		if v := besideValue(s, n, op, nd.name, beside); v != "" {
+			vals[nd.name] = v
 			continue
 		}
 		if _, set := t.param(nd.name); !set {
@@ -567,6 +624,30 @@ func chainValues(s *spec.Spec, t *Tree, n *Node, op *spec.Operation, skip string
 		query = nil
 	}
 	return path, query, true
+}
+
+// besideValue is the value of a parameter of op from the object a field
+// of n's records is in (beside: berth for .berth.dockId): the
+// field of that object the parameter holds (.berth.planetCode for
+// {planetCode}); "" when the records have none.
+func besideValue(s *spec.Spec, n *Node, op *spec.Operation, param, beside string) string {
+	if beside == "" {
+		return ""
+	}
+	nop := lookupOp(s, n.Call)
+	mo := modelOf(s).Op(op)
+	if nop == nil || mo == nil {
+		return ""
+	}
+	field := param
+	if mp := mo.Param(param); mp != nil && mp.Field != "" {
+		field = mp.Field
+	}
+	rec, _ := properties((&proposer{}).recordSchema(nop))
+	if _, path, ok := bodyField(rec, beside+"."+field); ok {
+		return "." + path
+	}
+	return ""
 }
 
 // valuesText writes path and query values in short: "code=planets.code
@@ -634,6 +715,10 @@ func checkPathKeys(s *spec.Spec, m *model.Model, t *Tree, created map[*model.Res
 			key := mp.Field
 			if f := to.Field(key); f != "" {
 				key = f
+			}
+			if clientKeyOf(to, key) {
+				// a code the client gives: the empty instance has it too
+				continue
 			}
 			msg := fmt.Sprintf("%s: {%s} = %v is the %s of %s of the stage, but the test creates the %s records: in the empty instance it has another %s",
 				where, param, v, key, article(lowerFirst(to.Name)), lowerFirst(to.Name), key)
@@ -817,7 +902,9 @@ func putOrderSource(line int, field, value string) func(*Tree) bool {
 // addChildNode adds a node below the node parent.
 func addChildNode(t *Tree, parent string, c *Node) bool {
 	n := t.Node(parent)
-	if n == nil || n.value == nil {
+	if n == nil || n.value == nil || t.Node(c.Name) != nil {
+		// names are unique in the file: a node of that name anywhere
+		// would make it invalid
 		return false
 	}
 	v := nodeMapping(n)

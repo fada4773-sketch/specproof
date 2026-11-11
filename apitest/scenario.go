@@ -1239,7 +1239,7 @@ func (s *scenarioRunner) checks(st *scenario.Step, c *cases.Case, o *outcome) bo
 		want := prune(scenario.Clone(s.sent[st.Equals]), compare.Schema(c.Expect.Response, o.resp.Header.Get("Content-Type")), 0)
 		diffs := compare.Values(want, o.decoded, compare.Options{
 			Mode:       compare.ModeSubset,
-			Ignore:     r.ignore(c),
+			Ignore:     append(r.ignore(c), st.Ignore...),
 			Schema:     compare.Schema(c.Expect.Response, o.resp.Header.Get("Content-Type")),
 			Unordered:  true,
 			IgnoreCase: r.cfg.CaseInsensitive,

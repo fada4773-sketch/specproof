@@ -70,6 +70,10 @@ type Step struct {
 	// Equals names a step whose body the answer must hold (read after
 	// create or update).
 	Equals string
+	// Ignore are JSON pointers into that body ("*" for any element) the
+	// check equals leaves out: copies of other records the answer derives
+	// (the person inside each seed of a garden).
+	Ignore []string
 	// Contains lists records a list answer must hold: the elements whose
 	// field Key (a JSON pointer into the element) has one of the values.
 	Contains *Contains
@@ -274,11 +278,24 @@ func ParseStep(m map[string]any) (*Step, error) {
 			return nil, where("\"check\" must be a mapping (equals, contains)")
 		}
 		for k := range cm {
-			if k != "equals" && k != "contains" {
-				return nil, where("check: unknown key %q (known: equals, contains)", k)
+			if k != "equals" && k != "contains" && k != "ignore" {
+				return nil, where("check: unknown key %q (known: equals, contains, ignore)", k)
 			}
 		}
 		st.Equals = Text(cm["equals"])
+		if ig, ok := cm["ignore"]; ok && ig != nil {
+			l, ok := ig.([]any)
+			if !ok || st.Equals == "" {
+				return nil, where("check.ignore must be a list of JSON pointers next to equals")
+			}
+			for _, x := range l {
+				ptr := Text(x)
+				if !strings.HasPrefix(ptr, "/") {
+					return nil, where("check.ignore: %q is no JSON pointer (/field, * for any element)", ptr)
+				}
+				st.Ignore = append(st.Ignore, ptr)
+			}
+		}
 		if c, ok := cm["contains"]; ok && c != nil {
 			ccm, ok := c.(map[string]any)
 			if !ok {
@@ -424,7 +441,15 @@ func (st *Step) node() *yaml.Node {
 		if st.Equals != "" {
 			eq = st.Equals
 		}
-		check = mapping("equals", eq, "contains", contains)
+		var ignore any
+		if len(st.Ignore) > 0 {
+			l := make([]any, len(st.Ignore))
+			for i, x := range st.Ignore {
+				l[i] = x
+			}
+			ignore = l
+		}
+		check = mapping("equals", eq, "ignore", ignore, "contains", contains)
 		check.Style = yaml.FlowStyle
 	}
 	opt := func(m map[string]any) any {
@@ -540,6 +565,13 @@ func (st *Step) Map() map[string]any {
 		c := map[string]any{}
 		if st.Equals != "" {
 			c["equals"] = st.Equals
+		}
+		if len(st.Ignore) > 0 {
+			var l []any
+			for _, x := range st.Ignore {
+				l = append(l, x)
+			}
+			c["ignore"] = l
 		}
 		if st.Contains != nil {
 			c["contains"] = map[string]any{"key": st.Contains.Key, "values": st.Contains.Values}

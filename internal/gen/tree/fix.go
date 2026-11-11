@@ -71,44 +71,69 @@ const maxFixes = 200
 // changes made ("line 23: order: move docks above ships").
 func Repair(s *spec.Spec, t *Tree) (*Tree, []string, error) {
 	var done []string
-	same := map[string]int{}
-	for range maxFixes {
-		fixes := Fixes(s, t)
-		if len(fixes) == 0 {
+	// per kind of change (its text without numbers): how often it was
+	// made and how many fixes were left when it came first
+	type kind struct{ made, left int }
+	same := map[string]*kind{}
+	// the defaults of -fix (below) may bring new problems (a value of the
+	// node above changes what a create takes): both go again until the
+	// defaults change nothing
+	for range maxRounds {
+		for range maxFixes {
+			fixes := Fixes(s, t)
+			if len(fixes) == 0 {
+				break
+			}
+			next, made, err := applyFix(t, fixes[0])
+			if err != nil {
+				return t, done, err
+			}
+			if slices.Contains(done, made) {
+				// the change did not solve the problem: stop, Check names it
+				return next, done, nil
+			}
+			k := same[digits.ReplaceAllString(made, "#")]
+			if k == nil {
+				k = &kind{left: len(fixes)}
+				same[digits.ReplaceAllString(made, "#")] = k
+			}
+			if k.made++; k.made > 3 && len(fixes) >= k.left {
+				// the same change again and again under new names, and no
+				// fewer problems for it (a node added that does not solve
+				// it): stop, Check names it. Changes of many nodes whose
+				// names differ by a number only (off for node2 … node20)
+				// solve one problem each and go on.
+				return t, done, nil
+			}
+			done = append(done, made)
+			t = next
+		}
+		// the defaults of -fix that solve no problem: the name an update
+		// changes (each found again on the file the one before left)
+		defaults := 0
+		for range maxFixes {
+			fixes := slices.Concat(sideRefs(s, t), upsertDefaults(s, t), changeDefaults(s, t), seedDefaults(s, t))
+			if len(fixes) == 0 {
+				break
+			}
+			next, made, err := applyFix(t, fixes[0])
+			if err != nil {
+				return t, done, err
+			}
+			done = append(done, made)
+			t = next
+			defaults++
+		}
+		if defaults == 0 {
 			break
 		}
-		next, made, err := applyFix(t, fixes[0])
-		if err != nil {
-			return t, done, err
-		}
-		if slices.Contains(done, made) {
-			// the change did not solve the problem: stop, Check names it
-			return next, done, nil
-		}
-		if same[digits.ReplaceAllString(made, "#")]++; same[digits.ReplaceAllString(made, "#")] > 3 {
-			// the same change again and again under new names (a node
-			// added that does not solve it): stop, Check names it
-			return t, done, nil
-		}
-		done = append(done, made)
-		t = next
-	}
-	// the defaults of -fix that solve no problem: the name an update
-	// changes (each found again on the file the one before left)
-	for range maxFixes {
-		fixes := append(sideRefs(s, t), changeDefaults(s, t)...)
-		if len(fixes) == 0 {
-			break
-		}
-		next, made, err := applyFix(t, fixes[0])
-		if err != nil {
-			return t, done, err
-		}
-		done = append(done, made)
-		t = next
 	}
 	return t, done, nil
 }
+
+// maxRounds bounds the rounds of Repair: fixes of the problems, then the
+// defaults; a default rarely brings a problem the round before did not.
+const maxRounds = 5
 
 // ApplyFixes makes the fixes a build found (they change tree.yaml; the
 // records are fetched again after them) and returns the tree read again
@@ -229,6 +254,88 @@ func moveOrderLine(from, to int) func(*Tree) bool {
 			j--
 		}
 		section.Content = slices.Insert(section.Content, j, item)
+		return true
+	}
+}
+
+// appendOrderLine adds "- name" to order after its last create (before
+// the lines that place steps after them).
+func appendOrderLine(name string) func(*Tree) bool {
+	return func(t *Tree) bool {
+		if t.doc == nil {
+			return false
+		}
+		section := valueOf(t.doc.Root, "order")
+		if section == nil || section.Kind != yaml.SequenceNode {
+			return false
+		}
+		at := 0
+		for i, item := range section.Content {
+			key := item.Value
+			if item.Kind == yaml.MappingNode && len(item.Content) > 0 {
+				key = item.Content[0].Value
+			}
+			if key == name {
+				return false
+			}
+			if !strings.Contains(key, ".") {
+				at = i + 1
+			}
+		}
+		section.Content = slices.Insert(section.Content, at, scalar(name))
+		return true
+	}
+}
+
+// insertOrderStep adds the line "- step" right below the line of order at
+// line (ships.update below - pilots).
+func insertOrderStep(line int, step string) func(*Tree) bool {
+	return func(t *Tree) bool {
+		section, i := orderItem(t, line)
+		if section == nil || slices.ContainsFunc(section.Content, func(x *yaml.Node) bool { return x.Value == step }) {
+			return false
+		}
+		section.Content = slices.Insert(section.Content, i+1, scalar(step))
+		return true
+	}
+}
+
+// setWriteLeave adds a field to the leave of a write of a node; a write in
+// the short form becomes a mapping.
+func setWriteLeave(name, kind, field string) func(*Tree) bool {
+	return func(t *Tree) bool {
+		n := t.Node(name)
+		if n == nil || n.Write[kind] == nil || n.Write[kind].value == nil {
+			return false
+		}
+		val := n.Write[kind].value
+		if val.Kind == yaml.ScalarNode {
+			call, params, err := shortForm(val.Value)
+			if err != nil {
+				return false
+			}
+			c := scalar(call)
+			c.LineComment = val.LineComment
+			content := []*yaml.Node{scalar("call"), c}
+			if len(params) > 0 {
+				content = append(content, scalar("path"), valueYAML(params, true))
+			}
+			val.Kind, val.Tag, val.Value, val.Style, val.LineComment = yaml.MappingNode, "", "", 0, ""
+			val.Content = content
+		}
+		if val.Kind != yaml.MappingNode {
+			return false
+		}
+		val.Style = 0
+		leave := valueOf(val, "leave")
+		if leave == nil {
+			leave = &yaml.Node{Kind: yaml.SequenceNode, Style: yaml.FlowStyle}
+			val.Content = append(val.Content, scalar("leave"), leave)
+		}
+		if slices.ContainsFunc(leave.Content, func(x *yaml.Node) bool { return x.Value == field }) {
+			return false
+		}
+		leave.Content = append(leave.Content, scalar(field))
 		return true
 	}
 }

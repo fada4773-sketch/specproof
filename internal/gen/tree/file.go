@@ -132,6 +132,9 @@ type Tree struct {
 	// moved maps the lines of order fixes name to their lines now, after
 	// ApplyFixes wrote and read the file again (orderItem).
 	moved map[int]int
+	// reserved are the names of nodes the fixes found on this tree add:
+	// two fixes of one round never add nodes of the same name.
+	reserved map[string]bool
 	// Params are values no record of the tree gives (a parameter no node
 	// answers with), read as "$name"; nil until someone sets them.
 	Params map[string]any
@@ -224,6 +227,9 @@ type Node struct {
 	// Gone marks a call the spec no longer has ("# gone: …" after it): the
 	// node is kept in the file but not checked or fetched.
 	Gone bool
+	// implied are the keys of the node's resource when the file names
+	// none (Complete; in memory only): keyOf takes them.
+	implied []string
 	// Comment is written after the call (the operationId); Note explains a
 	// node that is off, or a guess.
 	Comment, Note string
@@ -251,6 +257,10 @@ type Write struct {
 	// Change sets fields of an update or patch: field → value, or "auto"
 	// for one changed field.
 	Change map[string]any
+	// Leave are fields of the body built from the record this write does
+	// not send (a create without the field its records name each other
+	// by; an update after the other create sends it).
+	Leave  []string
 	Expect int
 	// Save keeps values of the answer under a name, like a node's save: a
 	// "$name" of the tree reads the saved value in the scenario, after the
@@ -756,7 +766,7 @@ func (p *parser) where(v *yaml.Node, name string) (all, anyOf []Clause) {
 	return all, anyOf
 }
 
-var writeKeys = []string{"call", "path", "query", "header", "body", "change", "expect", "save", "onSeed", "off"}
+var writeKeys = []string{"call", "path", "query", "header", "body", "change", "leave", "expect", "save", "onSeed", "off"}
 
 // writeForm reports whether v reads as a write: a request, an operationId
 // or a mapping with a call. An action named like a key of a write (save,
@@ -853,6 +863,8 @@ func (p *parser) writes(v *yaml.Node, name string) map[string]*Write {
 					continue
 				}
 				w.Change, _ = p.valueMap(wv, where+".change")
+			case "leave":
+				w.Leave = p.fieldList(wv, where+".leave")
 			case "expect":
 				n, err := strconv.Atoi(wv.Value)
 				if err != nil || n < 100 || n > 599 {
@@ -875,6 +887,23 @@ func (p *parser) writes(v *yaml.Node, name string) map[string]*Write {
 		if w.Call == "" {
 			p.errf(val, "%s: call is missing", where)
 		}
+	}
+	return out
+}
+
+// fieldList reads a list of field names (leave: [moonCodes]).
+func (p *parser) fieldList(v *yaml.Node, where string) []string {
+	if v.Kind != yaml.SequenceNode {
+		p.errf(v, "%s must be a list of fields", where)
+		return nil
+	}
+	var out []string
+	for _, x := range v.Content {
+		if x.Kind != yaml.ScalarNode || x.Value == "" {
+			p.errf(x, "%s: a field name", where)
+			continue
+		}
+		out = append(out, x.Value)
 	}
 	return out
 }

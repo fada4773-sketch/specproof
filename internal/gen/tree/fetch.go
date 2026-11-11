@@ -69,6 +69,15 @@ type Data struct {
 	// left out because it took no record below them (not in the data
 	// file: -fix reads it right after the fetch).
 	SourceOut map[string]int
+	// Starved counts per node the visits that took fewer records than
+	// pick asks for because where left candidates out, Picked the records
+	// a node took in all (not in the data file: -fix reads them right
+	// after the fetch and lets a where the generator proposed go).
+	Starved map[string]int
+	Picked  map[string]int
+	// Required counts per node the candidates require left out (not in
+	// the data file, like Starved).
+	Required map[string]int
 }
 
 // Exchange is one request and its answer, for the review.
@@ -84,6 +93,30 @@ type Exchange struct {
 	Answer         any
 	Ms             int64
 	Error          string
+}
+
+// Carry takes over what a fetch noted besides the records (SourceOut,
+// Starved, Picked) from the data before, for the nodes the tree still
+// has: data read again from the file after a change of tree.yaml lacks
+// them, and -fix needs them for the next round.
+func (d *Data) Carry(from *Data, t *Tree) {
+	if from == nil {
+		return
+	}
+	keep := func(m map[string]int) map[string]int {
+		var out map[string]int
+		for name, n := range m {
+			if t.Node(name) == nil {
+				continue
+			}
+			if out == nil {
+				out = map[string]int{}
+			}
+			out[name] = n
+		}
+		return out
+	}
+	d.SourceOut, d.Starved, d.Picked, d.Required = keep(from.SourceOut), keep(from.Starved), keep(from.Picked), keep(from.Required)
 }
 
 // Of returns the records of a node, in fetch order.
@@ -237,6 +270,21 @@ func (f *fetcher) only(ctx context.Context, name string, before *Data) (*Data, e
 				f.data.Records = append(f.data.Records, r)
 			}
 		}
+		// what the fetch before noted about the other nodes stays
+		carry := func(from map[string]int, to *map[string]int) {
+			for name, c := range from {
+				if x := f.t.Node(name); x != nil && x != n && !inside(x, n) {
+					if *to == nil {
+						*to = map[string]int{}
+					}
+					(*to)[name] = c
+				}
+			}
+		}
+		carry(before.SourceOut, &f.data.SourceOut)
+		carry(before.Starved, &f.data.Starved)
+		carry(before.Picked, &f.data.Picked)
+		carry(before.Required, &f.data.Required)
 	}
 	var parents []*Record
 	if n.Parent == nil {
@@ -294,6 +342,12 @@ func (f *fetcher) node(ctx context.Context, n *Node, parent *Record) error {
 		return nil
 	}
 	v.Op = op.ID
+	if changingGET(op) {
+		// it would change the records of the stage (GET /close/gardens/…)
+		f.note("%s: %s changes what it names (%s); not fetched, it is an action of the node above", n.Name, n.Call, op.ID)
+		v.Skipped = op.ID + " changes what it names; not fetched"
+		return nil
+	}
 	if missing := unsetParams(f.t, n); len(missing) > 0 {
 		if !f.unset[n] {
 			f.unset[n] = true
@@ -416,6 +470,19 @@ func (f *fetcher) node(ctx context.Context, n *Node, parent *Record) error {
 		picked++
 	}
 	v.Picked = picked
+	if f.data.Picked == nil {
+		f.data.Picked, f.data.Starved = map[string]int{}, map[string]int{}
+	}
+	f.data.Picked[n.Name] += picked
+	if whereOut > 0 && picked < want {
+		f.data.Starved[n.Name]++
+	}
+	if requireOut > 0 {
+		if f.data.Required == nil {
+			f.data.Required = map[string]int{}
+		}
+		f.data.Required[n.Name] += requireOut
+	}
 	tried = append(tried, out...)
 	v.Candidates = tried
 	if len(v.Candidates) > traceLimit {
@@ -1140,6 +1207,10 @@ func (f *fetcher) order(n *Node, cands []cand) ([]cand, []string) {
 func keyOf(n *Node) []string {
 	if len(n.Key) > 0 {
 		return n.Key
+	}
+	if len(n.implied) > 0 {
+		// the keys of its resource (Complete)
+		return n.implied
 	}
 	return []string{"/id"}
 }

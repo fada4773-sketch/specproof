@@ -451,6 +451,12 @@ func check(s *spec.Spec, t *Tree) ([]string, []Fix) {
 	wp, wf := checkStale(s, t)
 	problems = append(problems, wp...)
 	fixes = append(fixes, wf...)
+	kp, kf := checkReadKeys(s, t)
+	problems = append(problems, kp...)
+	fixes = append(fixes, kf...)
+	cp, cf := checkChangingReads(s, t)
+	problems = append(problems, cp...)
+	fixes = append(fixes, cf...)
 	sortProblems(problems)
 	slices.SortStableFunc(fixes, func(a, b Fix) int { return a.Line - b.Line })
 	return problems, fixes

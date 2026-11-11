@@ -85,7 +85,7 @@ func checkStale(s *spec.Spec, t *Tree) ([]string, []Fix) {
 		if n.IsRequire || n.Gone {
 			return
 		}
-		for _, c := range n.Where {
+		for i, c := range slices.Concat(n.Where, n.WhereAny) {
 			m := readsItRe.FindStringSubmatch(c.Note)
 			if m == nil {
 				continue
@@ -98,6 +98,9 @@ func checkStale(s *spec.Spec, t *Tree) ([]string, []Fix) {
 				why = "which is not fetched (off, or excluded by scope)"
 			}
 			f := Fix{Line: n.Line, Change: fmt.Sprintf("remove %s from the where of %s", c.Field, n.Name), apply: removeWhere(n.Name, c.Field)}
+			if i >= len(n.Where) {
+				f = Fix{Line: n.Line, Change: fmt.Sprintf("remove %s from the where any of %s", c.Field, n.Name), apply: removeWhereAny(n.Name, c.Field)}
+			}
 			out = append(out, fmt.Sprintf("line %d: %s.where.%s: %v was added for %s, %s: it only leaves records out",
 				f.Line, n.Name, c.Field, c.Test, m[1], why)+f.change())
 			fixes = append(fixes, f)
@@ -204,6 +207,65 @@ func removeWhere(name, field string) func(*Tree) bool {
 	}
 }
 
+// removeWhereAny removes an alternative from the where any of a node (the
+// whole any when field is ""); an empty any and an empty where go.
+func removeWhereAny(name, field string) func(*Tree) bool {
+	return func(t *Tree) bool {
+		n := t.Node(name)
+		if n == nil || n.value == nil || n.value.Kind != yaml.MappingNode {
+			return false
+		}
+		where := valueOf(n.value, "where")
+		anyOf := valueOf(where, "any")
+		switch {
+		case anyOf == nil:
+			return false
+		case field == "":
+			deleteKey(where, "any")
+		case !deleteKey(anyOf, field):
+			return false
+		case len(anyOf.Content) == 0:
+			deleteKey(where, "any")
+		}
+		if len(where.Content) == 0 {
+			deleteKey(n.value, "where")
+		}
+		return true
+	}
+}
+
+// foldWhereAny turns conditions of the where of a node into alternatives:
+// they move into its where any (one of them must hold).
+func foldWhereAny(name string, fields []string) func(*Tree) bool {
+	return func(t *Tree) bool {
+		n := t.Node(name)
+		if n == nil || n.value == nil || n.value.Kind != yaml.MappingNode {
+			return false
+		}
+		where := valueOf(n.value, "where")
+		if where == nil || where.Kind != yaml.MappingNode || valueOf(where, "any") != nil {
+			return false
+		}
+		for _, f := range fields {
+			if valueOf(where, f) == nil {
+				return false // nothing changed yet
+			}
+		}
+		anyOf := &yaml.Node{Kind: yaml.MappingNode}
+		for _, f := range fields {
+			for i := 0; i+1 < len(where.Content); i += 2 {
+				if where.Content[i].Value == f {
+					anyOf.Content = append(anyOf.Content, where.Content[i], where.Content[i+1])
+					where.Content = slices.Delete(where.Content, i, i+2)
+					break
+				}
+			}
+		}
+		where.Content = append(where.Content, scalar("any"), anyOf)
+		return true
+	}
+}
+
 // deleteKey removes a key and its value from a mapping.
 func deleteKey(m *yaml.Node, key string) bool {
 	if m == nil || m.Kind != yaml.MappingNode {
@@ -242,12 +304,17 @@ func throughExcluded(s *spec.Spec, sc Scope, n *Node) (string, string, string) {
 			continue
 		}
 		segs := strings.Split(strings.TrimPrefix(str, "."), ".")
-		for _, seg := range segs[:max(len(segs)-1, 0)] {
+		for i, seg := range segs[:max(len(segs)-1, 0)] {
 			for _, res := range m.Resources {
 				if !strings.EqualFold(res.Name, seg) && !strings.EqualFold(res.Name, singular(seg)) {
 					continue
 				}
 				if len(res.Ops) == 0 || slices.ContainsFunc(res.Ops, func(o *model.Op) bool { return !sc.Excluded(o.Op) }) {
+					continue
+				}
+				if !embeddedRecord(s, n, segs[:i+1], res) {
+					// a value inside the record (an object without a key
+					// of that resource): its references are the record's
 					continue
 				}
 				return str, res.Name, sc.excludedBy(res.Ops[0].Op)
@@ -257,6 +324,27 @@ func throughExcluded(s *spec.Spec, sc Scope, n *Node) (string, string, string) {
 	return "", "", ""
 }
 
+// embeddedRecord reports whether the object at path in the records of the
+// node above n is a record of res of its own: it holds a key of res (its
+// id). An object without one (the kind of a garden, without id) is a value
+// of the record above; when the schema says nothing, it counts as a record.
+func embeddedRecord(s *spec.Spec, n *Node, path []string, res *model.Resource) bool {
+	if n.Parent == nil || len(res.Keys) == 0 {
+		return len(res.Keys) > 0
+	}
+	op := lookupOp(s, n.Parent.Call)
+	if op == nil {
+		return true
+	}
+	rec, _ := properties((&proposer{}).recordSchema(op))
+	obj, _, ok := bodyField(rec, strings.Join(path, "."))
+	if !ok || obj == nil || obj.Value == nil {
+		return true
+	}
+	props, _ := properties(itemsOf(obj.Value))
+	return slices.ContainsFunc(res.Keys, func(k string) bool { _, has := propertyFoldName(props, k); return has })
+}
+
 // sortedValues are the values of a map in the order of its keys.
 func sortedValues(m map[string]any) []any {
 	var out []any
@@ -264,4 +352,19 @@ func sortedValues(m map[string]any) []any {
 		out = append(out, m[k])
 	}
 	return out
+}
+
+// callComment is the comment after the call of a node in the file (the
+// operationId · why the generator proposed it), "" without one.
+func callComment(n *Node) string {
+	if n.value == nil {
+		return n.Comment
+	}
+	v := n.value
+	if v.Kind == yaml.MappingNode {
+		if c := valueOf(v, "call"); c != nil {
+			v = c
+		}
+	}
+	return noteOf(v)
 }

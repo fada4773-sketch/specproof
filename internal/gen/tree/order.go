@@ -245,7 +245,8 @@ func createOwner(s *spec.Spec, m *model.Model, t *Tree, n *Node) *Node {
 		}
 		ok := true
 		walkStrings(anyMap(w.Path), func(str string) {
-			if ref, isRef := ParseRef(str, func(name string) bool { return o.Ancestor(name) != nil }); isRef && ref.Node != "" && n.Ancestor(ref.Node) == nil {
+			if ref, isRef := ParseRef(str, func(name string) bool { return o.Ancestor(name) != nil }); isRef && ref.Node != "" && n.Ancestor(ref.Node) == nil &&
+				ownSource(s, m, t, n, ref) == "" {
 				ok = false
 			}
 		})
@@ -254,6 +255,33 @@ func createOwner(s *spec.Spec, m *model.Model, t *Tree, n *Node) *Node {
 		}
 	})
 	return found
+}
+
+// ownSource is the field of n's records that names the record a path
+// value of a create takes from a node above the creating node (the person
+// of POST /persons/{id}/seeds, id=person.Id): a relation of n's resource
+// to that node's resource by the same key (Seed.PersonId → Person.Id).
+// A record of n below no such node takes the value from that field; ""
+// when n's resource has none.
+func ownSource(s *spec.Spec, m *model.Model, t *Tree, n *Node, ref Ref) string {
+	src := t.Node(ref.Node)
+	if src == nil {
+		return ""
+	}
+	own, to := nodeResource(s, m, n), nodeResource(s, m, src)
+	if own == nil || to == nil {
+		return ""
+	}
+	key := to.Field(ref.Field)
+	if key == "" {
+		key = ref.Field
+	}
+	for _, f := range own.Relations {
+		if r, k := own.Ref(f); r == to && strings.EqualFold(k, key) {
+			return f
+		}
+	}
+	return ""
 }
 
 // below reports whether x is n or a node below it.
@@ -300,9 +328,6 @@ func checkOrder(s *spec.Spec, t *Tree) ([]string, []Fix) {
 	}
 	var out []string
 	var fixes []Fix
-	add := func(line int, format string, args ...any) {
-		out = append(out, fmt.Sprintf("line %d: %s", line, fmt.Sprintf(format, args...)))
-	}
 	fix := func(f Fix, format string, args ...any) {
 		out = append(out, fmt.Sprintf("line %d: %s", f.Line, fmt.Sprintf(format, args...))+f.change())
 		if f.apply != nil {
@@ -408,7 +433,10 @@ func checkOrder(s *spec.Spec, t *Tree) ([]string, []Fix) {
 		}
 		if w, _ := ownCreate(s, n); w != nil {
 			if _, ok := seen[n.Name]; !ok {
-				add(w.Line, "%s: its create has no place in order; add it to order", n.Name)
+				// after the creates; the check then moves the creates it
+				// takes values of above it
+				fix(Fix{Line: w.Line, Change: "add - " + n.Name + " to order, after its creates", apply: appendOrderLine(n.Name)},
+					"%s: its create has no place in order", n.Name)
 			}
 		}
 	})
@@ -566,12 +594,19 @@ func proposeOrder(s *spec.Spec, m *model.Model, t *Tree, values map[string]map[s
 	})
 	index := map[*Node]int{}
 	created := createdResources(s, m, t)
+	// the resources whose keys (codes the client gives) a create sends:
+	// their creates come first
+	clientNeeds := map[*Node][]*model.Resource{}
 	for i, n := range nodes {
 		index[n] = i
 		// the sources of the fields that name a record the test creates,
 		// from a node below or above (the check asks for them)
 		w, op := ownCreate(s, n)
 		for _, need := range refNeeds(s, m, t, n, w, op, created) {
+			if need.client {
+				clientNeeds[n] = append(clientNeeds[n], need.to)
+				continue
+			}
 			if need.source == "" {
 				continue
 			}
@@ -585,6 +620,13 @@ func proposeOrder(s *spec.Spec, m *model.Model, t *Tree, values map[string]map[s
 	}
 	needs := make([][]int, len(nodes))
 	for i, n := range nodes {
+		for _, to := range clientNeeds[n] {
+			for _, c := range creators(s, m, t, to) {
+				if j, ok := index[c]; ok && c != n {
+					needs[i] = append(needs[i], j)
+				}
+			}
+		}
 		w, _ := ownCreate(s, n)
 		e := &OrderEntry{Node: n.Name, Values: values[n.Name]}
 		for _, ref := range createRefs(t, n, w, e) {

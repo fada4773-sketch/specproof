@@ -7,6 +7,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/fada4773-sketch/specproof/internal/gen/model"
 	"github.com/fada4773-sketch/specproof/internal/spec"
 )
 
@@ -14,6 +15,46 @@ import (
 // record: its id. A readOnly field may as well name another record
 // (moonId of a garden), so only the name counts.
 func generatedName(f string) bool { return strings.EqualFold(f, "id") }
+
+// clientKey reports whether a create gives a key field of its record
+// itself: a parameter of its path, or a field of its body that is not
+// readOnly (an id only when the body requires it; an id the client may
+// send the instance usually gives). Such a key (a code, a slug) has
+// the value of the stage in an empty instance as well: a field that holds
+// it needs no source and no placeholder, only the create of its record
+// must come first.
+func clientKey(op *spec.Operation, field string) bool {
+	if op == nil || field == "" || strings.Contains(field, ".") {
+		return false
+	}
+	if slices.ContainsFunc(pathParams(op), func(p string) bool { return strings.EqualFold(p, field) }) {
+		return true
+	}
+	props, required := properties(schemaOf(requestRef(op)))
+	name, ok := propertyFoldName(props, field)
+	if !ok {
+		return false
+	}
+	if p := props[name]; p == nil || p.Value == nil || p.Value.ReadOnly {
+		return false
+	}
+	return !generatedName(name) || slices.ContainsFunc(required, func(x string) bool { return strings.EqualFold(x, name) })
+}
+
+// clientKeyOf reports whether every create of r in the spec gives the key
+// field itself (clientKey): records of r keep it in an empty instance.
+func clientKeyOf(r *model.Resource, field string) bool {
+	creates := r.OpsWith(model.RoleCreate)
+	if len(creates) == 0 {
+		return false
+	}
+	for _, mo := range creates {
+		if !clientKey(mo.Op, field) {
+			return false
+		}
+	}
+	return true
+}
 
 // generatedKeys are the fields the instance gives the records of n (their
 // id) that key lacks: n creates records, they have the field, the create

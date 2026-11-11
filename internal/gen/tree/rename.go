@@ -2,6 +2,7 @@ package tree
 
 import (
 	"fmt"
+	"net/http"
 	"slices"
 	"strings"
 
@@ -49,6 +50,128 @@ func changeDefaults(s *spec.Spec, t *Tree) []Fix {
 		}
 	})
 	return out
+}
+
+// upsertDefaults turns the update of a node into its create when the
+// update puts the record at the very path the node reads (GET and PUT
+// /planets/{code}/settings/{season}) and nothing else creates records
+// of it: the API sets such a record by the PUT, an empty instance has none
+// before, so the test must put it first, not change one of the seed.
+func upsertDefaults(s *spec.Spec, t *Tree) []Fix {
+	m := modelOf(s)
+	var out []Fix
+	t.Walk(func(n *Node) {
+		if n.IsRequire || n.Gone || n.value == nil || !n.Enabled() {
+			return
+		}
+		u := n.Write[WriteUpdate]
+		if u == nil || u.value == nil || u.Off || u.None || u.Gone || Method(u.Call) != http.MethodPut {
+			return
+		}
+		if c := n.Write[WriteCreate]; c != nil && !c.None || createOwner(s, m, t, n) != nil {
+			return
+		}
+		_, readPath, _ := strings.Cut(n.Call, " ")
+		_, putPath, _ := strings.Cut(u.Call, " ")
+		if readPath == "" || readPath != putPath {
+			return
+		}
+		out = append(out, Fix{
+			Line:   u.Line,
+			Change: fmt.Sprintf("%s.write.update → create (the default of -fix: %s puts the record at the path %s reads, nothing else creates it)", n.Name, u.Call, n.Name),
+			apply:  updateToCreate(n.Name),
+		})
+	})
+	return out
+}
+
+// updateToCreate renames the update of a node to its create; a create:
+// none goes, and onSeed (no key of a create).
+func updateToCreate(name string) func(*Tree) bool {
+	return func(t *Tree) bool {
+		n := t.Node(name)
+		if n == nil || n.value == nil {
+			return false
+		}
+		write := valueOf(nodeMapping(n), "write")
+		if write == nil || write.Kind != yaml.MappingNode {
+			return false
+		}
+		deleteKey(write, WriteCreate)
+		for i := 0; i+1 < len(write.Content); i += 2 {
+			if write.Content[i].Value == WriteUpdate {
+				write.Content[i].Value = WriteCreate
+				if v := write.Content[i+1]; v.Kind == yaml.MappingNode {
+					deleteKey(v, "onSeed")
+					deleteKey(v, "change")
+				}
+				return true
+			}
+		}
+		return false
+	}
+}
+
+// seedDefaults gives the updates, patches and actions of a node whose
+// records the test never creates (create: none, and no node of the
+// resource creates them: the instance holds them, its seed) onSeed: true.
+// Without it they never run, the operations stay untested.
+func seedDefaults(s *spec.Spec, t *Tree) []Fix {
+	m := modelOf(s)
+	var out []Fix
+	t.Walk(func(n *Node) {
+		if n.IsRequire || n.Gone || n.value == nil || !n.Enabled() {
+			return
+		}
+		if c := n.Write[WriteCreate]; c == nil || !c.None || createOwner(s, m, t, n) != nil {
+			return
+		}
+		for _, kind := range n.Kinds() {
+			w := n.Write[kind]
+			base := KindBase(kind)
+			if base == WriteCreate || base == WriteDelete || w == nil || w.value == nil || w.OnSeed || w.None || w.Off || w.Gone {
+				continue
+			}
+			out = append(out, Fix{
+				Line:   w.Line,
+				Change: fmt.Sprintf("%s.write.%s: add onSeed: true (the default of -fix: the instance holds the records of %s; else it never runs)", n.Name, kind, n.Name),
+				apply:  setWriteOnSeed(n.Name, kind),
+			})
+		}
+	})
+	return out
+}
+
+// setWriteOnSeed adds onSeed: true to a write of a node; a write in the
+// short form becomes a mapping.
+func setWriteOnSeed(name, kind string) func(*Tree) bool {
+	return func(t *Tree) bool {
+		n := t.Node(name)
+		if n == nil || n.Write[kind] == nil || n.Write[kind].value == nil {
+			return false
+		}
+		val := n.Write[kind].value
+		if val.Kind == yaml.ScalarNode {
+			call, params, err := shortForm(val.Value)
+			if err != nil {
+				return false
+			}
+			c := scalar(call)
+			c.LineComment = val.LineComment
+			content := []*yaml.Node{scalar("call"), c}
+			if len(params) > 0 {
+				content = append(content, scalar("path"), valueYAML(params, true))
+			}
+			val.Kind, val.Tag, val.Value, val.Style, val.LineComment = yaml.MappingNode, "", "", 0, ""
+			val.Content = content
+		}
+		if val.Kind != yaml.MappingNode || valueOf(val, "onSeed") != nil {
+			return false
+		}
+		val.Style = 0
+		val.Content = append(val.Content, scalar("onSeed"), scalar("true"))
+		return true
+	}
 }
 
 // renameField is the field name of the body of an update, as the schema

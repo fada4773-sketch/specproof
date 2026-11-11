@@ -435,6 +435,7 @@ name. A prefer no fetched record holds is noted.
 | `change` | update and patch: `{field: value}`, or `auto` (default) for one changed field; `-fix` gives an update without `change` and `body` `{name: '{{.name}}-neu'}` (see below) |
 | `expect` | the status; default the lowest documented 2xx |
 | `save` | values of the answer under a name, as in a node: `/pointer` or `header <Name>`. A `$name` of the tree with that name reads the saved value in the scenario (see below) |
+| `leave` | fields of the body built from the record that this write does not send (`leave: [moonCodes]`): a create before the records the field names, whose update sends it later (`-fix` writes it for two creates that name each other) |
 | `onSeed` | `true`: an update, patch or action also runs on a record of the seed (a node without create: the instance holds the record), on the first record of the fetch |
 | `off` | not used |
 
@@ -743,7 +744,7 @@ guessed:
 | a read below the node for a filter its operationId names | `require` it with `min: 1`; the field it reads `present` |
 | a read about the record that answers 404 without it (`details`) | `require` it |
 | the first list of records that belong to the record (`beds` of a garden) | `require` it with `min: 1` |
-| a field a child reads to name another record (`personId`) | `where: {personId: present}` |
+| a field a child reads to name another record (`personId`) | `where: {personId: present}`; for several children `where: {any: {…}}` (one of them must hold) |
 | state words of the node's operationId (`getOpenGardens`) | `where: {status: OPEN}` |
 | `With` (`getGardensWithBeds`) | the field `present`, or `require` the list with `min: 1` |
 | actions of the write block, when the create sends the state | the states they start from: `open` and `archive` → `status: [DRAFT, CLOSED]` |
@@ -944,6 +945,55 @@ anywhere): the steps after the update would send the old name. `change:
 auto` keeps one changed field as before; `-fix` leaves it, and every
 other `change`.
 
+Besides the problems, `-fix` makes these defaults, and checks the file
+again after them until neither changes it:
+
+- an update, patch or action of a node whose records the test never
+  creates (`create: none`, and no node of the resource creates them) gets
+  `onSeed: true`: else it never runs;
+- an `update` that puts the record at the very path its node reads
+  (`GET` and `PUT /moons/{moonNumber}`), when nothing else creates such
+  records, becomes the node's `create` (the API sets the record by the
+  PUT; an empty instance has none before).
+
+**An existing file.** `-fix` repairs a `tree.yaml` an earlier version
+wrote as well:
+
+- a condition the generator proposed (`… reads it`, the state words and
+  filters of an operationId, a `require` with `answers 404 without it` or
+  `only … with …`) that leaves a node with fewer records than `pick` asks
+  for: several `reads it` become alternatives (`any`), and when the node
+  took no record at all they go; the node is fetched again;
+- a read by another key than the value holds (`GET /moons/{moonNumber}`
+  with `moonNumber: .MoonId`): the read by that key, else the list of the
+  resource with a `where`, else the node goes off; a write likewise
+  (`moonNumber=.Id` → `moonNumber=.Number`; a field named like the
+  parameter stays);
+- a GET whose operationId says it changes what it names (`cancel`,
+  `delete`, `reset`, `close`, `archive`, …: `GET /close/gardens/{id}`):
+  the node goes and the request becomes an action of the node above
+  (`close: GET /close/gardens/{id} id=.id`). The fetch never
+  sends such a GET, the proposal makes it an action from the start;
+- a create without a line in `order` gets one after the creates, and a
+  create the build finds before a create whose saved value it takes is
+  moved below it.
+
+**Keys the client gives.** A key the create sends itself (a code or
+slug in its body, or a value of its path) has the value of the
+stage in an empty instance too. A field that holds such a key needs no
+source in `order` and no placeholder; the check only moves the creates of
+those records above. Two creates that name each other by such keys need
+each other first: `-fix` creates the first without the field (`leave:
+[field]`) and places its update after the other create (`- planets.update`).
+
+**Embedded records.** In a list of embedded records of another resource
+(`seeds: [{Id, PersonId, Person: {…}}]`) each element takes, besides the
+placeholder of its key, the placeholders of the records its references
+name (by the model of that resource; a code stays). The check after a
+create or update leaves out what the answer derives from those records:
+the objects of other resources (`/pilot`, `/Seeds/*/Person`) and the other
+fields of the embedded records (their keys and references stay checked).
+
 The top of `tree.yaml` explains the syntax in a few lines (fields,
 nodes, `/`, `$name`, `{{…}}`, `order`); a run puts it there once, also in
 place of the text of an earlier version.
@@ -1077,6 +1127,7 @@ steps:
 | `token` | `none` (401), `invalid` (a manipulated token), `forbidden` (403); left out: the default token |
 | `expect` | the status the answer must have |
 | `check.equals` | the answer holds what that step sent (fields the answer's schema does not declare and writeOnly ones left out) |
+| `check.ignore` | JSON pointers into that body (`*` for any element) `equals` leaves out: copies of other records the answer derives (`/Seeds/*/Person`) |
 | `check.contains` | a list answer (the answer, or its one list field) holds elements whose `key` has these values |
 | `unique` | JSON pointers into the body whose values `-unique` makes new for each run |
 | `answer` | the answer of the last run with `-update` (`request`, `status`, `headers`, `body`, `volatile`, `lists`, `problems`), written by it; `golden: {spec, specVersion, created, reread}` on top of the file says where they come from |

@@ -39,7 +39,7 @@ steps:
   - id: ship.list
     call: GET /ships
     expect: 200
-    check: {equals: ship1.create, contains: {key: /id, values: ['{{ship1.loc}}']}}
+    check: {equals: ship1.create, ignore: [/crew/*/pilot], contains: {key: /id, values: ['{{ship1.loc}}']}}
 `))
 	if err != nil {
 		t.Fatal(err)
@@ -70,13 +70,14 @@ steps:
 	if err != nil {
 		t.Fatalf("%v\n%s", err, b)
 	}
-	if len(again.Steps) != 4 || again.Step("ship.list").Contains.Key != "/id" || again.Step("ship1.create.again").BodyFrom != "ship1.create" {
+	if len(again.Steps) != 4 || again.Step("ship.list").Contains.Key != "/id" || again.Step("ship1.create.again").BodyFrom != "ship1.create" ||
+		len(again.Step("ship.list").Ignore) != 1 || again.Step("ship.list").Ignore[0] != "/crew/*/pilot" {
 		t.Errorf("round trip:\n%s", b)
 	}
 	// Map gives what ParseStep reads
 	m := sc.Step("ship.list").Map()
 	st, err := ParseStep(m)
-	if err != nil || st.Equals != "ship1.create" {
+	if err != nil || st.Equals != "ship1.create" || len(st.Ignore) != 1 {
 		t.Errorf("Map/ParseStep: %v %+v", err, st)
 	}
 	path := filepath.Join(t.TempDir(), "s.yaml")
@@ -111,6 +112,8 @@ func TestParseScenarioErrors(t *testing.T) {
 		{"steps: [{id: a, call: x, expect: 200, check: {nope: 1}}]", `check: unknown key "nope"`},
 		{"steps: [{id: a, call: x, expect: 200, check: {contains: 1}}]", "check.contains must be"},
 		{"steps: [{id: a, call: x, expect: 200, check: {contains: {key: id, values: [1]}}}]", "check.contains needs key"},
+		{"steps: [{id: a, call: x, expect: 200, check: {ignore: [/a]}}]", "next to equals"},
+		{"steps: [{id: a, call: x, expect: 200, check: {equals: b, ignore: [a]}}]", "is no JSON pointer"},
 		{"steps: [{id: a, call: x, expect: 200, unique: 1}]", `"unique" must be a list`},
 		{"steps: [{id: a, call: x, expect: 200, unique: [name]}]", "is no JSON pointer"},
 		{"steps: [{id: a, call: x, expect: 200}, {id: a, call: x, expect: 200}]", "the id is used twice"},

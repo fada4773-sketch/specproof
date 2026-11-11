@@ -1,6 +1,7 @@
 package tree
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/fada4773-sketch/specproof/internal/spec"
@@ -45,12 +46,28 @@ func defaultWritePath(n *Node, param string) (any, bool) {
 }
 
 // Complete gives the writes of the tree the path values the file leaves
-// out (defaultWritePath). It changes the tree in memory only; the file
-// keeps its short form.
+// out (defaultWritePath), and a node without key the keys of its
+// resource. It changes the tree in memory only; the file keeps its short
+// form.
 func (t *Tree) Complete(s *spec.Spec) {
+	m := modelOf(s)
 	t.Walk(func(n *Node) {
 		if n.IsRequire {
 			return
+		}
+		if n.implied == nil {
+			// the keys of its resource and its id: the record read here
+			// is the one another node reads (the same application below a
+			// default group and in the list), not one of its own
+			n.implied = []string{}
+			if op := lookupOp(s, n.Call); op != nil {
+				if r := resourceOf(m, op); r != nil && len(r.Keys) > 0 {
+					n.implied = keyPointers(r)
+					if id := r.Field("id"); id != "" && !slices.Contains(n.implied, "/"+id) {
+						n.implied = append(n.implied, "/"+id)
+					}
+				}
+			}
 		}
 		for _, w := range n.Write {
 			if w.None || w.Call == "" {
