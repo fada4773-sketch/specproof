@@ -180,7 +180,9 @@ KEYS OF A NODE
                   elsewhere: {pilotId: .pilotDetails.pilotId}; without
                   it a missing reference field (…Id) is searched in the
                   record (same name deeper, …PilotId, pilot….id), taken
-                  when it names one value
+                  when it names one value. A value (size: 3) or the
+                  record's own field (dockCount: .dockCount) is sent as
+                  it is, no reference; null leaves the field out
   items           JSON pointer of the list in the answer (/content)
   page            {param: page, size: {pageSize: 50}, max: 3}; also start,
                   step, next (pointer of a cursor), in: body
@@ -235,6 +237,13 @@ MESSAGES
   "(-fix does it)": apitest-gen tree … -fix makes the change in tree.yaml
   (comments stay) and goes on. A change that needs the records again
   (a where to add) is made, then fetch again; "next:" says what to run.
+  A key of the stage in a body: -fix gives it a source (a node that reads
+  the record, also below its parent resource with the values of the nodes
+  above), keeps a value whose name is no reference (fields: {dockCount:
+  .dockCount}), or sets the create of those records off (seed). A value
+  that does not fit the schema: -fix writes one that fits into fields.
+  With -base-url it fetches and builds again until nothing is left;
+  the errors it cannot change are counted with the reason.
   The notes of a fetch (printed and in tree-review_gen.md) say why a node
   took no records: a failed request, an empty list, where or require.
   docs/scenario.md has the full reference.
@@ -287,6 +296,7 @@ type treeOptions struct {
 	settings, errors, run, skip      string
 	update, noExamples, remote, uniq bool
 	dryRun, fix                      bool
+	fixRounds                        int
 	tok                              tokenFlags
 	timeout                          time.Duration
 }
@@ -373,7 +383,8 @@ func treeFlags(name string, out io.Writer) (*flag.FlagSet, *treeOptions) {
 		fs.StringVar(&o.excludeOps, "exclude-ops", "", `never propose these operations (operationId or "METHOD /path"); added to scope.exclude.ops`)
 		fs.BoolVar(&o.deps, "with-deps", false, "also propose the reads of other tags that give values the scope needs (scope.deps)")
 		fs.StringVar(&o.only, "node", "", "with -base-url: fetch only this node and what hangs below it again; the other records stay")
-		fs.BoolVar(&o.fix, "fix", false, `make the changes the problems and notes name with "(-fix does it)" in tree.yaml, then go on; with -base-url fetch again what they need and build again until nothing is left (at most 5 rounds); also gives an update without change and body change: {name: '{{.name}}-neu'} when it may rename the record`)
+		fs.BoolVar(&o.fix, "fix", false, `make the changes the problems and notes name with "(-fix does it)" in tree.yaml, then go on; with -base-url fetch again what they need and build again until nothing is left (see -fix-rounds): a source in order, a read of the record below (also below its parent resource, with the values of the nodes above), the instance's records as seed, a value that fits the schema in fields; also gives an update without change and body change: {name: '{{.name}}-neu'} when it may rename the record`)
+		fs.IntVar(&o.fixRounds, "fix-rounds", defaultFixRounds, "with -fix: at most this many rounds of change, fetch and build; -fix also stops when a round brings no progress")
 	}
 	return fs, o
 }
@@ -408,9 +419,15 @@ func (o *treeOptions) writeFixes(t *tree.Tree, done []string, out io.Writer) err
 	return nil
 }
 
-// maxFixRounds bounds the rounds of -fix after a build: each round makes
-// the changes the build finds and fetches again what they need.
-const maxFixRounds = 5
+// defaultFixRounds bounds the rounds of -fix after a build (-fix-rounds):
+// each round makes the changes the build finds and fetches again what they
+// need.
+const defaultFixRounds = 10
+
+// stuckRounds is how many rounds in a row -fix goes on without fewer
+// errors and fixes left: a change that needs the records again may show
+// its effect only a round later.
+const stuckRounds = 3
 
 // fixRound makes the changes a build found, checks tree.yaml again (and
 // makes the fixes of the check), and returns the tree read again and the
@@ -476,29 +493,57 @@ func (o *treeOptions) fixRound(s *spec.Spec, t *tree.Tree, fixes []tree.Fix, rou
 var errUndone = errors.New("-fix stopped")
 
 // errorKinds groups the notes of level error by their kind: "is a key of
-// the stage", "does not fit the schema", …, with how many there are.
+// the stage", "does not fit the schema", …, with how many there are and,
+// in parentheses, why -fix cannot change them.
 func errorKinds(notes []tree.Note) string {
 	counts := map[string]int{}
+	whys := map[string]map[string]int{}
 	var kinds []string
 	for _, n := range notes {
-		k := n.What
-		if i := strings.Index(k, " = "); i >= 0 {
-			// "field = value is a key of the stage": the kind is what follows the value
-			if j := strings.Index(k[i+3:], " "); j >= 0 {
-				k = k[i+3+j+1:]
-			}
-		}
+		k := errorKind(n.What)
 		if counts[k] == 0 {
 			kinds = append(kinds, k)
+			whys[k] = map[string]int{}
 		}
 		counts[k]++
+		if n.NoFix != "" {
+			whys[k][n.NoFix]++
+		}
 	}
 	slices.SortStableFunc(kinds, func(a, b string) int { return counts[b] - counts[a] })
 	var parts []string
 	for _, k := range kinds {
-		parts = append(parts, fmt.Sprintf("%d× %s", counts[k], k))
+		part := fmt.Sprintf("%d× %s", counts[k], k)
+		if len(whys[k]) > 0 {
+			var reasons []string
+			for why := range whys[k] {
+				reasons = append(reasons, why)
+			}
+			slices.SortStableFunc(reasons, func(a, b string) int {
+				if c := whys[k][b] - whys[k][a]; c != 0 {
+					return c
+				}
+				return strings.Compare(a, b)
+			})
+			for i, why := range reasons {
+				reasons[i] = fmt.Sprintf("%d× %s", whys[k][why], why)
+			}
+			part += " (" + strings.Join(reasons, ", ") + ")"
+		}
+		parts = append(parts, part)
 	}
 	return strings.Join(parts, ", ")
+}
+
+// errorKind is the kind of an error note: "field = value is a key of the
+// stage" is "is a key of the stage".
+func errorKind(what string) string {
+	if i := strings.Index(what, " = "); i >= 0 {
+		if j := strings.Index(what[i+3:], " "); j >= 0 {
+			return what[i+3+j+1:]
+		}
+	}
+	return what
 }
 
 // buildProblems writes the problems of a build into the review and returns
@@ -708,6 +753,11 @@ func treeMain(o *treeOptions, out io.Writer) (int, error) {
 	var built *tree.Built
 	seen := map[string]int{} // tree.yaml after each round
 	stopped := ""
+	rounds := o.fixRounds
+	if rounds <= 0 {
+		rounds = defaultFixRounds
+	}
+	best, still := -1, 0 // the fewest errors and fixes left, rounds without fewer
 	for round := 1; ; round++ {
 		review.SetPlan(tree.PlanSection(t, data))
 		var fe *tree.FindingError
@@ -722,8 +772,26 @@ func treeMain(o *treeOptions, out io.Writer) (int, error) {
 		default:
 			fixes = built.Fixes
 		}
-		if round > maxFixRounds && stopped == "" {
-			stopped = fmt.Sprintf("-fix stopped after %d rounds; %d changes are left", maxFixRounds, len(fixes))
+		left := len(fixes)
+		if built != nil {
+			left += len(built.Errors())
+		} else if fe != nil {
+			left += len(fe.Problems)
+		}
+		switch {
+		case best < 0 || left < best:
+			best, still = left, 0
+		default:
+			still++
+		}
+		if o.fix && round > 1 && len(fixes) > 0 {
+			fmt.Fprintf(out, "  -fix, after round %d: %d changes and %d errors left\n", round-1, len(fixes), left-len(fixes))
+		}
+		if round > rounds && stopped == "" {
+			stopped = fmt.Sprintf("-fix stopped after %d rounds (-fix-rounds); %d changes are left", rounds, len(fixes))
+		}
+		if still >= stuckRounds && stopped == "" && len(fixes) > 0 {
+			stopped = fmt.Sprintf("-fix stopped: %d rounds without fewer errors; %d changes are left", stuckRounds, len(fixes))
 		}
 		if !o.fix || len(fixes) == 0 || stopped != "" {
 			if stopped != "" {
@@ -738,7 +806,7 @@ func treeMain(o *treeOptions, out io.Writer) (int, error) {
 				return o.buildProblems(fe, review, out)
 			}
 			if !o.fix && len(fixes) > 0 {
-				fmt.Fprintf(out, "  %d body fields send a key of the stage of a record the test creates (notes \"is a key of the stage\"): add -fix to the same command\n", len(fixes))
+				fmt.Fprintf(out, "  %d changes of tree.yaml solve errors of the test (notes with \"(-fix does it)\": %s): add -fix to the same command\n", len(fixes), errorKinds(built.Errors()))
 			}
 			break
 		}

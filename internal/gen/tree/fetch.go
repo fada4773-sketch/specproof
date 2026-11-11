@@ -65,6 +65,10 @@ type Data struct {
 	// values, requests, conditions and candidates (not in the data file:
 	// the review page shows it).
 	Trace []*Visit
+	// SourceOut counts per node that is a source of order the candidates
+	// left out because it took no record below them (not in the data
+	// file: -fix reads it right after the fetch).
+	SourceOut map[string]int
 }
 
 // Exchange is one request and its answer, for the review.
@@ -400,6 +404,10 @@ func (f *fetcher) node(ctx context.Context, n *Node, parent *Record) error {
 		if gone := f.lacking(rec, sources, before); gone != "" {
 			f.data.Records, f.data.Notes, f.count = f.data.Records[:before], f.data.Notes[:notes], counts
 			sourceOut[gone]++
+			if f.data.SourceOut == nil {
+				f.data.SourceOut = map[string]int{}
+			}
+			f.data.SourceOut[gone]++
 			tc.Outcome, tc.Record = OutcomeSource, ""
 			tc.Why = fmt.Sprintf("it names a record of %s, but %s took none below it (the source of order: left out by where); dropped with what hangs below it", gone, gone)
 			continue

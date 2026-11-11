@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/getkin/kin-openapi/openapi3"
 	"gopkg.in/yaml.v3"
 
 	"github.com/fada4773-sketch/specproof/internal/gen/model"
@@ -384,9 +385,14 @@ func newSourceFix(s *spec.Spec, t *Tree, n *Node, e OrderEntry, need refNeed) Fi
 			why := "no read of " + what + " records in scope: the instance holds them"
 			return Fix{Line: e.Line, Change: fmt.Sprintf("%s.write.create: add off: true (the instance must hold the %s records), or take a read of them out of scope.exclude", c.Name, what),
 				apply: setWriteOff(c.Name, WriteCreate, why)}
+		} else if len(cs) > 0 {
+			// no read the nodes above can send (a value no node gives):
+			// the records stay as the instance has them, its seed
+			return seedFix(e.Line, cs, what, n.Name)
 		}
 		return Fix{Line: e.Line, Change: fmt.Sprintf("add below %s a node that reads the %s records by .%s, then name it: - %s: {%s: <node>.%s}",
-			n.Name, what, need.field, e.Node, need.field, need.key)}
+			n.Name, what, need.field, e.Node, need.field, need.key),
+			why: fmt.Sprintf("no read of %s records below %s, and the tree creates none to set off", what, n.Name)}
 	}
 	source := c.Name + "." + need.key
 	return Fix{
@@ -397,6 +403,29 @@ func newSourceFix(s *spec.Spec, t *Tree, n *Node, e OrderEntry, need refNeed) Fi
 			return putOrderSource(e.Line, need.field, source)(t) && addChildNode(t, n.Name, c)
 		},
 	}
+}
+
+// seedFix sets the creates of the nodes off: the test creates no records
+// of them and sends the keys of the stage, which the instance must hold
+// (its seed). It is the last change for a field that names such records
+// when no node can read them below the node from.
+func seedFix(line int, cs []*Node, what, from string) Fix {
+	var names []string
+	for _, c := range cs {
+		names = append(names, c.Name)
+	}
+	why := fmt.Sprintf("no read of %s records below %s: the instance holds them (-fix)", what, from)
+	return Fix{Line: line,
+		Change: fmt.Sprintf("%s.write.create: add off: true (no read of the %s records below %s, not even with the values of the nodes above: the instance must hold them as seed)", strings.Join(names, ", "), what, from),
+		apply: func(t *Tree) bool {
+			done := false
+			for _, name := range names {
+				if setWriteOff(name, WriteCreate, why)(t) {
+					done = true
+				}
+			}
+			return done
+		}}
 }
 
 // addedComment is the comment of a node -fix adds: the operationId, its
@@ -428,6 +457,25 @@ func sourceNode(s *spec.Spec, t *Tree, n *Node, need refNeed, taken map[string]b
 			}
 		}
 	}
+	// a resource below another one (GET /planets/{code}/docks/{dockId}):
+	// the read takes the key from the field, the other values from the
+	// nodes above (the planet the ship hangs below); the fetch leaves out a
+	// record whose source is not there (the dock of another planet)
+	var nestedPath, nestedQuery map[string]any
+	if read == nil && !need.many {
+		for _, mo := range need.to.OpsWith(model.RoleRead) {
+			params := pathParams(mo.Op)
+			if len(params) < 2 || excluded(mo.Op) || !strings.EqualFold(byField(mo), need.key) && len(need.to.Keys) > 1 {
+				continue
+			}
+			last := params[len(params)-1]
+			if path, query, ok := chainValues(s, t, n, mo.Op, last); ok {
+				read, nestedPath, nestedQuery = mo.Op, path, query
+				nestedPath[last] = "." + need.field
+				break
+			}
+		}
+	}
 	name := freeNodeName(t, lowerFirst(need.to.Name), lowerFirst(singular(n.Name))+need.to.Name)
 	for i := 2; taken[name]; i++ {
 		name = freeNodeName(t, fmt.Sprintf("%s%s%d", lowerFirst(singular(n.Name)), need.to.Name, i))
@@ -436,26 +484,101 @@ func sourceNode(s *spec.Spec, t *Tree, n *Node, need refNeed, taken map[string]b
 		taken[name] = true
 	}
 	if read != nil {
-		c := &Node{Name: name, Call: callOf(read), Comment: addedComment(read), Path: map[string]any{pathParams(read)[0]: "." + need.field}}
-		short, _ := shortText(c.Call, c.Path)
+		path := nestedPath
+		if path == nil {
+			path = map[string]any{pathParams(read)[0]: "." + need.field}
+		}
+		c := &Node{Name: name, Call: callOf(read), Comment: addedComment(read), Path: path, Query: nestedQuery}
+		short, ok := shortText(c.Call, c.Path)
+		if !ok || len(c.Query) > 0 {
+			short = callOf(read) + " " + valuesText(c.Path, c.Query)
+		}
 		return c, short
 	}
 	var list *spec.Operation
+	var listPath, listQuery map[string]any
 	for _, mo := range need.to.OpsWith(model.RoleList) {
-		if len(pathParams(mo.Op)) == 0 && !requiredQuery(mo.Op) && !excluded(mo.Op) && lookupOp(s, callOf(mo.Op)) != nil {
-			list = mo.Op
+		if excluded(mo.Op) || lookupOp(s, callOf(mo.Op)) == nil {
+			continue
+		}
+		if len(pathParams(mo.Op)) == 0 && !requiredQuery(mo.Op) {
+			list, listPath, listQuery = mo.Op, nil, nil
 			break
+		}
+		// a list below another resource (GET /planets/{code}/docks), or
+		// one with a required filter: the nodes above give the values
+		if path, query, ok := chainValues(s, t, n, mo.Op, ""); ok && list == nil {
+			list, listPath, listQuery = mo.Op, path, query
 		}
 	}
 	if list == nil {
 		return nil, ""
 	}
+	if len(listPath) == 0 {
+		listPath = nil
+	}
 	c := &Node{Name: name, Call: callOf(list), Comment: addedComment(list), Key: keyPointers(need.to), Page: pageOf(list),
+		Path: listPath, Query: listQuery,
 		Where: []Clause{{Field: need.key, Test: n.Name + "." + need.field, Note: "the " + lowerFirst(need.to.Name) + " " + n.Name + " refers to"}}}
 	if need.many {
 		c.Pick = Pick{All: true}
 	}
-	return c, fmt.Sprintf("%s where {%s: %s.%s}", callOf(list), need.key, n.Name, need.field)
+	desc := callOf(list)
+	if len(listPath)+len(listQuery) > 0 {
+		desc += " " + valuesText(listPath, listQuery)
+	}
+	return c, fmt.Sprintf("%s where {%s: %s.%s}", desc, need.key, n.Name, need.field)
+}
+
+// chainValues gives the path parameters (and the required query
+// parameters without a documented value) of op, but skip, their values
+// for a node added below n: the record of n (".field"), a node above it
+// ("planets.code") or a value of params ("$season"). ok is false when one
+// has none.
+func chainValues(s *spec.Spec, t *Tree, n *Node, op *spec.Operation, skip string) (path, query map[string]any, ok bool) {
+	m := modelOf(s)
+	p := &proposer{s: s, m: m, all: m, res: map[*Node]*model.Resource{}}
+	for x := n; x != nil; x = x.Parent {
+		p.res[x] = nodeResource(s, m, x)
+	}
+	vals, missing := p.paramValues(op, p.chainOf(n))
+	for _, nd := range missing {
+		if nd.name == skip {
+			continue
+		}
+		if _, set := t.param(nd.name); !set {
+			return nil, nil, false
+		}
+		vals[nd.name] = "$" + nd.name
+	}
+	path, query = map[string]any{}, map[string]any{}
+	for _, nd := range p.needs(op) {
+		v, has := vals[nd.name]
+		if nd.name == skip || !has {
+			continue
+		}
+		if nd.in == openapi3.ParameterInQuery {
+			query[nd.name] = v
+		} else {
+			path[nd.name] = v
+		}
+	}
+	if len(query) == 0 {
+		query = nil
+	}
+	return path, query, true
+}
+
+// valuesText writes path and query values in short: "code=planets.code
+// dockId=.homeDockId".
+func valuesText(path, query map[string]any) string {
+	var parts []string
+	for _, m := range []map[string]any{path, query} {
+		for _, k := range sortedKeys(m) {
+			parts = append(parts, fmt.Sprintf("%s=%v", k, m[k]))
+		}
+	}
+	return strings.Join(parts, " ")
 }
 
 // checkPathKeys finds path values of nodes and writes that are a key of
@@ -679,13 +802,25 @@ func (b *builder) keyGap(step string, r *Record, what, field string, v any, kr k
 	to := b.resourceOf(kr.rec.Node)
 	if entry == nil || to == nil || field == "" {
 		b.noteAt(LevelError, step, fmt.Sprintf("%s = %s is a key of the stage", what, text(v)), msg+"; give the source in order ("+field+": <node>."+kr.field+")")
+		switch {
+		case to == nil:
+			b.noFix("the resource of " + kr.rec.Node.Name + " is unknown")
+		case entry == nil:
+			b.noFix("the record has no create in order")
+		default:
+			b.noFix("a value of no body field")
+		}
 		return
 	}
 	f := b.keySource(e.Node, *entry, field, to, kr.field)
 	// one line: the note stands in a table and in the timeline
 	b.noteAt(LevelError, step, fmt.Sprintf("%s = %s is a key of the stage", what, text(v)), msg+strings.ReplaceAll(f.change(), "\n  ", "; "))
 	k := fmt.Sprintf("%d|%s", entry.Line, strings.ToLower(field))
-	if f.apply == nil || b.keyGaps[k] {
+	if f.apply == nil {
+		b.noFix(f.why)
+		return
+	}
+	if b.keyGaps[k] {
 		return
 	}
 	if b.keyGaps == nil {
@@ -726,6 +861,13 @@ func (b *builder) keySource(n *Node, e OrderEntry, field string, to *model.Resou
 			Change: fmt.Sprintf("- %s → - %s: {…, %s: %s} (%s: the node the fix before adds); then fetch again with -node %s", e.Node, e.Node, field, src, added, n.Name),
 			apply:  putOrderSource(e.Line, field, src)}
 	}
+	if !many && b.t.Node(e.Node) == n && !looksLikeRef(field, to, need.key) {
+		// the value matches a key only by chance (dockCount = 2, the id
+		// of a dock): the record's own value is sent as it is
+		why := fmt.Sprintf("the value of the record, no %s (-fix)", lowerFirst(to.Name))
+		return Fix{Line: n.Line, Change: fmt.Sprintf("%s: add fields: {%s: .%s} (%s holds no key of %s by its name: it is sent as it is)", n.Name, field, field, field, lowerFirst(to.Name)),
+			apply: setNodeField(n.Name, field, "."+field, why)}
+	}
 	f := newSourceFix(b.s, b.t, n, e, need)
 	if f.adds != "" {
 		if b.added == nil {
@@ -734,4 +876,37 @@ func (b *builder) keySource(n *Node, e OrderEntry, field string, to *model.Resou
 		b.added[group] = f.adds
 	}
 	return f
+}
+
+// refEndings are the endings of a field name after the name of a resource
+// that make it a reference to it: dockId, pilotIds, planetCode, shipNo.
+var refEndings = []string{"", "id", "ids", "key", "keys", "code", "codes", "no", "nr", "number", "numbers", "ref", "refs", "uuid", "uuids"}
+
+// looksLikeRef reports whether a field's name says it names a record of
+// to: a key of it (id, code), or the resource's name followed by a key or
+// a word like id (homeDockId, pilotIds). dockCount does not.
+func looksLikeRef(field string, to *model.Resource, key string) bool {
+	last := strings.ToLower(field[strings.LastIndex(field, ".")+1:])
+	keys := []string{strings.ToLower(key)}
+	for _, k := range to.Keys {
+		keys = append(keys, strings.ToLower(k))
+	}
+	if slices.Contains(keys, last) {
+		return true
+	}
+	if _, score := nameAndKey(last, to); score > 0 {
+		return true
+	}
+	for _, name := range []string{to.Name, singular(to.Name)} {
+		name = strings.ToLower(name)
+		i := strings.LastIndex(last, name)
+		if name == "" || i < 0 {
+			continue
+		}
+		rest := last[i+len(name):]
+		if slices.Contains(refEndings, rest) || slices.Contains(keys, rest) || slices.Contains(keys, strings.TrimSuffix(rest, "s")) {
+			return true
+		}
+	}
+	return false
 }

@@ -384,15 +384,43 @@ contain breaking changes, which are listed here.
     field once, under its reason (`3 fields of the record not sent`).
   - `apitest-gen tree -base-url … -fix` goes on until it fits: it makes
     the changes the build finds, fetches again only the nodes they need
-    (`-node`), and builds again, up to 5 rounds (`-fix, round n:`).
+    (`-node`), and builds again, up to `-fix-rounds` rounds (`-fix, round n:`).
     Before, it stopped after the first changes and asked to fetch again.
   - `apitest-gen tree`: every note of the test has a level, `error`,
     `warn` or `info`: in the timelines (`error: …`, errors first), in the
     table of the notes outside the steps, counted in the summary of the
     section; the review page marks them and narrows to "only errors".
+  - `apitest-gen tree -fix` reads records below their parent resource:
+    for a key of the stage whose resource is only read below another one
+    (`GET /planets/{code}/docks/{dockId}`, or its list) it adds the read
+    with the key from the field and the other values from the nodes above
+    (`code=planets.code dockId=.homeDockId`), or from `params`. Before, it
+    only named the change ("add below … a node …") and left the error.
+  - `apitest-gen tree -fix` goes down a ladder for a key of the stage: the
+    source in `order`, a read added below, `fields: {f: .f}` when the
+    field's name says it is no reference (`dockCount`), and as the last
+    step `off: true` at the create of those records (seed), also without
+    `scope.exclude`. A node it added that leaves the node above without
+    records (each names a record the read cannot give) is taken out again
+    for the seed.
+  - `apitest-gen tree -fix` fixes values of the stage that do not fit the
+    request's schema: a generated value that fits in `fields` of the
+    node, with the old value and the reason as comment; `null` (left out)
+    for a field the request does not require when none can be made.
+  - `apitest-gen tree`: in `fields`, a value and the record's own field
+    (`dockCount: .dockCount`) are sent as they are, never taken for the
+    key of another record; `null` leaves the field out of the body.
+  - `apitest-gen tree -fix-rounds n` (default 10): the rounds of `-fix`
+    with `-base-url`; it also stops after 3 rounds without fewer errors
+    and changes left. Each round prints what is left; the errors left are
+    counted by kind with why `-fix` cannot change them.
 
 ### Fixed
 
+- `apitest-gen tree`: a body value that matched the keys of several
+  records the test creates (the dock 1 of two planets) was sent as the key
+  of the stage without a note. It is an error now; the nearest record in
+  the tree decides the fix, records of different resources get none.
 - `apitest-gen tree`: the read of a record by a value of a list the
   record above names (`GET /pilots/{pilotId} pilotId=.pilotIds`) sent
   `null` when the test created that record above: the list held the

@@ -423,7 +423,7 @@ name. A prefer no fetched record holds is noted.
 | `candidates` | how many candidates `require` checks at most |
 | `key` | JSON pointers that identify a record (default `/id`); records are matched by them |
 | `save` | values under a name: `/pointer`, or `header <Name>` |
-| `fields` | where a field of the bodies built from the record comes from when the record holds it elsewhere: `pilotId: .pilotDetails.pilotId` (also `<node>.field`, `$name` or a value); over the record, `order` and the search for a reference (see Bodies) |
+| `fields` | where a field of the bodies built from the record comes from when the record holds it elsewhere: `pilotId: .pilotDetails.pilotId` (also `<node>.field`, `$name` or a value); over the record, `order` and the search for a reference (see Bodies). A value (`size: 3`) and the record's own field (`dockCount: .dockCount`) are sent as they are, never taken for the key of another record; `null` leaves the field out of the body |
 | `write` | `create` (or `none`), `update`, `patch`, `delete`, their variants by another key (`update-by-name: PUT /gardens/name/{name} name=.name`, `delete-by-code`, `patch-by-…`), and actions under any other name (`open: POST /gardens/{gardenId}/open gardenId=.id`) |
 | `each` | the child nodes |
 | `off` | the node and its children are not fetched |
@@ -587,10 +587,17 @@ marked `# new: check its place`, and the run says so.
 
 The reads `-fix` adds respect the scope: the read by the key when the
 scope allows it, else the list of the resource with a where on the key
-(`pilot: GET /pilots` with `where: {id: ships.pilotId}`). When the scope
-allows no read of these records at all, the test cannot take the one a
-record names: the fix sets `off: true` at their create (the instance must
-hold them, as seed), or you take a read of them out of `scope.exclude`.
+(`pilot: GET /pilots` with `where: {id: ships.pilotId}`). A resource
+below another one is read the same way: the key from the field, the other
+values of the path from the nodes above (`dock: GET
+/planets/{code}/docks/{dockId} code=planets.code dockId=.homeDockId`), or
+its list below the parent with the where (also a list with a required
+query value that the nodes above or `params` give). The fetch then leaves
+out a record whose source is not there (the dock of another planet). When
+no read of these records is possible at all, the test cannot take the one
+a record names: the fix sets `off: true` at their create (the instance
+must hold them, as seed), or you take a read of them out of
+`scope.exclude`.
 
 **Checked against the scope.** `exclude` (tags and operations) holds for
 the whole file, also for nodes written before the exclusion (a merge
@@ -839,7 +846,35 @@ fetch again with `-node`). The build itself does not stop for it; without
 `-fix` the run says how many there are. Two fields of one element that
 name the same records (`leadDetails.leadPilotId` and
 `leadDetails.leadPilot.leadPilotId`) get one node: the second fix names
-the node the first adds.
+the node the first adds. `-fix` goes down a ladder until one change fits:
+
+1. the source in `order` from a node below or above that reads the record;
+2. a read added below (by the key, below the parent resource with the
+   values of the nodes above, or a list with `where`), then fetch again;
+3. when the field's name says it is no reference (`dockCount = 2`, the id
+   of a dock by chance: no key and no `…Id` after the resource's name):
+   `fields: {dockCount: .dockCount}`, the value is sent as it is;
+4. when no read of the records is possible: their create gets
+   `off: true` (seed).
+
+A value that matches the keys of several records takes the one nearest in
+the tree (the dock of the ship's planet); for records of different
+resources it is an error without fix: give the source in `order` or the
+value in `fields`. When a node `-fix` added leaves the node above without
+any record (every ship names a dock of another planet, which the read
+below the planet cannot give), the next round takes it out again with its
+source and sets the creates of that resource off (seed), then fetches the
+node above again.
+
+**Values that do not fit the schema.** A body value of the stage that
+the request's schema does not allow (a pattern, a length, an enum) is an
+error at the step (`name = Comet does not fit the schema`). `-fix` writes
+a generated value that fits into `fields` of the record's node, with the
+value of the stage and the reason as comment (`name: CT-117 # the stage
+has Comet, which does not fit (…) (-fix)`); a field the request does not
+require gets `null` (left out) when no value that fits can be made. A
+field `fields` already gives is left to you. A unique field gets the same
+value for every record: run the test with `-unique`.
 
 **Other reads of the same records.** Nodes that read records of the same
 resource by another filter (`gardensByMoon`, `gardensByPerson`) create
@@ -853,17 +888,22 @@ records the field names (`order` stays) and fetches those nodes again.
 
 **`-fix` with `-base-url`: until it fits.** With both, one run goes on
 after the build until nothing is left to fix: it makes the changes the
-build finds (the problems that stop it and the keys of the stage), checks
-`tree.yaml` again (and makes the fixes of the check), fetches again only
-the nodes the changes need (`-node` for each, the outer one when one hangs
-below another; the whole tree when a change names none) and builds again.
-Each round prints `-fix, round n:` with its changes. It stops when a build
-has nothing to fix, after 5 rounds, when no change of a round fits the
-file (it says which), and as soon as a round leaves `tree.yaml` as it was
-or as an earlier round left it (the changes undo each other: that is a
-bug of apitest-gen, the run says so). What is left stands in the notes
-and problems; the run counts the errors by kind (`411 errors -fix cannot
-change: 380× is a key of the stage, …`).
+build finds (the problems that stop it, the keys of the stage and the
+values that do not fit the schema), checks `tree.yaml` again (and makes
+the fixes of the check), fetches again only the nodes the changes need
+(`-node` for each, the outer one when one hangs below another; the whole
+tree when a change names none) and builds again. Each round prints
+`-fix, round n:` with its changes and how many changes and errors are
+left. It stops when a build has nothing to fix, after `-fix-rounds`
+rounds (default 10), after 3 rounds in a row without fewer errors and
+changes left, when no change of a round fits the file (it says which),
+and as soon as a round leaves `tree.yaml` as it was or as an earlier
+round left it (the changes undo each other: that is a bug of apitest-gen,
+the run says so). What is left stands in the notes and problems; the run
+counts the errors by kind, with why `-fix` cannot change them (`10 errors
+-fix cannot change: 8× is a key of the stage (8× no read of dock records
+below ships, and the tree creates none to set off), 2× does not fit the
+schema (2× required, and no value that fits could be made)`).
 
 Not a key of the stage: a value the record holds itself in that key field
 (the code of a record a second node reads too is its own, no reference to
@@ -1293,7 +1333,7 @@ seed the review lists); apitest only gets its URL. The reports and the diff are 
 ## Command reference
 
 ```
-apitest-gen tree            -spec <openapi.yaml> [-file tree.yaml] [-tags A,B] [-exclude-tags X] [-exclude-ops opId] [-with-deps] [-fix] [-base-url <url> [tokens] [-node name]] [-timeout 10s]
+apitest-gen tree            -spec <openapi.yaml> [-file tree.yaml] [-tags A,B] [-exclude-tags X] [-exclude-ops opId] [-with-deps] [-fix [-fix-rounds 10]] [-base-url <url> [tokens] [-node name]] [-timeout 10s]
 apitest-gen tree run        -spec <openapi.yaml> [-file tree.yaml] -base-url <url> [tokens] [-update] [-no-examples] [-errors 401,404] [-run <pattern>] [-skip <pattern>] [-unique] [-junit <file>]
 apitest-gen regression init -spec <openapi.yaml> [-out regression-sample.yaml]
 apitest-gen regression pre  -spec <openapi.yaml> -sample <file> -base-url <url> [tokens] [-out dir] [-seed n] [-probe 2s] [-strict] [-junit <file>]

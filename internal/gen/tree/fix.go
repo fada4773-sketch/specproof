@@ -23,6 +23,8 @@ type Fix struct {
 	// the records must be fetched again from ("" when none).
 	adds, under string
 	fetch       []string
+	// why says in short why -fix cannot make a fix without apply.
+	why string
 }
 
 // change is the line a problem ends with: what to change where; a fix
@@ -359,4 +361,85 @@ func orderLines(t *Tree) []int {
 		out = append(out, item.Line)
 	}
 	return out
+}
+
+// setNodeField sets a field of the fields of a node (fields: {size:
+// .size}) with the reason as comment; the block is added before write and
+// each, an entry there is replaced. A nil value is written as null: the
+// body leaves the field out.
+func setNodeField(name, field string, value any, why string) func(*Tree) bool {
+	return func(t *Tree) bool {
+		n := t.Node(name)
+		if n == nil || n.value == nil {
+			return false
+		}
+		v := nodeMapping(n)
+		if v == nil || v.Kind != yaml.MappingNode {
+			return false
+		}
+		val := valueYAML(value, true)
+		if value == nil {
+			val = &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!null", Value: "null"}
+		}
+		val.LineComment = comment(why)
+		fields := valueOf(v, "fields")
+		if fields == nil {
+			fields = &yaml.Node{Kind: yaml.MappingNode}
+			at := len(v.Content)
+			for i := 0; i+1 < len(v.Content); i += 2 {
+				if k := v.Content[i].Value; k == "write" || k == "each" || k == "off" {
+					at = i
+					break
+				}
+			}
+			v.Content = slices.Insert(v.Content, at, scalar("fields"), fields)
+		}
+		if fields.Kind != yaml.MappingNode {
+			return false
+		}
+		fields.Style = 0
+		for i := 0; i+1 < len(fields.Content); i += 2 {
+			if strings.EqualFold(fields.Content[i].Value, field) {
+				fields.Content[i+1] = val
+				return true
+			}
+		}
+		fields.Content = append(fields.Content, scalar(field), val)
+		return true
+	}
+}
+
+// removeNode removes a node and what hangs below it from the file.
+func removeNode(name string) func(*Tree) bool {
+	return func(t *Tree) bool {
+		n := t.Node(name)
+		if n == nil || n.owner == nil {
+			return false
+		}
+		for i := 0; i+1 < len(n.owner.Content); i += 2 {
+			if n.owner.Content[i+1] == n.value {
+				n.owner.Content = slices.Delete(n.owner.Content, i, i+2)
+				return true
+			}
+		}
+		return false
+	}
+}
+
+// addedByFix reports whether -fix added the node: its comment says so (on
+// the call, or after the short form).
+func addedByFix(n *Node) bool {
+	const mark = "added by -fix"
+	if strings.Contains(n.Comment, mark) {
+		return true
+	}
+	for _, y := range []*yaml.Node{n.value, n.key} {
+		if y != nil && strings.Contains(y.LineComment, mark) {
+			return true
+		}
+	}
+	if v := valueOf(n.value, "call"); v != nil && strings.Contains(v.LineComment, mark) {
+		return true
+	}
+	return false
 }

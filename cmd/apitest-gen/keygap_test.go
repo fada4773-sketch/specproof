@@ -80,7 +80,7 @@ func TestTreeFixKeyOfTheStage(t *testing.T) {
 	t.Cleanup(hs.Close)
 
 	code, out, errOut := cli("tree", "-spec", specPath, "-file", file, "-base-url", hs.URL+"/api", "-token", starportToken)
-	if code != 0 || !strings.Contains(out, "1 body fields send a key of the stage of a record the test creates") || !strings.Contains(out, "add -fix to the same command") {
+	if code != 0 || !strings.Contains(out, "1 changes of tree.yaml solve errors of the test") || !strings.Contains(out, "add -fix to the same command") {
 		t.Fatalf("build: %d\n%s%s", code, out, errOut)
 	}
 	code, out, errOut = cli("tree", "-spec", specPath, "-file", file, "-fix")
@@ -161,5 +161,20 @@ func TestErrorKinds(t *testing.T) {
 	}
 	if got := errorKinds(notes); got != "2× is a key of the stage, 1× does not fit the schema" {
 		t.Errorf("kinds: %s", got)
+	}
+}
+
+// TestErrorKindsWhy: the errors -fix leaves are counted by kind, the most
+// first, with why -fix cannot change them.
+func TestErrorKindsWhy(t *testing.T) {
+	notes := []tree.Note{
+		{What: "homeDockId = 3 is a key of the stage", NoFix: "no read of dock records below ships, and the tree creates none to set off"},
+		{What: "homeDockId = 4 is a key of the stage", NoFix: "no read of dock records below ships, and the tree creates none to set off"},
+		{What: "pilotId = 7 is a key of the stage", NoFix: "the record has no create in order"},
+		{What: "name = x does not fit the schema"},
+	}
+	want := "3× is a key of the stage (2× no read of dock records below ships, and the tree creates none to set off, 1× the record has no create in order), 1× does not fit the schema"
+	if got := errorKinds(notes); got != want {
+		t.Errorf("got  %s\nwant %s", got, want)
 	}
 }

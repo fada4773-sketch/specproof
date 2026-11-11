@@ -31,6 +31,9 @@ type Note struct {
 	// (a gap the test lives with: a step not run, a record not checked, a
 	// value generated or chosen out of several), LevelInfo (a decision).
 	Level string
+	// NoFix says in short why -fix cannot change an error ("no read of
+	// dock records below ships"); "" when it can or the note is none.
+	NoFix string
 }
 
 // The levels of a note.
@@ -121,6 +124,9 @@ type builder struct {
 	// keyGaps are the body fields that send a key of the stage of a record
 	// the test creates, per line of order and field: one fix each
 	keyGaps map[string]bool
+	// schemaFixed are the fields a fix of this build gives a value that
+	// fits (node|field), once each
+	schemaFixed map[string]bool
 	// added are the nodes the fixes of this build add, by the node below
 	// which, the resource and the field (or list) they give
 	added map[string]string
@@ -182,6 +188,7 @@ func Build(s *spec.Spec, t *Tree, d *Data) (*Built, error) {
 	b.deletes(order)
 	b.afterSaves()
 	b.sameCreates()
+	b.lostSources()
 	if len(b.problems) > 0 {
 		return nil, &FindingError{Problems: b.problems, Fixes: b.fixes}
 	}
@@ -211,6 +218,13 @@ func (b *builder) note(step, what, why string) { b.noteAt(LevelInfo, step, what,
 
 func (b *builder) noteAt(level, step, what, why string) {
 	b.out.Notes = append(b.out.Notes, Note{Step: step, What: what, Why: why, Level: level})
+}
+
+// noFix says why -fix cannot change the error noted last.
+func (b *builder) noFix(why string) {
+	if len(b.out.Notes) > 0 && why != "" {
+		b.out.Notes[len(b.out.Notes)-1].NoFix = why
+	}
 }
 
 func (b *builder) id(base string) string {
@@ -998,8 +1012,27 @@ func (b *builder) placeholderFor(v any, fields []string, at string, exclude *Rec
 	}
 	if b.strict {
 		// the file says where values come from: a match is only a hint
-		if len(best) == 1 && !b.inEmbedded(exclude, at) {
+		switch {
+		case b.inEmbedded(exclude, at):
+		case len(best) == 1:
 			b.keyGap(step, exclude, what, at, v, best[0])
+		case len(best) > 1:
+			// keys of several records (the dock 1 of two planets): the
+			// one closest to the record in the tree; the source the fix
+			// gives reads it by the value, so any record of the same kind
+			// and field gives the same fix
+			kr := b.closest(best, exclude)
+			if b.sameKindOf(best) {
+				b.keyGap(step, exclude, what, at, v, kr)
+				break
+			}
+			var ids []string
+			for _, x := range best {
+				ids = append(ids, x.rec.ID+"."+x.field)
+			}
+			b.noteAt(LevelError, step, fmt.Sprintf("%s = %s is a key of the stage", what, text(v)),
+				fmt.Sprintf("it is the key of %s on the stage, records of different kinds; give the source in order (%s: <node>.<key>) or the value as it is in fields (%s: .%s)", strings.Join(ids, ", "), at, at, at))
+			b.noFix("the keys of records of different kinds")
 		}
 		return v
 	}
@@ -1098,6 +1131,95 @@ func (b *builder) matches(v any, fields []string, exclude *Record) []keyRef {
 		}
 	}
 	return best
+}
+
+// lostSources finds nodes -fix added as the source of order that left the
+// node above without records: the fetch drops a candidate whose source it
+// cannot read (each ship names a dock of another planet), and dropped them
+// all. The fix takes the node and its source out again and sets the
+// creates of its resource off: the test sends the keys of the stage, which
+// the instance must hold (seed); the node above is fetched again.
+func (b *builder) lostSources() {
+	if b.d == nil || len(b.d.SourceOut) == 0 {
+		return
+	}
+	b.t.Walk(func(c *Node) {
+		if c.Parent == nil || b.d.SourceOut[c.Name] == 0 || !addedByFix(c) || len(b.d.Of(c.Parent)) > 0 {
+			return
+		}
+		n := c.Parent
+		var line int
+		var field string
+		for _, e := range b.t.Order {
+			for _, f := range sortedKeys(e.Values) {
+				if ref, ok := ParseRef(e.Values[f], b.scope); ok && ref.Node == c.Name {
+					line, field = e.Line, f
+				}
+			}
+		}
+		res := b.resourceOf(c)
+		if line == 0 || res == nil {
+			return
+		}
+		cs := creators(b.s, b.m, b.t, res)
+		what := lowerFirst(res.Name)
+		b.noteAt(LevelError, n.Name, n.Name+": no record left",
+			fmt.Sprintf("the fetch left out all %d candidates: each names a %s record %s cannot read below it", b.d.SourceOut[c.Name], what, c.Name))
+		if len(cs) == 0 {
+			b.noFix("no create of " + what + " records to set off")
+			return
+		}
+		seed := seedFix(line, cs, what, n.Name)
+		f := Fix{Line: line, fetch: []string{n.Name},
+			Change: fmt.Sprintf("remove %s (added by -fix) and {%s: …} in line %d: no %s record of the stage is readable there; %s; then fetch again with -node %s", c.Name, field, line, what, seed.Change, n.Name),
+			apply: func(t *Tree) bool {
+				return setOrderSource(line, field, "")(t) && removeNode(c.Name)(t) && seed.apply(t)
+			}}
+		b.out.Fixes = append(b.out.Fixes, f)
+	})
+}
+
+// closest is the key of the record nearest to r in the tree: the one whose
+// common ancestor with r is deepest (its parent, a sibling, …), the first
+// on a tie or without r.
+func (b *builder) closest(list []keyRef, r *Record) keyRef {
+	if r == nil {
+		return list[0]
+	}
+	up := map[*Record]int{}
+	d := 0
+	for x := r; x != nil; x = x.Parent {
+		up[x] = d
+		d++
+	}
+	best, bestDist := list[0], -1
+	for _, kr := range list {
+		dist := 1 << 30
+		steps := 0
+		for x := kr.rec; x != nil; x = x.Parent {
+			if u, ok := up[x]; ok {
+				dist = u + steps
+				break
+			}
+			steps++
+		}
+		if bestDist < 0 || dist < bestDist {
+			best, bestDist = kr, dist
+		}
+	}
+	return best
+}
+
+// sameKindOf reports whether keys are all the same field of records of one
+// resource.
+func (b *builder) sameKindOf(list []keyRef) bool {
+	first := b.resourceOf(list[0].rec.Node)
+	for _, kr := range list[1:] {
+		if b.resourceOf(kr.rec.Node) != first || !strings.EqualFold(kr.field, list[0].field) {
+			return false
+		}
+	}
+	return first != nil
 }
 
 // resolve fills a value of the tree for the scenario: a reference to a key
@@ -1633,15 +1755,23 @@ func (b *builder) body(step string, r *Record, w *Write, ref *openapi3.SchemaRef
 	var unique []string
 	b.sources(step, r, m, props)
 	b.applyRules(step, r, m, props, rules)
+	// a value fields gives as it is (size: 3) or the record's own
+	// (size: .size) is no reference: it is sent as it is
+	keep := maps.Clone(set)
+	for _, f := range sortedKeys(rules) {
+		if _, k, ok := bodyField(props, f); ok && b.plainRule(f, rules[f]) {
+			keep[k] = true
+		}
+	}
 	for _, k := range sortedKeys(m) {
-		m[k] = b.substitute(m[k], k, set, r, step)
+		m[k] = b.substitute(m[k], k, keep, r, step)
 		if p := props[k]; p != nil && p.Value != nil && isUniqueField(p.Value, k, r.Node) {
 			if _, isStr := m[k].(string); isStr && len(scenario.Names(m[k])) == 0 {
 				unique = append(unique, "/"+k)
 			}
 		}
 	}
-	b.validate(step, m, ref.Value)
+	b.validate(step, r, m, ref.Value, dto, rules)
 	return m, unique
 }
 
@@ -1664,6 +1794,13 @@ func (b *builder) applyRules(step string, r *Record, m map[string]any, props ope
 		if !ok {
 			continue
 		}
+		if rules[f] == nil {
+			// null: the body leaves the field out
+			if deleteField(m, k) {
+				b.note(step, k+" left out", fmt.Sprintf("fields of %s: %s: null", r.Node.Name, f))
+			}
+			continue
+		}
 		v := b.resolve(rules[f], r, r.Node, k[strings.LastIndex(k, ".")+1:], step, r)
 		if v == nil {
 			continue // resolve noted why
@@ -1671,6 +1808,43 @@ func (b *builder) applyRules(step string, r *Record, m map[string]any, props ope
 		setField(m, k, v)
 		b.note(step, fmt.Sprintf("%s = %s from fields", k, text(v)), fmt.Sprintf("fields of %s: %s: %s", r.Node.Name, f, text(rules[f])))
 	}
+}
+
+// plainRule reports whether a rule of fields gives a value that is no
+// reference to another record: a value as it is (3, "Comet"), or the
+// record's own value of the field (size: .size).
+func (b *builder) plainRule(field string, v any) bool {
+	if _, isParam := ParamRef(v); isParam {
+		return false
+	}
+	if s, ok := v.(string); ok && len(ComposedRefs(s, b.scope)) > 0 {
+		return false
+	}
+	ref, ok := ParseRef(v, b.scope)
+	if !ok {
+		return true
+	}
+	return ref.Node == "" && strings.EqualFold(ref.Field, field)
+}
+
+// deleteField removes a field of a body by its path (crew.role); false
+// when the body has none.
+func deleteField(body map[string]any, path string) bool {
+	segs := strings.Split(path, ".")
+	cur := body
+	for _, seg := range segs[:len(segs)-1] {
+		_, next, ok := foldEntry(cur, seg)
+		m, isMap := next.(map[string]any)
+		if !ok || !isMap {
+			return false
+		}
+		cur = m
+	}
+	k, _, ok := foldEntry(cur, segs[len(segs)-1])
+	if ok {
+		delete(cur, k)
+	}
+	return ok
 }
 
 // substitute replaces the values of a body that refer to records the
@@ -1904,8 +2078,10 @@ func lookupFold(m map[string]any, name string) (any, bool) {
 }
 
 // validate notes the fields of a body that do not fit their schema;
-// fields with placeholders are left out.
-func (b *builder) validate(step string, m map[string]any, s *openapi3.Schema) {
+// fields with placeholders are left out. The fix gives the node of the
+// record a value that fits in fields (or leaves out a field the request
+// does not require).
+func (b *builder) validate(step string, r *Record, m map[string]any, s *openapi3.Schema, dto string, rules map[string]any) {
 	props, _ := properties(s)
 	v := spec.NewValidator()
 	for _, k := range sortedKeys(m) {
@@ -1914,9 +2090,101 @@ func (b *builder) validate(step string, m map[string]any, s *openapi3.Schema) {
 			continue
 		}
 		if errs := v.Validate(p.Value, spec.Normalize(m[k]), spec.ModeRequest); len(errs) > 0 {
-			b.noteAt(LevelError, step, fmt.Sprintf("%s = %s does not fit the schema", k, text(m[k])), errs[0].String())
+			what := fmt.Sprintf("%s = %s does not fit the schema", k, text(m[k]))
+			reason := errs[0].Reason
+			if ptr := errs[0].Pointer; ptr != "" && ptr != "/" {
+				reason = ptr + ": " + reason
+			}
+			f := b.schemaFix(r, k, m[k], p.Value, slices.Contains(s.Required, k), dto, reason, rules)
+			b.noteAt(LevelError, step, what, errs[0].String()+strings.ReplaceAll(f.change(), "\n  ", "; "))
+			key := r.Node.Name + "|" + strings.ToLower(k)
+			if f.apply == nil {
+				b.noFix(f.why)
+				continue
+			}
+			if b.schemaFixed[key] {
+				continue
+			}
+			if b.schemaFixed == nil {
+				b.schemaFixed = map[string]bool{}
+			}
+			b.schemaFixed[key] = true
+			b.out.Fixes = append(b.out.Fixes, f)
 		}
 	}
+}
+
+// schemaFix is the change for a body field whose value of the stage does
+// not fit the schema of the request: a generated value that fits, in the
+// fields of the record's node (each body built from its records sends it);
+// else, when the request does not require it, null there (the body leaves
+// it out). A field fields already gives is changed there by hand.
+func (b *builder) schemaFix(r *Record, k string, old any, p *openapi3.Schema, required bool, dto, reason string, rules map[string]any) Fix {
+	n := b.entity(r).Node
+	if _, set, ok := foldEntry(rules, k); ok {
+		return Fix{Line: n.Line, Change: fmt.Sprintf("%s.fields.%s: %s does not fit; give a value that does", n.Name, set, text(old)), why: "fields gives the value"}
+	}
+	if b.t.Node(n.Name) != n {
+		return Fix{Change: fmt.Sprintf("give %s a value that fits in the fields of the node that writes %s", k, r.ID), why: "another node writes the record"}
+	}
+	why := fmt.Sprintf("the stage has %s, which does not fit (%s) (-fix)", short(text(old), 40), short(reason, 80))
+	g := value.Generate(p, value.Context{Seed: 42, Path: "tree.fix." + n.Name + "." + k, Name: k, Parent: dto})
+	if g.OK {
+		val := spec.Normalize(g.Value)
+		if fitsAsValue(val, b.scope) && len(spec.NewValidator().Validate(p, val, spec.ModeRequest)) == 0 {
+			change := fmt.Sprintf("%s: add fields: {%s: %s} (a value that fits the schema)", n.Name, k, text(val))
+			if isUniqueField(p, k, n) && len(b.d.Of(n)) > 1 {
+				change += "; it is unique: run the test with -unique"
+			}
+			return Fix{Line: n.Line, Change: change, apply: setNodeField(n.Name, k, val, why)}
+		}
+	}
+	if !required {
+		return Fix{Line: n.Line, Change: fmt.Sprintf("%s: add fields: {%s: null} (no value that fits could be made; the request does not require it: the body leaves it out)", n.Name, k),
+			apply: setNodeField(n.Name, k, nil, why)}
+	}
+	return Fix{Line: n.Line, Change: fmt.Sprintf("%s: add fields: {%s: <a value that fits>} (the request requires it, no value that fits could be made)", n.Name, k),
+		why: "required, and no value that fits could be made"}
+}
+
+// fitsAsValue reports whether a value can stand in fields as it is: a
+// text that reads as a reference (".x", "docks.id", "$x", "{{…}}") cannot.
+func fitsAsValue(v any, scope func(string) bool) bool {
+	var ok = true
+	walkValue(v, func(s string) {
+		if _, isRef := ParseRef(s, scope); isRef {
+			ok = false
+		}
+		if _, isParam := ParamRef(s); isParam || strings.Contains(s, "{{") {
+			ok = false
+		}
+	})
+	return ok
+}
+
+// walkValue calls fn with each text of a value.
+func walkValue(v any, fn func(string)) {
+	switch x := v.(type) {
+	case string:
+		fn(x)
+	case map[string]any:
+		for _, c := range x {
+			walkValue(c, fn)
+		}
+	case []any:
+		for _, c := range x {
+			walkValue(c, fn)
+		}
+	}
+}
+
+// short cuts a text to n runes.
+func short(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
 }
 
 func isUniqueField(p *openapi3.Schema, name string, n *Node) bool {
