@@ -94,6 +94,18 @@ and result (a step that did not pass marked ✗), `-update` the steps whose
 answers became examples, in the order they ran. Every line names the
 operationId next to the request (`–` when the spec has none).
 
+**Levels of the notes.** Each decision and gap of the test has a level,
+written in front of it (`error: …`, `warn: …`, `info: …`), the errors of
+a step first; the section of the test counts them (`12 notes (2 errors,
+3 warnings)`), and the table of the notes outside the steps has a column
+for it.
+
+| Level | Means | Examples |
+|---|---|---|
+| `error` | the test sends what an empty instance does not have, or cannot build a request | a key of the stage in a body, a path or query value without record or field, `params` without value, a required field without value, a body that does not fit its schema, no saved key |
+| `warn` | a gap the test lives with | a step not run, records of a list not checked, a value generated or out of several, a record not deleted, the search for a reference field stopped |
+| `info` | a decision | fields not sent, values from `fields`, a step placed after the one whose value it takes |
+
 **Requests without answer.** A request the API does not answer (the
 connection fails or closes, the request times out, the API crashes on it)
 stays in the review, it is not left out:
@@ -121,7 +133,9 @@ object and list has its own *copy* (on hover), and strings longer than
 240 characters are cut until *show all*. The tree is built when opened,
 long lists 100 at a time, so a fetch of thousands of requests stays
 fast. On load everything is closed; search (step, operationId, path,
-result) and "only failed" narrow the lines. Headers are not
+result), "only failed" and "only errors" (steps with a note of level
+error) narrow the lines; the notes of a step stand each with its level as
+a coloured mark. Headers are not
 listed, tokens and secret fields are masked. Each run writes the page
 anew and keeps the timelines of the steps it did not run (it reads them
 back from the page). The button "Mismatches (n)" on top gathers the
@@ -808,7 +822,24 @@ change, and `-fix` makes it: the source in order from the node below that
 reads the record by the field (then the test is built again from the same
 records), else a node added below that reads it and the source (then
 fetch again with `-node`). The build itself does not stop for it; without
-`-fix` the run says how many there are.
+`-fix` the run says how many there are. Two fields of one element that
+name the same records (`leadDetails.leadPilotId` and
+`leadDetails.leadPilot.leadPilotId`) get one node: the second fix names
+the node the first adds.
+
+**`-fix` with `-base-url`: until it fits.** With both, one run goes on
+after the build until nothing is left to fix: it makes the changes the
+build finds (the problems that stop it and the keys of the stage), checks
+`tree.yaml` again (and makes the fixes of the check), fetches again only
+the nodes the changes need (`-node` for each, the outer one when one hangs
+below another; the whole tree when a change names none) and builds again.
+Each round prints `-fix, round n:` with its changes. It stops when a build
+has nothing to fix, after 5 rounds, or when no change of a round fits the
+file (it says which); what is left stands in the notes and problems.
+Without `-base-url`, `-fix` makes the changes and builds again from the
+records fetched before when no node was added, else it asks to fetch again.
+A fix that does not fit the file any more after the fixes before it is
+left for the next round instead of stopping the others.
 
 Besides the problems, `-fix` gives each update (PUT, also by another key)
 that has neither `change` nor `body` the change of its name:

@@ -129,6 +129,9 @@ const DefaultBudget = 2000
 
 // Tree is the tree file.
 type Tree struct {
+	// moved maps the lines of order fixes name to their lines now, after
+	// ApplyFixes wrote and read the file again (orderItem).
+	moved map[int]int
 	// Params are values no record of the tree gives (a parameter no node
 	// answers with), read as "$name"; nil until someone sets them.
 	Params map[string]any

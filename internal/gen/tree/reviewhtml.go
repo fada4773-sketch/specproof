@@ -51,7 +51,7 @@ func (d *ReviewDoc) RenderHTML() string {
 		fmt.Fprintf(&b, "<p class=\"muted\">Spec %s · %s · the steps, the next command and the plan: tree-review_gen.md</p>", esc(d.Spec), esc(d.File))
 	}
 	b.WriteString(`<div class="bar"><input id="q" type="search" placeholder="Search step, operationId or path" aria-label="Search step, operationId or path">
-<label><input id="bad" type="checkbox"> only failed</label><button id="all" type="button">open all steps</button><button id="none" type="button">close all</button>
+<label><input id="bad" type="checkbox"> only failed</label><label><input id="errs" type="checkbox"> only errors</label><button id="all" type="button">open all steps</button><button id="none" type="button">close all</button>
 <button id="mm" type="button" aria-expanded="false" aria-controls="mismatches">Mismatches</button></div></header><main>
 <section id="mismatches" hidden></section>`)
 	for i, s := range reviewSteps {
@@ -152,7 +152,9 @@ pre.rawtext{white-space:pre;tab-size:2}
 .json details[open]>summary .pv{display:none}.json .pv{color:var(--muted)}
 .json .s.long button.tb{margin:0 0 0 6px}
 .pane>*{min-width:0}td.op{font-family:ui-monospace,monospace;font-size:12px;word-break:break-all}.opid{color:var(--muted);font-family:ui-monospace,monospace}
-tr.row.lost td.st,tr.row.lost td.res{color:var(--bad);font-weight:600}tr.row.unsent td{color:var(--muted)}tr.row.unsent td.st{color:var(--warn)}
+tr.row.lost td.st,tr.row.lost td.res{color:var(--bad);font-weight:600}
+.lv{display:inline-block;font-size:11px;font-weight:600;padding:0 6px;border-radius:8px;border:1px solid;margin-right:4px}
+.lv.error{color:var(--bad)}.lv.warn{color:var(--warn)}.lv.info{color:var(--muted)}div.nt{margin:1px 0}div.nt.error{color:var(--bad)}tr.row.unsent td{color:var(--muted)}tr.row.unsent td.st{color:var(--warn)}
 `
 
 const reviewJS = `
@@ -239,6 +241,11 @@ function jsonBox(title,v,mode){
     [ex,co].forEach(b=>{if(b)b.hidden=view!=='tree'})}
   render();return det}
 function pane(title,v){return jsonBox(title,v)}
+// the result of a line; the notes of a step each with its level
+function resCell(tr,e){if(!e.notes||!e.notes.length)return cell(tr,'res',e.result||'');
+  const td=cell(tr,'res','');const rest=(e.result||'').split('; ').filter(x=>!/^(error|warn|info): /.test(x)).join('; ');
+  if(rest)td.appendChild(el('div','nt',rest));
+  e.notes.forEach(n=>{const d=el('div','nt '+n.level);d.appendChild(el('span','lv '+n.level,n.level));d.appendChild(document.createTextNode(n.text));td.appendChild(d)});return td}
 function cell(tr,cls,t){const td=document.createElement('td');td.className=cls;td.textContent=t;tr.appendChild(td);return td}
 function status(e){
   if(e.noAnswer)return (e.status?e.status+', answer broke off':'no answer')+' ✗';
@@ -250,10 +257,10 @@ document.querySelectorAll('.tl').forEach(div=>{
   t.innerHTML='<thead><tr><th>#</th><th>Step</th><th class="op">Operation</th><th>Request</th><th>Status</th><th class="ms">ms</th><th class="res">Result</th></tr></thead>';
   const tb=document.createElement('tbody');t.appendChild(tb);
   list.forEach((e,i)=>{
-    const tr=document.createElement('tr');tr.className='row'+(e.failed?' bad':'')+(e.noAnswer?' lost':'')+(e.notSent?' unsent':'');
+    const tr=document.createElement('tr');tr.className='row'+(e.failed?' bad':'')+(e.noAnswer?' lost':'')+(e.notSent?' unsent':'')+((e.notes||[]).some(n=>n.level==='error')?' err':'');
     tr.dataset.text=((e.step||'')+' '+(e.op||'')+' '+(e.method||'')+' '+(e.target||'')+' '+(e.result||'')+' '+status(e)).toLowerCase();
     cell(tr,'n',i+1);cell(tr,'',e.step||'');cell(tr,'op',e.op||'–');cell(tr,'req',((e.method||'')+' '+(e.target||'')).trim());
-    cell(tr,'st',status(e));cell(tr,'ms',e.ms||'');cell(tr,'res',e.result||'');
+    cell(tr,'st',status(e));cell(tr,'ms',e.ms||'');resCell(tr,e);
     let open=null;
     tr.onclick=()=>{
       if(open){open.remove();open=null;return}
@@ -339,9 +346,9 @@ document.querySelectorAll('.trace').forEach(div=>{
   if(shorts.length)div.appendChild(fold('Took nothing or fewer than pick asks for ('+shorts.length+')','shorts',d=>shorts.forEach(v=>d.appendChild(visit(v))),true));
   const all=fold('The whole fetch ('+(data.trace||[]).length+' at the top)','whole',d=>(data.trace||[]).forEach(v=>d.appendChild(visit(v))),!shorts.length);
   div.appendChild(all)});
-const q=document.getElementById('q'),bad=document.getElementById('bad');
+const q=document.getElementById('q'),bad=document.getElementById('bad'),errs=document.getElementById('errs');
 function filter(){const s=q.value.trim().toLowerCase();
-  document.querySelectorAll('tr.row').forEach(tr=>{const show=(!bad.checked||tr.classList.contains('bad'))&&(!s||tr.dataset.text.includes(s));
+  document.querySelectorAll('tr.row').forEach(tr=>{const show=(!bad.checked||tr.classList.contains('bad'))&&(!errs.checked||tr.classList.contains('err'))&&(!s||tr.dataset.text.includes(s));
     tr.hidden=!show;const n=tr.nextElementSibling;if(n&&n.classList.contains('body'))n.hidden=!show});
   document.querySelectorAll('details.visit,details.mm').forEach(d=>{d.hidden=!!s&&!d.dataset.text.includes(s)})}
 // the steps whose answer does not hold what it should, from every
@@ -389,7 +396,7 @@ mm.onclick=()=>{
       mmBox.appendChild(fold(k[1]+' ('+list.length+')','kind',d=>list.forEach(f=>d.appendChild(mismatch(f))),true))});
     filter()}
   mmBox.hidden=!mmBox.hidden;mm.setAttribute('aria-expanded',String(!mmBox.hidden))};
-q.oninput=filter;bad.onchange=filter;
+q.oninput=filter;bad.onchange=filter;errs.onchange=filter;
 document.getElementById('all').onclick=()=>document.querySelectorAll('details.step').forEach(d=>d.open=true);
 document.getElementById('none').onclick=()=>{document.querySelectorAll('details.step').forEach(d=>d.open=false);document.querySelectorAll('tr.body').forEach(r=>{r.previousElementSibling.click()})};
 })();

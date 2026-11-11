@@ -397,7 +397,7 @@ func newSourceFix(s *spec.Spec, t *Tree, n *Node, e OrderEntry, need refNeed) Fi
 		c := &Node{Name: name, Call: callOf(read), Comment: read.ID, Path: map[string]any{pathParams(read)[0]: "." + need.field}}
 		short, _ := shortText(c.Call, c.Path)
 		return Fix{
-			Line: e.Line,
+			Line: e.Line, adds: name, under: n.Name, fetch: n.Name,
 			Change: fmt.Sprintf("add below %s the node %s: %s, and - %s: {…, %s: %s}; then fetch again with -node %s",
 				n.Name, name, short, e.Node, need.field, source, n.Name),
 			apply: func(t *Tree) bool {
@@ -432,7 +432,7 @@ func newSourceFix(s *spec.Spec, t *Tree, n *Node, e OrderEntry, need refNeed) Fi
 		c.Pick = Pick{All: true}
 	}
 	return Fix{
-		Line: e.Line,
+		Line: e.Line, adds: name, under: n.Name, fetch: n.Name,
 		Change: fmt.Sprintf("add below %s the node %s: %s where {%s: %s.%s}, and - %s: {…, %s: %s}; then fetch again with -node %s",
 			n.Name, name, callOf(list), need.key, n.Name, need.field, e.Node, need.field, source, n.Name),
 		apply: func(t *Tree) bool {
@@ -602,8 +602,12 @@ func addOrderSource(line int, field, value string) func(*Tree) bool {
 // line, adding it when the line has none for the field.
 func putOrderSource(line int, field, value string) func(*Tree) bool {
 	return func(t *Tree) bool {
+		at := line
+		if m, ok := t.moved[line]; ok {
+			at = m
+		}
 		for _, e := range t.Order {
-			if _, _, has := foldEntry(e.Values, field); e.Line == line && has {
+			if _, _, has := foldEntry(e.Values, field); e.Line == at && has {
 				return setOrderSource(line, field, value)(t)
 			}
 		}
@@ -653,12 +657,12 @@ func (b *builder) keyGap(step string, r *Record, what, field string, v any, kr k
 	}
 	to := b.resourceOf(kr.rec.Node)
 	if entry == nil || to == nil || field == "" {
-		b.note(step, fmt.Sprintf("%s = %s is a key of the stage", what, text(v)), msg+"; give the source in order ("+field+": <node>."+kr.field+")")
+		b.noteAt(LevelError, step, fmt.Sprintf("%s = %s is a key of the stage", what, text(v)), msg+"; give the source in order ("+field+": <node>."+kr.field+")")
 		return
 	}
 	f := b.keySource(e.Node, *entry, field, to, kr.field)
 	// one line: the note stands in a table and in the timeline
-	b.note(step, fmt.Sprintf("%s = %s is a key of the stage", what, text(v)), msg+strings.ReplaceAll(f.change(), "\n  ", "; "))
+	b.noteAt(LevelError, step, fmt.Sprintf("%s = %s is a key of the stage", what, text(v)), msg+strings.ReplaceAll(f.change(), "\n  ", "; "))
 	k := fmt.Sprintf("%d|%s", entry.Line, strings.ToLower(field))
 	if f.apply == nil || b.keyGaps[k] {
 		return
@@ -687,7 +691,26 @@ func (b *builder) keySource(n *Node, e OrderEntry, field string, to *model.Resou
 		need.key = key
 	}
 	if src := refSource(b.s, b.m, b.t, n, need, field); src != "" {
-		return Fix{Line: e.Line, Change: fmt.Sprintf("- %s → - %s: {…, %s: %s}", e.Node, e.Node, field, src), apply: addOrderSource(e.Line, field, src)}
+		return Fix{Line: e.Line, Change: fmt.Sprintf("- %s → - %s: {…, %s: %s}", e.Node, e.Node, field, src), apply: putOrderSource(e.Line, field, src)}
 	}
-	return newSourceFix(b.s, b.t, n, e, need)
+	// a node an earlier fix of this build adds for the same records (the
+	// other field of the same list element): its source, no second node
+	group := n.Name + "|" + to.Name + "|" + field
+	if list, _, inList := strings.Cut(field, "."); many && inList {
+		group = n.Name + "|" + to.Name + "|" + list + "."
+	}
+	if added := b.added[group]; added != "" {
+		src := added + "." + need.key
+		return Fix{Line: e.Line, fetch: n.Name,
+			Change: fmt.Sprintf("- %s → - %s: {…, %s: %s} (%s: the node the fix before adds); then fetch again with -node %s", e.Node, e.Node, field, src, added, n.Name),
+			apply:  putOrderSource(e.Line, field, src)}
+	}
+	f := newSourceFix(b.s, b.t, n, e, need)
+	if f.adds != "" {
+		if b.added == nil {
+			b.added = map[string]string{}
+		}
+		b.added[group] = f.adds
+	}
+	return f
 }

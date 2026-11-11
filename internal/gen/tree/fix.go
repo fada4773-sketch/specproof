@@ -1,6 +1,7 @@
 package tree
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"slices"
@@ -18,6 +19,9 @@ type Fix struct {
 	Line   int
 	Change string
 	apply  func(t *Tree) bool
+	// adds is the node the fix adds below the node under; fetch the node
+	// the records must be fetched again from ("" when none).
+	adds, under, fetch string
 }
 
 // change is the line a problem ends with: what to change where; a fix
@@ -35,7 +39,19 @@ func (f Fix) change() string {
 
 // NeedsFetch reports whether the records must be fetched again after the
 // fix: it adds a node or a condition.
-func (f Fix) NeedsFetch() bool { return strings.Contains(f.Change, "fetch again") }
+func (f Fix) NeedsFetch() bool { return f.fetch != "" || strings.Contains(f.Change, "fetch again") }
+
+// FetchNode is the node whose records must be fetched again after the fix
+// (-node), "" when the fix names none.
+func (f Fix) FetchNode() string {
+	if f.fetch != "" {
+		return f.fetch
+	}
+	if _, after, ok := strings.Cut(f.Change, "fetch again with -node "); ok {
+		return strings.Fields(after)[0]
+	}
+	return ""
+}
 
 // Fixes are the changes -fix makes for the problems Check finds.
 func Fixes(s *spec.Spec, t *Tree) []Fix {
@@ -93,16 +109,32 @@ func Repair(s *spec.Spec, t *Tree) (*Tree, []string, error) {
 
 // ApplyFixes makes the fixes a build found (they change tree.yaml; the
 // records are fetched again after them) and returns the tree read again
-// and the changes made.
+// and the changes made. A fix that does not fit the file as the fixes
+// before left it is left out; the error names those, the others are made.
 func ApplyFixes(t *Tree, fixes []Fix) (*Tree, []string, error) {
-	var done []string
+	var done, failed []string
+	// the fixes name the lines of order as the file had them: written and
+	// read again, a line may move (the head of the file, a blank line);
+	// each line keeps its place in order
+	origin := orderLines(t)
 	for _, f := range fixes {
 		next, made, err := applyFix(t, f)
 		if err != nil {
-			return t, done, err
+			failed = append(failed, err.Error())
+			continue
 		}
 		done = append(done, made)
+		now := orderLines(next)
+		next.moved = map[int]int{}
+		for i, line := range origin {
+			if i < len(now) {
+				next.moved[line] = now[i]
+			}
+		}
 		t = next
+	}
+	if len(failed) > 0 {
+		return t, done, errors.New(strings.Join(failed, "\n"))
 	}
 	return t, done, nil
 }
@@ -152,6 +184,9 @@ func sortProblems(list []string) {
 func orderItem(t *Tree, line int) (*yaml.Node, int) {
 	if t.doc == nil {
 		return nil, -1
+	}
+	if m, ok := t.moved[line]; ok {
+		line = m
 	}
 	section := valueOf(t.doc.Root, "order")
 	if section == nil || section.Kind != yaml.SequenceNode {
@@ -307,4 +342,20 @@ func addWhere(name, field, why string) func(*Tree) bool {
 		where.Content = append(where.Content, scalar(field), cond)
 		return true
 	}
+}
+
+// orderLines are the lines of the entries of order, in order.
+func orderLines(t *Tree) []int {
+	if t.doc == nil {
+		return nil
+	}
+	section := valueOf(t.doc.Root, "order")
+	if section == nil || section.Kind != yaml.SequenceNode {
+		return nil
+	}
+	var out []int
+	for _, item := range section.Content {
+		out = append(out, item.Line)
+	}
+	return out
 }

@@ -3,6 +3,7 @@ package tree
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/fada4773-sketch/specproof/internal/redact"
@@ -47,6 +48,25 @@ type Entry struct {
 	Problems []string    `json:"problems,omitempty"`
 	Diffs    []EntryDiff `json:"diffs,omitempty"`
 	Equals   string      `json:"equals,omitempty"`
+	// Notes are the decisions and gaps of a step of the test with their
+	// level (error, warn, info); Result holds them too, as text.
+	Notes []EntryNote `json:"notes,omitempty"`
+}
+
+// EntryNote is a note of a step with its level.
+type EntryNote struct {
+	Level string `json:"level"`
+	Text  string `json:"text"`
+}
+
+// noteText is a note as one line, its level in front: "error: x = 3 is a
+// key of the stage: …".
+func noteText(n Note) string {
+	level := n.Level
+	if level == "" {
+		level = LevelInfo
+	}
+	return level + ": " + n.What + ": " + n.Why
 }
 
 // EntryDiff is a value of an answer that differs from the expected one.
@@ -103,9 +123,9 @@ func TestTimeline(s *spec.Spec, built *Built) []Entry {
 	if built == nil || built.Scenario == nil {
 		return []Entry{}
 	}
-	notes := map[string][]string{}
+	notes := map[string][]Note{}
 	for _, n := range built.Notes {
-		notes[n.Step] = append(notes[n.Step], n.What+": "+n.Why)
+		notes[n.Step] = append(notes[n.Step], n)
 	}
 	out := make([]Entry, 0, len(built.Scenario.Steps))
 	for _, st := range built.Scenario.Steps {
@@ -120,8 +140,12 @@ func TestTimeline(s *spec.Spec, built *Built) []Entry {
 		if st.Token != "" {
 			what = append(what, "token "+st.Token)
 		}
-		what = append(what, notes[st.ID]...)
-		e := Entry{Step: st.ID, Method: method, Target: target, Expect: st.Expect, Result: strings.Join(what, "; "), HasRequest: st.HasBody}
+		var marked []EntryNote
+		for _, n := range sortedNotes(notes[st.ID]) {
+			what = append(what, noteText(n))
+			marked = append(marked, EntryNote{Level: n.Level, Text: n.What + ": " + n.Why})
+		}
+		e := Entry{Step: st.ID, Method: method, Target: target, Expect: st.Expect, Result: strings.Join(what, "; "), HasRequest: st.HasBody, Notes: marked}
 		if s != nil {
 			if op := lookupOp(s, st.Call); op != nil {
 				e.OperationID = op.ID
@@ -240,4 +264,21 @@ func (d *ReviewDoc) encodeData() string {
 		return `{"timelines":{}}`
 	}
 	return string(b)
+}
+
+// sortedNotes are notes with the errors first, then the warnings, then the
+// others, each in the order they came.
+func sortedNotes(list []Note) []Note {
+	rank := func(n Note) int {
+		switch n.Level {
+		case LevelError:
+			return 0
+		case LevelWarn:
+			return 1
+		}
+		return 2
+	}
+	out := slices.Clone(list)
+	slices.SortStableFunc(out, func(a, b Note) int { return rank(a) - rank(b) })
+	return out
 }

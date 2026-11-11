@@ -373,7 +373,7 @@ func treeFlags(name string, out io.Writer) (*flag.FlagSet, *treeOptions) {
 		fs.StringVar(&o.excludeOps, "exclude-ops", "", `never propose these operations (operationId or "METHOD /path"); added to scope.exclude.ops`)
 		fs.BoolVar(&o.deps, "with-deps", false, "also propose the reads of other tags that give values the scope needs (scope.deps)")
 		fs.StringVar(&o.only, "node", "", "with -base-url: fetch only this node and what hangs below it again; the other records stay")
-		fs.BoolVar(&o.fix, "fix", false, `make the changes the problems name with "(-fix does it)" in tree.yaml, then go on; also gives an update without change and body change: {name: '{{.name}}-neu'} when it may rename the record`)
+		fs.BoolVar(&o.fix, "fix", false, `make the changes the problems and notes name with "(-fix does it)" in tree.yaml, then go on; with -base-url fetch again what they need and build again until nothing is left (at most 5 rounds); also gives an update without change and body change: {name: '{{.name}}-neu'} when it may rename the record`)
 	}
 	return fs, o
 }
@@ -408,29 +408,130 @@ func (o *treeOptions) writeFixes(t *tree.Tree, done []string, out io.Writer) err
 	return nil
 }
 
-// fixKeys makes the fixes of a build for body fields that send a key of
-// the stage: a source in order is built again from the same records; a
-// node added below needs its records, so the fetch must run again.
-func (o *treeOptions) fixKeys(s *spec.Spec, t *tree.Tree, built *tree.Built, dataPath string, out io.Writer) (*tree.Built, error) {
-	fixed, done, err := tree.ApplyFixes(t, built.Fixes)
-	if err != nil {
-		return built, err
+// maxFixRounds bounds the rounds of -fix after a build: each round makes
+// the changes the build finds and fetches again what they need.
+const maxFixRounds = 5
+
+// fixRound makes the changes a build found, checks tree.yaml again (and
+// makes the fixes of the check), and returns the tree read again and the
+// nodes to fetch again: one per change that adds below a node, the outer
+// one when one hangs below another.
+func (o *treeOptions) fixRound(s *spec.Spec, t *tree.Tree, fixes []tree.Fix, round int, out io.Writer) (*tree.Tree, []string, error) {
+	fixed, done, ferr := tree.ApplyFixes(t, fixes)
+	if len(done) == 0 {
+		if ferr == nil {
+			ferr = errors.New("no change could be made")
+		}
+		return t, nil, fmt.Errorf("-fix, round %d: %w", round, ferr)
 	}
+	fmt.Fprintf(out, "-fix, round %d:\n", round)
 	if err := o.writeFixes(fixed, done, out); err != nil {
-		return built, err
+		return t, nil, err
 	}
-	if slices.ContainsFunc(built.Fixes, tree.Fix.NeedsFetch) {
-		return built, errors.New("tree.yaml changed: nodes were added below; fetch again with -base-url (the change lines say which -node), nothing was built")
+	if ferr != nil {
+		fmt.Fprintf(out, "  left for the next round: %s\n", strings.ReplaceAll(ferr.Error(), "\n", "\n  "))
 	}
-	if t, err = tree.Load(o.file); err != nil {
-		return built, err
-	}
-	data, _, err := tree.LoadData(dataPath, t)
+	next, err := tree.Load(o.file)
 	if err != nil {
-		return built, err
+		return t, nil, err
 	}
-	fmt.Fprintf(out, "  built again from %s with the sources of order\n", dataPath)
-	return tree.Build(s, t, data)
+	if next, err = o.repair(s, next, out); err != nil {
+		return t, nil, err
+	}
+	if problems := tree.Check(s, next); len(problems) > 0 {
+		return next, nil, fmt.Errorf("%s:\n  %s", o.file, strings.Join(problems, "\n  "))
+	}
+	var again []string
+	for _, f := range fixes {
+		if !f.NeedsFetch() {
+			continue
+		}
+		n := f.FetchNode()
+		if n == "" || next.Node(n) == nil {
+			// no node named: the whole tree
+			return next, []string{""}, nil
+		}
+		if !slices.Contains(again, n) {
+			again = append(again, n)
+		}
+	}
+	// a node below another one fetched again comes with it
+	return next, slices.DeleteFunc(again, func(n string) bool {
+		return slices.ContainsFunc(again, func(up string) bool { return up != n && next.Node(n).Ancestor(up) != nil })
+	}), nil
+}
+
+// buildProblems writes the problems of a build into the review and returns
+// them as the error of the run.
+func (o *treeOptions) buildProblems(fe *tree.FindingError, review *tree.ReviewDoc, out io.Writer) (int, error) {
+	body := fmt.Sprintf("The records do not fit tree.yaml; nothing was written.\n\n### Problems (%d)\n\n", len(fe.Problems))
+	for _, p := range fe.Problems {
+		body += "- " + p + "\n"
+	}
+	review.Set(tree.ReviewScenario, fmt.Sprintf("%d problems: fix tree.yaml", len(fe.Problems)), body, true)
+	review.SetTimeline(tree.ReviewScenario, nil)
+	if werr := o.writeReview(review, out); werr != nil {
+		return 1, werr
+	}
+	return 1, fmt.Errorf("%w%s", fe, o.fixHint(len(fe.Fixes)))
+}
+
+// fetchRecords fetches the records of the tree (only that node again when
+// only is set), writes tree-data_gen.yaml and the fetch into the review.
+func (o *treeOptions) fetchRecords(ctx context.Context, s *spec.Spec, t *tree.Tree, review *tree.ReviewDoc, only string, out io.Writer) (*tree.Data, int, error) {
+	dataPath := o.next(treeDataFile)
+	tok, err := resolveToken(o.tok.token, o.tok.tokenEnv, "", "token")
+	if err != nil {
+		return nil, 2, err
+	}
+	fmt.Fprintf(out, "fetching from %s (GET only)\n", o.baseURL)
+	opt := tree.Options{BaseURL: o.baseURL, Token: tok, Headers: o.tok.headers, Timeout: o.timeout, Only: only}
+	if only != "" {
+		if _, err := os.Stat(dataPath); err == nil {
+			if opt.Before, _, err = tree.LoadData(dataPath, t); err != nil {
+				return nil, 1, err
+			}
+		}
+	}
+	data, err := tree.Fetch(ctx, s, t, opt)
+	red := redact.New(nil)
+	red.AddSecret(tok)
+	if err != nil {
+		// a request without answer (the connection failed, a timeout,
+		// the API crashed) stops the fetch: the review keeps every
+		// request up to it, tree-data_gen.yaml stays as it was
+		if data != nil {
+			summary, body := tree.FetchFailedSection(data, red.String(err.Error()))
+			review.Set(tree.ReviewFetch, summary, body, true)
+			review.SetTimeline(tree.ReviewFetch, tree.FetchTimeline(data.Log, red))
+			review.SetTrace(tree.FetchTrace(data, red))
+			review.Outdate(tree.ReviewFetch, "the fetch stopped; fetch again")
+			if werr := o.writeReview(review, out); werr != nil {
+				return nil, 1, werr
+			}
+		}
+		return nil, 1, err
+	}
+	head := " Generated by \"apitest-gen tree\" from " + o.baseURL + ": the records the tree picked.\n Data of that instance; commit it only if it may be in git."
+	b, err := data.Encode(head)
+	if err != nil {
+		return nil, 1, err
+	}
+	if err := scenario.WriteFile(dataPath, b); err != nil {
+		return nil, 1, err
+	}
+	fmt.Fprintf(out, "  %s: %d records, %d requests\n", dataPath, len(data.Records), data.Requests)
+	for _, n := range data.Notes {
+		fmt.Fprintf(out, "  note: %s\n", n)
+	}
+	summary, body := tree.FetchSection(data, nil)
+	if only != "" {
+		body = "Only " + only + " and what hangs below it was fetched again; the other records are from before.\n\n" + body
+	}
+	review.Set(tree.ReviewFetch, summary, body, false)
+	review.SetTimeline(tree.ReviewFetch, tree.FetchTimeline(data.Log, red))
+	review.SetTrace(tree.FetchTrace(data, red))
+	return data, 0, nil
 }
 
 // fixHint is the line after problems that -fix can change.
@@ -540,57 +641,10 @@ func treeMain(o *treeOptions, out io.Writer) (int, error) {
 	dataPath := o.next(treeDataFile)
 	switch {
 	case o.baseURL != "":
-		tok, err := resolveToken(o.tok.token, o.tok.tokenEnv, "", "token")
-		if err != nil {
-			return 2, err
+		var code int
+		if data, code, err = o.fetchRecords(ctx, s, t, review, o.only, out); err != nil {
+			return code, err
 		}
-		fmt.Fprintf(out, "fetching from %s (GET only)\n", o.baseURL)
-		opt := tree.Options{BaseURL: o.baseURL, Token: tok, Headers: o.tok.headers, Timeout: o.timeout, Only: o.only}
-		if o.only != "" {
-			if _, err := os.Stat(dataPath); err == nil {
-				if opt.Before, _, err = tree.LoadData(dataPath, t); err != nil {
-					return 1, err
-				}
-			}
-		}
-		data, err = tree.Fetch(ctx, s, t, opt)
-		red := redact.New(nil)
-		red.AddSecret(tok)
-		if err != nil {
-			// a request without answer (the connection failed, a timeout,
-			// the API crashed) stops the fetch: the review keeps every
-			// request up to it, tree-data_gen.yaml stays as it was
-			if data != nil {
-				summary, body := tree.FetchFailedSection(data, red.String(err.Error()))
-				review.Set(tree.ReviewFetch, summary, body, true)
-				review.SetTimeline(tree.ReviewFetch, tree.FetchTimeline(data.Log, red))
-				review.SetTrace(tree.FetchTrace(data, red))
-				review.Outdate(tree.ReviewFetch, "the fetch stopped; fetch again")
-				if werr := o.writeReview(review, out); werr != nil {
-					return 1, werr
-				}
-			}
-			return 1, err
-		}
-		head := " Generated by \"apitest-gen tree\" from " + o.baseURL + ": the records the tree picked.\n Data of that instance; commit it only if it may be in git."
-		b, err := data.Encode(head)
-		if err != nil {
-			return 1, err
-		}
-		if err := scenario.WriteFile(dataPath, b); err != nil {
-			return 1, err
-		}
-		fmt.Fprintf(out, "  %s: %d records, %d requests\n", dataPath, len(data.Records), data.Requests)
-		for _, n := range data.Notes {
-			fmt.Fprintf(out, "  note: %s\n", n)
-		}
-		summary, body := tree.FetchSection(data, nil)
-		if o.only != "" {
-			body = "Only " + o.only + " and what hangs below it was fetched again; the other records are from before.\n\n" + body
-		}
-		review.Set(tree.ReviewFetch, summary, body, false)
-		review.SetTimeline(tree.ReviewFetch, tree.FetchTimeline(data.Log, red))
-		review.SetTrace(tree.FetchTrace(data, red))
 	default:
 		if _, err := os.Stat(dataPath); err != nil {
 			fmt.Fprintf(out, "no records yet: fetch them with -base-url <instance>\n")
@@ -609,40 +663,59 @@ func treeMain(o *treeOptions, out io.Writer) (int, error) {
 			review.Set(tree.ReviewFetch, summary, "From "+treeDataFile+", fetched before.\n\n"+body, false)
 		}
 	}
-	review.SetPlan(tree.PlanSection(t, data))
-	built, err := tree.Build(s, t, data)
-	if err != nil {
+	// build; with -fix make the changes the build finds and build again,
+	// fetching again the nodes a change needs, until none is left
+	var built *tree.Built
+	for round := 1; ; round++ {
+		review.SetPlan(tree.PlanSection(t, data))
 		var fe *tree.FindingError
-		if errors.As(err, &fe) {
-			// the records do not fit the plan: the review says so
-			body := fmt.Sprintf("The records do not fit tree.yaml; nothing was written.\n\n### Problems (%d)\n\n", len(fe.Problems))
-			for _, p := range fe.Problems {
-				body += "- " + p + "\n"
-			}
-			review.Set(tree.ReviewScenario, fmt.Sprintf("%d problems: fix tree.yaml", len(fe.Problems)), body, true)
-			review.SetTimeline(tree.ReviewScenario, nil)
-			if werr := o.writeReview(review, out); werr != nil {
-				return 1, werr
-			}
-			if o.fix && len(fe.Fixes) > 0 {
-				// the changes need the records fetched again: the test is
-				// built after that fetch
-				if _, done, ferr := tree.ApplyFixes(t, fe.Fixes); ferr != nil {
-					return 1, ferr
-				} else if werr := o.writeFixes(t, done, out); werr != nil {
-					return 1, werr
-				}
-				return 1, fmt.Errorf("%w\n  tree.yaml changed: fetch again with -base-url (the change lines say which -node)", err)
-			}
-			return 1, fmt.Errorf("%w%s", err, o.fixHint(len(fe.Fixes)))
+		built, err = tree.Build(s, t, data)
+		if err != nil && !errors.As(err, &fe) {
+			return 1, err
 		}
-		return 1, err
-	}
-	if len(built.Fixes) > 0 {
-		if !o.fix {
-			fmt.Fprintf(out, "  %d body fields send a key of the stage of a record the test creates (notes \"is a key of the stage\"): add -fix to the same command\n", len(built.Fixes))
-		} else {
-			if built, err = o.fixKeys(s, t, built, dataPath, out); err != nil {
+		var fixes []tree.Fix
+		switch {
+		case fe != nil:
+			fixes = fe.Fixes
+		default:
+			fixes = built.Fixes
+		}
+		if !o.fix || len(fixes) == 0 || round > maxFixRounds {
+			if o.fix && len(fixes) > 0 {
+				fmt.Fprintf(out, "  -fix stopped after %d rounds; %d changes are left, the notes and problems say which\n", maxFixRounds, len(fixes))
+			}
+			if fe != nil {
+				return o.buildProblems(fe, review, out)
+			}
+			if !o.fix && len(fixes) > 0 {
+				fmt.Fprintf(out, "  %d body fields send a key of the stage of a record the test creates (notes \"is a key of the stage\"): add -fix to the same command\n", len(fixes))
+			}
+			break
+		}
+		next, again, err := o.fixRound(s, t, fixes, round, out)
+		if err != nil {
+			if fe != nil {
+				_, _ = o.buildProblems(fe, review, out)
+			}
+			return 1, err
+		}
+		t = next
+		switch {
+		case len(again) > 0 && o.baseURL == "":
+			if fe != nil {
+				_, _ = o.buildProblems(fe, review, out)
+			}
+			return 1, fmt.Errorf("tree.yaml changed: fetch again with -base-url -node %s (or the whole tree), nothing was built", strings.Join(again, ", "))
+		case len(again) > 0:
+			for _, n := range again {
+				var code int
+				if data, code, err = o.fetchRecords(ctx, s, t, review, n, out); err != nil {
+					return code, err
+				}
+			}
+		default:
+			// the same records, read for the changed tree
+			if data, _, err = tree.LoadData(dataPath, t); err != nil {
 				return 1, err
 			}
 		}

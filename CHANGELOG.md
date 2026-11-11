@@ -382,6 +382,14 @@ contain breaking changes, which are listed here.
     node that reads it.
   - `apitest-gen tree`: the note of the fields a body leaves out names each
     field once, under its reason (`3 fields of the record not sent`).
+  - `apitest-gen tree -base-url … -fix` goes on until it fits: it makes
+    the changes the build finds, fetches again only the nodes they need
+    (`-node`), and builds again, up to 5 rounds (`-fix, round n:`).
+    Before, it stopped after the first changes and asked to fetch again.
+  - `apitest-gen tree`: every note of the test has a level, `error`,
+    `warn` or `info`: in the timelines (`error: …`, errors first), in the
+    table of the notes outside the steps, counted in the summary of the
+    section; the review page marks them and narrows to "only errors".
 
 ### Fixed
 
@@ -395,6 +403,15 @@ contain breaking changes, which are listed here.
   read became a list check that failed. An answer with an `id`, or of a
   path that ends in a key, is one record now; a page by its name
   (`items`, `…Page`) stays one.
+- `apitest-gen tree -fix`: two fixes of one build for fields of the same
+  list element both added the node that reads their records; the second
+  stopped with "could not change tree.yaml there". The second now names
+  the node the first adds. The fixes of one build find their line of
+  `order` also when writing the file moved it, and one that does not fit
+  no longer stops the others.
+- `apitest-gen tree`: the source of a body field is also found below
+  another node that reads the same record (a list of the records by
+  another filter).
 - `apitest-gen tree -fix`: the node it adds to read a record by a field
   read it by any key of the resource (`GET /pilots/{id}` with a code); it
   now takes a read by the key the field holds, else a list with `where`.

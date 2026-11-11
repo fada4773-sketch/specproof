@@ -26,6 +26,29 @@ type Note struct {
 	Step string
 	What string
 	Why  string
+	// Level says how much it matters: LevelError (the test sends what an
+	// empty instance does not have, or a request it cannot build), LevelWarn
+	// (a gap the test lives with: a step not run, a record not checked, a
+	// value generated or chosen out of several), LevelInfo (a decision).
+	Level string
+}
+
+// The levels of a note.
+const (
+	LevelError = "error"
+	LevelWarn  = "warn"
+	LevelInfo  = "info"
+)
+
+// Errors are the notes of level error.
+func (b *Built) Errors() []Note {
+	var out []Note
+	for _, n := range b.Notes {
+		if n.Level == LevelError {
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 // Built is the scenario built from the records of a fetch.
@@ -98,6 +121,9 @@ type builder struct {
 	// keyGaps are the body fields that send a key of the stage of a record
 	// the test creates, per line of order and field: one fix each
 	keyGaps map[string]bool
+	// added are the nodes the fixes of this build add, by the node below
+	// which, the resource and the field (or list) they give
+	added map[string]string
 	// slot is the line of order the steps being added belong to (ships,
 	// ships.read, ships.update); slotOf keeps it per step. changes are the
 	// writes that change a record, reader the reads that check one.
@@ -181,8 +207,10 @@ func Build(s *spec.Spec, t *Tree, d *Data) (*Built, error) {
 	return b.out, nil
 }
 
-func (b *builder) note(step, what, why string) {
-	b.out.Notes = append(b.out.Notes, Note{Step: step, What: what, Why: why})
+func (b *builder) note(step, what, why string) { b.noteAt(LevelInfo, step, what, why) }
+
+func (b *builder) noteAt(level, step, what, why string) {
+	b.out.Notes = append(b.out.Notes, Note{Step: step, What: what, Why: why, Level: level})
 }
 
 func (b *builder) id(base string) string {
@@ -297,7 +325,7 @@ func (b *builder) eachSource(step string, r *Record, e *OrderEntry, field string
 	})
 	if len(missing) > 0 {
 		ref, _ := ParseRef(e.Values[field], b.scope)
-		b.note(step, fmt.Sprintf("%s = %s stays as it is", name, strings.Join(missing, ", ")),
+		b.noteAt(LevelError, step, fmt.Sprintf("%s = %s stays as it is", name, strings.Join(missing, ", ")),
 			fmt.Sprintf("no record of %s below %s has it; see the notes of the fetch of %s", ref.Node, r.ID, ref.Node))
 	}
 }
@@ -318,7 +346,15 @@ func (b *builder) sourceValues(r *Record, e *OrderEntry, field string) ([]any, [
 		return nil, nil, false
 	}
 	var from []*Record
-	for _, under := range []*Record{r, b.entity(r)} {
+	// below the record, its entity, or another read of the same record (a
+	// node that lists the records by another filter)
+	unders := []*Record{r, b.entity(r)}
+	for _, c := range b.d.Records {
+		if c != r && c.Node != r.Node && b.entity(c) == b.entity(r) {
+			unders = append(unders, c)
+		}
+	}
+	for _, under := range unders {
 		for _, c := range b.d.Records {
 			if c.Parent == under && c.Node.Name == ref.Node {
 				from = append(from, c)
@@ -578,7 +614,7 @@ func (b *builder) sameCreates() {
 		path, _ := json.Marshal(st.Path)
 		k := st.Call + " " + string(path) + " " + string(body)
 		if first, dup := seen[k]; dup {
-			b.note(st.ID, "same request and body as "+first,
+			b.noteAt(LevelWarn, st.ID, "same request and body as "+first,
 				"two records of the stage with the same values, or one record read by two nodes whose key lists share no field; check the key of their nodes, or pick other records")
 			continue
 		}
@@ -845,7 +881,7 @@ func (b *builder) placeholderFor(v any, fields []string, at string, exclude *Rec
 		for _, kr := range best {
 			names = append(names, kr.rec.ID)
 		}
-		b.note(step, fmt.Sprintf("%s = %s stays as it is", what, text(v)),
+		b.noteAt(LevelWarn, step, fmt.Sprintf("%s = %s stays as it is", what, text(v)),
 			"it fits several records ("+strings.Join(names, ", ")+"); write a reference (.field or <node>.field) to choose one")
 	}
 	return v
@@ -949,12 +985,12 @@ func (b *builder) resolve(v any, at *Record, scope *Node, param, step string, ex
 		}
 	}
 	if rec == nil {
-		b.note(step, fmt.Sprintf("%s = %s", param, ref), "no record to read it from")
+		b.noteAt(LevelError, step, fmt.Sprintf("%s = %s", param, ref), "no record to read it from")
 		return nil
 	}
 	val, found := rec.Get(ref.Field)
 	if !found {
-		b.note(step, fmt.Sprintf("%s = %s", param, ref), rec.ID+" has no such field")
+		b.noteAt(LevelError, step, fmt.Sprintf("%s = %s", param, ref), rec.ID+" has no such field")
 		return nil
 	}
 	e := b.entity(rec)
@@ -990,7 +1026,7 @@ var errNoValue = errors.New("no value")
 func (b *builder) paramValue(name string, at *Record, scope *Node, param, step string, exclude *Record) any {
 	val, set := b.t.param(name)
 	if !set {
-		b.note(step, fmt.Sprintf("%s = $%s", param, name), "params has no value for it; set it at the top of tree.yaml")
+		b.noteAt(LevelError, step, fmt.Sprintf("%s = $%s", param, name), "params has no value for it; set it at the top of tree.yaml")
 		return nil
 	}
 	if len(ComposedRefs(val, b.scope)) > 0 {
@@ -1002,7 +1038,7 @@ func (b *builder) paramValue(name string, at *Record, scope *Node, param, step s
 		return b.resolve(val, at, scope, param, step, exclude)
 	}
 	if _, nested := ParamRef(val); nested {
-		b.note(step, fmt.Sprintf("%s = $%s", param, name), "params."+name+" names another $name; give a value or a reference to a node")
+		b.noteAt(LevelError, step, fmt.Sprintf("%s = $%s", param, name), "params."+name+" names another $name; give a value or a reference to a node")
 		return nil
 	}
 	// a value of the stage: the placeholder of the record created for it
@@ -1039,7 +1075,7 @@ func (b *builder) params(st *scenario.Step, op *spec.Operation, path, query, hea
 		}
 		v, ok := paramExample(p)
 		if !ok {
-			b.note(st.ID, fmt.Sprintf("no value for the required %s parameter %s", p.In, p.Name), "the spec has no example, default or enum; set it in the tree")
+			b.noteAt(LevelError, st.ID, fmt.Sprintf("no value for the required %s parameter %s", p.In, p.Name), "the spec has no example, default or enum; set it in the tree")
 			continue
 		}
 		if *m == nil {
@@ -1139,7 +1175,7 @@ func (b *builder) creates() []*Record {
 		if next == nil {
 			for _, p := range list {
 				if !done[p.r] {
-					b.note(p.st.ID, "order of "+p.r.ID, "its references form a cycle; it is created in the order of the fetch")
+					b.noteAt(LevelWarn, p.st.ID, "order of "+p.r.ID, "its references form a cycle; it is created in the order of the fetch")
 					next = p
 					break
 				}
@@ -1196,7 +1232,7 @@ func (b *builder) findStep(r *Record, create *scenario.Step) *scenario.Step {
 	}
 	drop := func(why string) *scenario.Step {
 		for _, f := range fields {
-			b.note(create.ID, "no saved "+f, why+"; later steps use the value of the stage")
+			b.noteAt(LevelError, create.ID, "no saved "+f, why+"; later steps use the value of the stage")
 			delete(b.keyVar[r], f)
 		}
 		return nil
@@ -1278,7 +1314,7 @@ func (b *builder) saves(st *scenario.Step, r *Record, op *spec.Operation, status
 		case first && (resp == nil || documentsHeader(op, status, "Location")):
 			st.Save[name] = "header Location"
 		default:
-			b.note(st.ID, "no saved key "+field, "the answer of "+st.Call+" has no field "+field+" and no Location header; later steps use the value of the stage")
+			b.noteAt(LevelError, st.ID, "no saved key "+field, "the answer of "+st.Call+" has no field "+field+" and no Location header; later steps use the value of the stage")
 			delete(b.keyVar[r], field)
 			continue
 		}
@@ -1494,7 +1530,7 @@ func (b *builder) source(r *Record, from, step string) any {
 			}
 		}
 		if !found {
-			b.note(step, "body from "+from, "no record of "+from+" belongs to "+r.ID+"; the body is built from "+r.ID+" and the reads about it")
+			b.noteAt(LevelWarn, step, "body from "+from, "no record of "+from+" belongs to "+r.ID+"; the body is built from "+r.ID+" and the reads about it")
 		}
 	}
 	parts = append(parts, r.Value)
@@ -1636,11 +1672,11 @@ func (b *builder) project(step string, v any, s *openapi3.Schema, path, dto stri
 		}
 		g := value.Generate(p, value.Context{Seed: 42, Path: "tree." + path + "." + name, Name: name, Parent: dto})
 		if !g.OK {
-			b.note(step, "no value for "+name, "the record has none and the schema allows no generated one ("+g.Reason+"); write the body in the tree")
+			b.noteAt(LevelError, step, "no value for "+name, "the record has none and the schema allows no generated one ("+g.Reason+"); write the body in the tree")
 			continue
 		}
 		out[name] = spec.Normalize(g.Value)
-		b.note(step, fmt.Sprintf("%s = %s generated", name, text(out[name])), "the record of the stage has no "+name+", the request requires it")
+		b.noteAt(LevelWarn, step, fmt.Sprintf("%s = %s generated", name, text(out[name])), "the record of the stage has no "+name+", the request requires it")
 	}
 	return out
 }
@@ -1696,7 +1732,7 @@ func (b *builder) validate(step string, m map[string]any, s *openapi3.Schema) {
 			continue
 		}
 		if errs := v.Validate(p.Value, spec.Normalize(m[k]), spec.ModeRequest); len(errs) > 0 {
-			b.note(step, fmt.Sprintf("%s = %s does not fit the schema", k, text(m[k])), errs[0].String())
+			b.noteAt(LevelError, step, fmt.Sprintf("%s = %s does not fit the schema", k, text(m[k])), errs[0].String())
 		}
 	}
 }
@@ -1806,7 +1842,7 @@ func (b *builder) listStep(r *Record, op *spec.Operation) {
 		st.Why = "lists " + n.Name
 	}
 	if other > 0 {
-		b.note(st.ID, fmt.Sprintf("%s: %d records are not checked", n.Name, other), "the scenario does not rebuild them (no create, or no saved key); the list is checked by status and schema")
+		b.noteAt(LevelWarn, st.ID, fmt.Sprintf("%s: %d records are not checked", n.Name, other), "the scenario does not rebuild them (no create, or no saved key); the list is checked by status and schema")
 	}
 	b.add(st)
 }
@@ -1873,7 +1909,7 @@ func (b *builder) readStep(r *Record, op *spec.Operation) {
 	case b.creatable(e.Node):
 		// the API creates such records, but this one is not rebuilt: an
 		// empty instance does not hold it
-		b.note(st.ID, "no read of "+e.ID, "the scenario does not rebuild it (its create needs a node above it); hang the node below the one whose create it takes")
+		b.noteAt(LevelWarn, st.ID, "no read of "+e.ID, "the scenario does not rebuild it (its create needs a node above it); hang the node below the one whose create it takes")
 		return
 	default:
 		st.Why = "reads " + e.ID + " of the seed"
@@ -1929,7 +1965,7 @@ func (b *builder) ownKeys(st *scenario.Step, r, e *Record) {
 			break
 		}
 		if st.Path[k] == nil {
-			b.note(st.ID, k+" from a list", r.ID+" has none of its values as key; set key at "+r.Node.Name)
+			b.noteAt(LevelError, st.ID, k+" from a list", r.ID+" has none of its values as key; set key at "+r.Node.Name)
 		}
 	}
 }
@@ -1995,7 +2031,7 @@ func (b *builder) updates() {
 				if w.OnSeed {
 					why = "onSeed: the fetch took no record of " + n.Name
 				}
-				b.note("", n.Name+": "+kind+" not run", why)
+				b.noteAt(LevelWarn, "", n.Name+": "+kind+" not run", why)
 				continue
 			}
 			b.slot = n.Name + "." + kind
@@ -2097,7 +2133,7 @@ func (b *builder) arrange() {
 	var out []*scenario.Step
 	for _, e := range b.t.Order {
 		if e.Step != "" && len(byKey[e.Key()]) == 0 {
-			b.note("", "order: "+e.Key()+" runs no step", "the scenario builds no such step; the notes of "+e.Node+" say why")
+			b.noteAt(LevelWarn, "", "order: "+e.Key()+" runs no step", "the scenario builds no such step; the notes of "+e.Node+" say why")
 		}
 		out = append(out, byKey[e.Key()]...)
 	}
@@ -2312,7 +2348,7 @@ func (b *builder) deletes(order []*Record) {
 			}
 		}
 		if blocked != "" {
-			b.note("", r.ID+" is not deleted", blocked+" refers to it and is not deleted")
+			b.noteAt(LevelWarn, "", r.ID+" is not deleted", blocked+" refers to it and is not deleted")
 			continue
 		}
 		expect := w.Expect
@@ -2358,7 +2394,7 @@ func (b *builder) deletes(order []*Record) {
 	for _, n := range slices.SortedFunc(maps.Keys(turn), func(a, c *Node) int { return strings.Compare(a.Name, c.Name) }) {
 		kinds := b.deleteKinds(n)
 		for _, kind := range kinds[min(turn[n], len(kinds)):] {
-			b.note("", n.Name+": "+kind+" not run", fmt.Sprintf("the scenario deletes %d records of %s, one per delete; pick more to run it", turn[n], n.Name))
+			b.noteAt(LevelWarn, "", n.Name+": "+kind+" not run", fmt.Sprintf("the scenario deletes %d records of %s, one per delete; pick more to run it", turn[n], n.Name))
 		}
 	}
 }

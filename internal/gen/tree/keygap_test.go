@@ -164,3 +164,77 @@ func TestKeyGapFixAddsNode(t *testing.T) {
 		t.Errorf("the node and the source:\n%s", b)
 	}
 }
+
+// leadDetailsStarport names each pilot twice in an element of a list,
+// under names the model takes for no reference: only the values tell.
+var leadDetailsStarport = listStarport{name: "lead details", mode: "leadDetails", field: "leadDetails.leadPilotId",
+	props: "        leadDetails:\n          type: array\n          items:\n            type: object\n            properties:\n              leadPilotId: {type: integer}\n              leadPilot:\n                type: object\n                properties:\n                  leadPilotId: {type: integer}\n                  name: {type: string}"}
+
+// TestKeyGapFixesShareTheNode: two fields of one list element that send
+// keys of the stage of the same records get one node: the first fix adds
+// it, the second names it. Both are made (before, the second failed: the
+// node was there), and after the fetch the test runs on an empty instance.
+func TestKeyGapFixesShareTheNode(t *testing.T) {
+	v := leadDetailsStarport
+	s, path := v.load(t)
+	base := v.stage(t)
+	file := strings.NewReplacer("    pick: 1\n    off: true\n", "    pick: all\n").Replace(v.withoutSource())
+	if problems := Check(s, parse(t, file)); len(problems) > 0 {
+		t.Fatalf("the check knows nothing of leadDetails: %v", problems)
+	}
+	tr, built := buildFrom(t, s, file, base)
+	if len(built.Fixes) != 2 || built.Fixes[0].adds == "" || built.Fixes[1].adds != "" || !strings.Contains(built.Fixes[1].Change, "the node the fix before adds") {
+		t.Fatalf("one node, two sources: %+v", built.Fixes)
+	}
+	if len(built.Errors()) == 0 {
+		t.Error("the keys of the stage are errors")
+	}
+	fixed, done, err := ApplyFixes(tr, built.Fixes)
+	if err != nil || len(done) != 2 {
+		t.Fatalf("both fixes: %v %v", done, err)
+	}
+	b, _ := fixed.Bytes()
+	if n := len(fixed.Node("ships").Each); n != 1 {
+		t.Errorf("one node below the ships, got %d:\n%s", n, b)
+	}
+	_, built = buildFrom(t, s, string(b), base)
+	if len(built.Fixes) > 0 || len(built.Errors()) > 0 {
+		t.Fatalf("nothing left: %v %v", built.Fixes, built.Errors())
+	}
+	if res, log := runEmptyAt(t, path, v.server(1), built); res.Failed {
+		t.Errorf("the scenario failed on an empty instance:\n%s", log)
+	}
+}
+
+// TestNoteLevels: each note has its level; in the timeline of the test the
+// errors of a step come first, as "error: …" in the result and as notes
+// with their level; the section of the test counts them.
+func TestNoteLevels(t *testing.T) {
+	v := leadStarport
+	s, _ := v.load(t)
+	_, built := buildFrom(t, s, leadTree, v.stage(t))
+	if len(built.Errors()) == 0 {
+		t.Fatal("the keys of the stage are errors")
+	}
+	for _, n := range built.Notes {
+		if n.Level != LevelError && n.Level != LevelWarn && n.Level != LevelInfo {
+			t.Errorf("a note without level: %+v", n)
+		}
+	}
+	found := false
+	for _, e := range TestTimeline(s, built) {
+		if e.Step != "ships1.create" {
+			continue
+		}
+		found = true
+		if len(e.Notes) < 2 || e.Notes[0].Level != LevelError || !strings.Contains(e.Result, "error: leadPilotId = ") || !strings.Contains(e.Result, "info: ") {
+			t.Errorf("the notes of the create, the error first: %+v", e)
+		}
+	}
+	if !found {
+		t.Fatal("no create of ships1 in the timeline")
+	}
+	if summary, _ := ScenarioSection(built); !strings.Contains(summary, "errors") {
+		t.Errorf("the summary counts the errors: %s", summary)
+	}
+}

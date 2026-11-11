@@ -157,7 +157,7 @@ func (b *builder) deepRef(step string, in map[string]any, name, at string, p *op
 	})
 	field := strings.TrimPrefix(at+"."+name, ".")
 	if cut {
-		b.note(step, field+": search stopped", fmt.Sprintf("the record has more than %d fields; give the source in fields: %s: .<path>", deepVisit, field))
+		b.noteAt(LevelWarn, step, field+": search stopped", fmt.Sprintf("the record has more than %d fields; give the source in fields: %s: .<path>", deepVisit, field))
 	}
 	v := spec.NewValidator()
 	hits = slices.DeleteFunc(hits, func(h deepHit) bool {
@@ -175,7 +175,7 @@ func (b *builder) deepRef(step string, in map[string]any, name, at string, p *op
 		places = append(places, fmt.Sprintf("%s = %s", prefixed(at, h.path), text(h.val)))
 	}
 	if len(values) > 1 {
-		b.note(step, field+": several fields of the record name it, none taken",
+		b.noteAt(LevelWarn, step, field+": several fields of the record name it, none taken",
 			strings.Join(places, ", ")+"; give the one in fields: "+field+": ."+prefixed(at, hits[0].path))
 		return nil, false
 	}

@@ -28,7 +28,9 @@ type Starport struct {
 	// "pilotIds" a list of keys, "crew" a list of objects (crew: [{pilotId,
 	// role}]), "crewDetails" a list of objects with the key and the pilot
 	// embedded (crewDetails: [{pilotId, pilot: {pilotId, name}}]),
-	// "leadPilotId" one key under a name of its own.
+	// "leadPilotId" one key under a name of its own, "leadDetails" both in a
+	// list under names of their own (leadDetails: [{leadPilotId,
+	// leadPilot: {leadPilotId, name}}]).
 	PilotField string
 }
 
@@ -313,27 +315,32 @@ func (s *Starport) deletePilot(w http.ResponseWriter, r *http.Request) {
 func flies(sh map[string]any, id int) bool { return slices.Contains(pilotsOf(sh), id) }
 
 // pilotsOf are the pilots a ship (or the body of its create) names, in
-// any of the forms of PilotField.
+// any of the forms of PilotField: every field named pilotId or …PilotId,
+// and the values of pilotIds, also inside objects and lists.
 func pilotsOf(sh map[string]any) []int {
 	var named []any
-	for _, k := range []string{"pilotId", "leadPilotId"} {
-		if v, ok := sh[k]; ok {
-			named = append(named, v)
-		}
-	}
-	if l, ok := sh["pilotIds"].([]any); ok {
-		named = append(named, l...)
-	}
-	for _, k := range []string{"crew", "crewDetails"} {
-		list, _ := sh[k].([]any)
-		for _, m := range list {
-			member, _ := m.(map[string]any)
-			named = append(named, member["pilotId"])
-			if p, ok := member["pilot"].(map[string]any); ok {
-				named = append(named, p["pilotId"])
+	var walk func(v any)
+	walk = func(v any) {
+		switch x := v.(type) {
+		case []any:
+			for _, c := range x {
+				walk(c)
+			}
+		case map[string]any:
+			for k, c := range x {
+				switch {
+				case k == "pilotIds":
+					l, _ := c.([]any)
+					named = append(named, l...)
+				case k == "pilotId" || strings.HasSuffix(k, "PilotId"):
+					named = append(named, c)
+				default:
+					walk(c)
+				}
 			}
 		}
 	}
+	walk(sh)
 	var out []int
 	for _, v := range named {
 		n, err := strconv.Atoi(fmt.Sprint(v))
@@ -452,6 +459,11 @@ func (s *Starport) Fill() {
 					return map[string]any{"pilotId": p, "pilot": map[string]any{"pilotId": p, "name": s.pilots[p]["name"]}}
 				}
 				sh["crewDetails"] = []any{detail(first), detail(second)}
+			case "leadDetails":
+				detail := func(p int) any {
+					return map[string]any{"leadPilotId": p, "leadPilot": map[string]any{"leadPilotId": p, "name": s.pilots[p]["name"]}}
+				}
+				sh["leadDetails"] = []any{detail(first), detail(second)}
 			}
 			s.ships[sid] = sh
 		}

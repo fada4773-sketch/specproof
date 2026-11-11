@@ -529,7 +529,7 @@ func ScenarioSection(built *Built) (string, string) {
 	if built.Scenario != nil {
 		steps = len(built.Scenario.Steps)
 	}
-	summary := fmt.Sprintf("%d steps, %d records created, %d of the seed, %d notes", steps, len(built.Created), len(built.Seeds), len(built.Notes))
+	summary := fmt.Sprintf("%d steps, %d records created, %d of the seed, %s", steps, len(built.Created), len(built.Seeds), noteCounts(built.Notes))
 	fmt.Fprintf(&b, "%d steps, %d records created.\n", steps, len(built.Created))
 	if built.Scenario != nil && steps > 0 {
 		counts := map[string]int{}
@@ -569,9 +569,9 @@ func ScenarioSection(built *Built) (string, string) {
 		}
 	}
 	if len(other) > 0 {
-		fmt.Fprintf(&b, "\n### Decisions and gaps outside the steps (%d)\n\n| Where | What | Why |\n|---|---|---|\n", len(other))
-		for _, n := range other {
-			fmt.Fprintf(&b, "| %s | %s | %s |\n", cell(n.Step), cell(n.What), cell(n.Why))
+		fmt.Fprintf(&b, "\n### Decisions and gaps outside the steps (%d)\n\n| Level | Where | What | Why |\n|---|---|---|---|\n", len(other))
+		for _, n := range sortedNotes(other) {
+			fmt.Fprintf(&b, "| %s | %s | %s | %s |\n", levelOf(n), cell(n.Step), cell(n.What), cell(n.Why))
 		}
 	}
 	if len(other) < len(built.Notes) {
@@ -662,4 +662,31 @@ func RunSection(res *apitest.Result, baseURL string, unique bool) (string, strin
 
 func cell(s string) string {
 	return strings.ReplaceAll(strings.ReplaceAll(s, "|", "\\|"), "\n", " ")
+}
+
+// levelOf is the level of a note, info when it has none.
+func levelOf(n Note) string {
+	if n.Level == "" {
+		return LevelInfo
+	}
+	return n.Level
+}
+
+// noteCounts says how many notes there are, by level: "12 notes (2 errors,
+// 3 warnings)".
+func noteCounts(notes []Note) string {
+	errs, warns := 0, 0
+	for _, n := range notes {
+		switch n.Level {
+		case LevelError:
+			errs++
+		case LevelWarn:
+			warns++
+		}
+	}
+	s := plural(len(notes), "note")
+	if errs+warns > 0 {
+		s += fmt.Sprintf(" (%s, %s)", plural(errs, "error"), plural(warns, "warning"))
+	}
+	return s
 }
