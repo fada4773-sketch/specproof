@@ -24,6 +24,9 @@ type Starport struct {
 	mux     *http.ServeMux
 	// Requests counts the requests by method.
 	Requests map[string]int
+	// PilotLists makes a ship name its pilots in a list (pilotIds) instead
+	// of one pilotId; Crew in a list of objects (crew: [{pilotId, role}]).
+	PilotLists, Crew bool
 }
 
 type dock struct {
@@ -294,13 +297,26 @@ func (s *Starport) getPermit(w http.ResponseWriter, r *http.Request) {
 func (s *Starport) deletePilot(w http.ResponseWriter, r *http.Request) {
 	id := pathID(r)
 	for _, sh := range s.ships {
-		if sh["pilotId"] == id {
+		if flies(sh, id) {
 			reply(w, http.StatusConflict, map[string]any{"error": "the pilot flies a ship"})
 			return
 		}
 	}
 	delete(s.pilots, id)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// flies reports whether a ship names the pilot: as pilotId, in pilotIds or
+// in its crew.
+func flies(sh map[string]any, id int) bool {
+	if sh["pilotId"] == id {
+		return true
+	}
+	if ids, _ := sh["pilotIds"].([]int); slices.Contains(ids, id) {
+		return true
+	}
+	crew, _ := sh["crew"].([]any)
+	return slices.ContainsFunc(crew, func(m any) bool { return m.(map[string]any)["pilotId"] == id })
 }
 
 func (s *Starport) listShips(w http.ResponseWriter, r *http.Request) {
@@ -320,12 +336,52 @@ func (s *Starport) createShip(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	in := readBody(r)
+	if s.PilotLists || s.Crew {
+		s.createCrewShip(w, dockID, in)
+		return
+	}
 	pilot, _ := strconv.Atoi(fmt.Sprint(in["pilotId"]))
 	if s.pilots[pilot] == nil {
 		reply(w, http.StatusUnprocessableEntity, map[string]any{"error": fmt.Sprintf("no pilot %v", in["pilotId"])})
 		return
 	}
 	sh := map[string]any{"id": s.id(), "dockId": dockID, "name": in["name"], "pilotId": pilot}
+	s.ships[sh["id"].(int)] = sh
+	w.Header().Set("Location", "/api/ships/"+strconv.Itoa(sh["id"].(int)))
+	w.WriteHeader(http.StatusCreated)
+}
+
+// createCrewShip creates a ship with PilotLists or Crew: every pilot it
+// names must exist.
+func (s *Starport) createCrewShip(w http.ResponseWriter, dockID int, in map[string]any) {
+	sh := map[string]any{"id": 0, "dockId": dockID, "name": in["name"]}
+	var named []any
+	if s.Crew {
+		list, _ := in["crew"].([]any)
+		var crew []any
+		for _, m := range list {
+			member, _ := m.(map[string]any)
+			named = append(named, member["pilotId"])
+			pilot, _ := strconv.Atoi(fmt.Sprint(member["pilotId"]))
+			crew = append(crew, map[string]any{"pilotId": pilot, "role": member["role"]})
+		}
+		sh["crew"] = crew
+	} else {
+		named, _ = in["pilotIds"].([]any)
+	}
+	var pilots []int
+	for _, v := range named {
+		pilot, _ := strconv.Atoi(fmt.Sprint(v))
+		if s.pilots[pilot] == nil {
+			reply(w, http.StatusUnprocessableEntity, map[string]any{"error": fmt.Sprintf("no pilot %v", v)})
+			return
+		}
+		pilots = append(pilots, pilot)
+	}
+	if !s.Crew {
+		sh["pilotIds"] = pilots
+	}
+	sh["id"] = s.id()
 	s.ships[sh["id"].(int)] = sh
 	w.Header().Set("Location", "/api/ships/"+strconv.Itoa(sh["id"].(int)))
 	w.WriteHeader(http.StatusCreated)
@@ -380,6 +436,15 @@ func (s *Starport) Fill() {
 		for j := range 2 {
 			sid := s.id()
 			s.ships[sid] = map[string]any{"id": sid, "dockId": id, "name": spec.name + "-" + strconv.Itoa(j+1), "pilotId": pilots[(i+j)%len(pilots)]}
+			first, second := pilots[(i+j)%len(pilots)], pilots[(i+j+1)%len(pilots)]
+			switch {
+			case s.Crew:
+				delete(s.ships[sid], "pilotId")
+				s.ships[sid]["crew"] = []any{map[string]any{"pilotId": first, "role": "captain"}, map[string]any{"pilotId": second, "role": "pilot"}}
+			case s.PilotLists:
+				delete(s.ships[sid], "pilotId")
+				s.ships[sid]["pilotIds"] = []int{first, second}
+			}
 		}
 	}
 }

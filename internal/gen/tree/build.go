@@ -236,7 +236,7 @@ func (b *builder) orderIndex(n *Node) int {
 // records it names: below the record (the pilot read below a ship), else
 // above it; the key of a record the test creates as its placeholder. A
 // record without such a record is a problem: the build stops.
-func (b *builder) sources(r *Record, body map[string]any, props openapi3.Schemas) {
+func (b *builder) sources(step string, r *Record, body map[string]any, props openapi3.Schemas) {
 	e := b.entryOf(b.entity(r))
 	if e == nil {
 		return
@@ -249,6 +249,10 @@ func (b *builder) sources(r *Record, body map[string]any, props openapi3.Schemas
 			if p, name, ok = bodyField(props, field); !ok {
 				continue // an update without the field
 			}
+		}
+		if len(props) > 0 && throughList(props, name) {
+			b.eachSource(step, r, e, field, body, name)
+			continue
 		}
 		vals, ok := b.sourceOf(r, e, field)
 		if !ok {
@@ -263,13 +267,46 @@ func (b *builder) sources(r *Record, body map[string]any, props openapi3.Schemas
 	}
 }
 
+// eachSource sets a field inside the elements of a list (crew.pilotId)
+// that order gives a source: each element gets the value of the source
+// record that has its value of the stage (the placeholder of the pilot it
+// names); an element no source record has is noted and keeps its value.
+func (b *builder) eachSource(step string, r *Record, e *OrderEntry, field string, body map[string]any, name string) {
+	vals, stage, ok := b.sourceValues(r, e, field)
+	if !ok {
+		return
+	}
+	var missing []string
+	eachSet(body, name, func(old any) any {
+		for i, sv := range stage {
+			if text(sv) == text(old) {
+				return vals[i]
+			}
+		}
+		missing = append(missing, text(old))
+		return old
+	})
+	if len(missing) > 0 {
+		ref, _ := ParseRef(e.Values[field], b.scope)
+		b.note(step, fmt.Sprintf("%s = %s stays as it is", name, strings.Join(missing, ", ")),
+			fmt.Sprintf("no record of %s below %s has it; see the notes of the fetch of %s", ref.Node, r.ID, ref.Node))
+	}
+}
+
 // sourceOf are the values order gives a field of a record's body: of the
 // records of the source node below r (or of its entity), else above it.
 // A record without them is a problem.
 func (b *builder) sourceOf(r *Record, e *OrderEntry, field string) ([]any, bool) {
+	vals, _, ok := b.sourceValues(r, e, field)
+	return vals, ok
+}
+
+// sourceValues are the values of sourceOf and, for each, the value the
+// source record has on the stage.
+func (b *builder) sourceValues(r *Record, e *OrderEntry, field string) ([]any, []any, bool) {
 	ref, ok := ParseRef(e.Values[field], b.scope)
 	if !ok || ref.Node == "" {
-		return nil, false
+		return nil, nil, false
 	}
 	var from []*Record
 	for _, under := range []*Record{r, b.entity(r)} {
@@ -290,12 +327,12 @@ func (b *builder) sourceOf(r *Record, e *OrderEntry, field string) ([]any, bool)
 	if len(from) == 0 {
 		if v, found := b.entity(r).Get(field); !found || empty(v) {
 			// the record names no such record: nothing to take
-			return nil, false
+			return nil, nil, false
 		}
 		b.noSource(r, e, field, ref)
-		return nil, false
+		return nil, nil, false
 	}
-	var vals []any
+	var vals, stage []any
 	for _, c := range from {
 		v, found := c.Get(ref.Field)
 		if !found {
@@ -304,13 +341,14 @@ func (b *builder) sourceOf(r *Record, e *OrderEntry, field string) ([]any, bool)
 			b.problem("%s", msg+f.change())
 			continue
 		}
+		stage = append(stage, v)
 		ce := b.entity(c)
 		if name := b.keyVar[ce][ref.Field]; b.created[ce] && name != "" {
 			v = "{{" + name + "}}"
 		}
 		vals = append(vals, v)
 	}
-	return vals, len(vals) > 0
+	return vals, stage, len(vals) > 0
 }
 
 // sourceGap is a source of order that records lack: the problem it is,
@@ -1367,7 +1405,7 @@ func (b *builder) body(step string, r *Record, w *Write, ref *openapi3.SchemaRef
 		return out, nil
 	}
 	var unique []string
-	b.sources(r, m, props)
+	b.sources(step, r, m, props)
 	b.applyRules(step, r, m, props, rules)
 	for _, k := range sortedKeys(m) {
 		m[k] = b.substitute(m[k], k, set, r, step)
@@ -1862,11 +1900,19 @@ func (b *builder) ownKeys(st *scenario.Step, r, e *Record) {
 		st.Path[k] = nil
 		for _, ptr := range keyOf(r.Node) {
 			own, found := Pointer(r.Value, ptr)
-			if !found || !slices.ContainsFunc(l, func(x any) bool { return text(x) == text(own) }) {
+			name := b.keyVar[e][PointerField(ptr)]
+			if !b.created[e] {
+				name = ""
+			}
+			// the list holds the stage's keys, or, when the create of the
+			// record above sent it, the placeholders of the records created
+			if !found || !slices.ContainsFunc(l, func(x any) bool {
+				return text(x) == text(own) || name != "" && text(x) == "{{"+name+"}}"
+			}) {
 				continue
 			}
 			st.Path[k] = own
-			if name := b.keyVar[e][PointerField(ptr)]; b.created[e] && name != "" {
+			if name != "" {
 				st.Path[k] = "{{" + name + "}}"
 			}
 			break

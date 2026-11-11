@@ -56,6 +56,11 @@ type Resource struct {
 	// Dock); Ref resolves them like Relations. They are no fields of the
 	// record itself: updates and records leave them to Relations.
 	Nested []string
+	// Listed are relation fields inside the objects of a list field, as a
+	// path through the list (crew.pilotId for crew: [{pilotId, role}], or
+	// pilots.id for a list of embedded pilots): each element names a
+	// record. Ref resolves them like Nested.
+	Listed []string
 	Ops    []*Op
 
 	fields openapi3.Schemas
@@ -943,7 +948,11 @@ func (d *detector) relations() {
 				continue
 			}
 			if _, ok := dict.Primitive(s.Value); !ok {
-				d.nested(r, f, f, s.Value, above, 1)
+				if items := listItems(s.Value); items != nil {
+					d.nested(r, f, f, items, above, 1, true)
+					continue
+				}
+				d.nested(r, f, f, s.Value, above, 1, false)
 				continue
 			}
 			if to, key := d.refers(r, f, above); to != nil {
@@ -957,11 +966,28 @@ func (d *detector) relations() {
 // maxNested is how deep relations inside object fields are searched.
 const maxNested = 6
 
+// listItems is the schema of the objects of a list field, nil for any
+// other field.
+func listItems(s *openapi3.Schema) *openapi3.Schema {
+	if s.Type == nil || !s.Type.Is("array") || s.Items == nil || s.Items.Value == nil {
+		return nil
+	}
+	it := s.Items.Value
+	if it.Type != nil && !it.Type.Is("object") {
+		return nil
+	}
+	if props, _ := dict.Properties(it); len(props) == 0 {
+		return nil
+	}
+	return it
+}
+
 // nested finds the relations inside an object field of r (path, its name
 // owner): a field that refers by its own name (crew.pilotId), or a key
-// inside an object named after the resource (dock.id, dock.code). Lists
-// of objects are left out.
-func (d *detector) nested(r *Resource, path, owner string, s *openapi3.Schema, above []*Resource, depth int) {
+// inside an object named after the resource (dock.id, dock.code). In a list
+// of objects (list: the path went through one) each element names a
+// record: the relation goes to Listed.
+func (d *detector) nested(r *Resource, path, owner string, s *openapi3.Schema, above []*Resource, depth int, list bool) {
 	if depth > maxNested || s.Type != nil && !s.Type.Is("object") {
 		return
 	}
@@ -977,7 +1003,11 @@ func (d *detector) nested(r *Resource, path, owner string, s *openapi3.Schema, a
 		full := path + "." + k
 		if _, ok := dict.Primitive(p.Value); !ok {
 			if embedded == nil {
-				d.nested(r, full, k, p.Value, above, depth+1)
+				if items := listItems(p.Value); items != nil {
+					d.nested(r, full, k, items, above, depth+1, true)
+				} else {
+					d.nested(r, full, k, p.Value, above, depth+1, list)
+				}
 			}
 			continue
 		}
@@ -993,7 +1023,11 @@ func (d *detector) nested(r *Resource, path, owner string, s *openapi3.Schema, a
 			}
 		}
 		if to != nil && to != r {
-			r.Nested = append(r.Nested, full)
+			if list {
+				r.Listed = append(r.Listed, full)
+			} else {
+				r.Nested = append(r.Nested, full)
+			}
 			r.refs[full] = relation{to, key}
 		}
 	}

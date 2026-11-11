@@ -118,8 +118,9 @@ func properties(s *openapi3.Schema) (openapi3.Schemas, []string) {
 }
 
 // bodyField finds a field of a body by its path (pilotId, crew.pilotId),
-// ignoring case, through the objects on the way: its schema and the path
-// as the schema spells it.
+// ignoring case, through the objects on the way, and through the objects
+// of a list (crew: [{pilotId}]): its schema and the path as the schema
+// spells it.
 func bodyField(props openapi3.Schemas, path string) (*openapi3.SchemaRef, string, bool) {
 	var names []string
 	var cur *openapi3.SchemaRef
@@ -128,7 +129,7 @@ func bodyField(props openapi3.Schemas, path string) (*openapi3.SchemaRef, string
 			if cur == nil || cur.Value == nil {
 				return nil, "", false
 			}
-			props, _ = properties(cur.Value)
+			props, _ = properties(itemsOf(cur.Value))
 		}
 		name, ok := propertyFoldName(props, seg)
 		if !ok {
@@ -154,8 +155,67 @@ func bodyRequires(op *spec.Operation, path string) bool {
 			return false
 		}
 		s = schemaOf(props[name])
+		if s != nil {
+			s = itemsOf(s)
+		}
 	}
 	return true
+}
+
+// itemsOf is the schema of the elements of a list, any other schema
+// itself.
+func itemsOf(s *openapi3.Schema) *openapi3.Schema {
+	if s.Type != nil && s.Type.Is("array") && s.Items != nil && s.Items.Value != nil {
+		return s.Items.Value
+	}
+	return s
+}
+
+// throughList reports whether a path of a body (crew.pilotId) goes through
+// a list before its last part: each element of the list holds the field.
+func throughList(props openapi3.Schemas, path string) bool {
+	segs := strings.Split(path, ".")
+	for _, seg := range segs[:len(segs)-1] {
+		name, ok := propertyFoldName(props, seg)
+		if !ok || props[name] == nil || props[name].Value == nil {
+			return false
+		}
+		s := props[name].Value
+		if s.Type != nil && s.Type.Is("array") {
+			return true
+		}
+		props, _ = properties(s)
+	}
+	return false
+}
+
+// eachSet replaces a field in every element of the lists on its path
+// (crew.pilotId: the pilotId of each member): fn gets the value there and
+// gives the new one; an element without the field is left alone.
+func eachSet(v any, path string, fn func(old any) any) {
+	switch x := v.(type) {
+	case []any:
+		for _, el := range x {
+			eachSet(el, path, fn)
+		}
+	case map[string]any:
+		seg, rest, more := strings.Cut(path, ".")
+		k, c, ok := foldEntry(x, seg)
+		if !ok {
+			return
+		}
+		if !more {
+			if l, isList := c.([]any); isList {
+				for i := range l {
+					l[i] = fn(l[i])
+				}
+				return
+			}
+			x[k] = fn(c)
+			return
+		}
+		eachSet(c, rest, fn)
+	}
 }
 
 // setField sets a field of a body by its path, the objects on the way
@@ -204,10 +264,20 @@ func listPointer(op *spec.Operation) (string, bool) {
 			}
 		}
 	}
-	if len(lists) == 1 && (model.Page(dict.DTORef(ref), lists[0]) || len(props) <= 4 && len(props) > 1) {
+	if len(lists) == 1 && (model.Page(dict.DTORef(ref), lists[0]) || len(props) <= 4 && len(props) > 1 && !oneRecord(op, props)) {
 		return "/" + lists[0], true
 	}
 	return "", false
+}
+
+// oneRecord reports whether an answer without the name of a page is one
+// record with a list in it (a ship with its crew), not a page: it has an
+// id, or the path ends in a key (/ships/{shipId}).
+func oneRecord(op *spec.Operation, props openapi3.Schemas) bool {
+	if _, ok := propertyFoldName(props, "id"); ok {
+		return true
+	}
+	return strings.HasSuffix(op.Path, "}")
 }
 
 // isList reports whether an operation answers with a list.

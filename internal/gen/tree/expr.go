@@ -142,13 +142,17 @@ func (r Ref) String() string {
 }
 
 // Field returns the value at a dot path ("route.originId", "items.0.id")
-// of a record, and whether it is there.
+// of a record, and whether it is there. A name after a list reads it in
+// each element (crew.pilotId: the pilotId of every member of the crew) and
+// gives the list of the values the elements have; an empty list gives an
+// empty list.
 func Field(v any, path string) (any, bool) {
 	if path == "" {
 		return v, true
 	}
 	cur := v
-	for _, seg := range strings.Split(path, ".") {
+	segs := strings.Split(path, ".")
+	for i, seg := range segs {
 		switch x := cur.(type) {
 		case map[string]any:
 			next, ok := x[seg]
@@ -166,16 +170,40 @@ func Field(v any, path string) (any, bool) {
 			}
 			cur = next
 		case []any:
-			i, err := strconv.Atoi(seg)
-			if err != nil || i < 0 || i >= len(x) {
+			n, err := strconv.Atoi(seg)
+			if err != nil {
+				return eachField(x, strings.Join(segs[i:], "."))
+			}
+			if n < 0 || n >= len(x) {
 				return nil, false
 			}
-			cur = x[i]
+			cur = x[n]
 		default:
 			return nil, false
 		}
 	}
 	return cur, true
+}
+
+// eachField reads a dot path in each element of a list: the values the
+// elements have, a list in an element spread out.
+func eachField(list []any, path string) (any, bool) {
+	out := []any{}
+	for _, el := range list {
+		v, ok := Field(el, path)
+		if !ok || v == nil {
+			continue
+		}
+		if l, isList := v.([]any); isList {
+			out = append(out, l...)
+			continue
+		}
+		out = append(out, v)
+	}
+	if len(out) == 0 && len(list) > 0 {
+		return nil, false
+	}
+	return out, true
 }
 
 // Pointer returns the value at a JSON pointer, and whether it is there.

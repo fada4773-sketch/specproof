@@ -409,7 +409,7 @@ name. A prefer no fetched record holds is noted.
 |---|---|
 | `call`, `path`, `query`, `header` | the request; in the short form `POST /path p=value` |
 | `body` | a body sent as it is (values may be references), or `from <node>`: build it from the record of that node (above or below, or the node itself) first; the fields it lacks come from the record and the reads about it. Without `body` the same holds for the record itself |
-| `change` | update and patch: `{field: value}`, or `auto` (default) for one changed field |
+| `change` | update and patch: `{field: value}`, or `auto` (default) for one changed field; `-fix` gives an update without `change` and `body` `{name: '{{.name}}-neu'}` (see below) |
 | `expect` | the status; default the lowest documented 2xx |
 | `save` | values of the answer under a name, as in a node: `/pointer` or `header <Name>`. A `$name` of the tree with that name reads the saved value in the scenario (see below) |
 | `onSeed` | `true`: an update, patch or action also runs on a record of the seed (a node without create: the instance holds the record), on the first record of the fetch |
@@ -464,8 +464,14 @@ dockList.code`). A field inside an object of the body is named by its
 path (`crew.pilotId`): the proposal, the check and `-fix` find such
 references as they find those on top (also the key inside an object
 named after a resource, `berth.dock.id`), and the create sets the value
-in that object, the other fields of it as the record has them. Fields
-inside lists of objects are not followed.
+in that object, the other fields of it as the record has them. A field
+inside the objects of a list is named the same way (`crew.pilotId` for
+`crew: [{pilotId, role}]`, `pilots.id` for a list of embedded pilots):
+each element names a record. The proposal reads all of them below the
+record (`pick: all`), the check and `-fix` name and add a missing
+source, and the create sets in each element the placeholder of the record
+the element named on the stage (an element whose record was not fetched
+keeps its value and is noted).
 
 ```yaml
 order:
@@ -790,6 +796,19 @@ another type (→ the key of that node of the right type); after a build, a
 `where: {field: present}` at the node whose records lack the source below
 them (then fetch again). The others name the change to make by hand. A
 reference to a field the record lacks lists the fields it has.
+
+Besides the problems, `-fix` gives each update (PUT, also by another key)
+that has neither `change` nor `body` the change of its name:
+`change: {name: '{{.name}}-neu'}` (the name of the record with `-neu`
+after it). The short form `update: PUT /docks/{dockId}` becomes a mapping
+with the request as `call`. It does so only when the body of the update
+has a field `name` that is a text without `enum`, `pattern` or `format`,
+not readOnly and not unique (`x-apitest-unique`), no key of the node, and
+no request of the tree reads or writes the record by its name (a path
+parameter `name`, `.name` in a write or a node below, `<node>.name`
+anywhere): the steps after the update would send the old name. `change:
+auto` keeps one changed field as before; `-fix` leaves it, and every
+other `change`.
 
 The top of `tree.yaml` explains the syntax in a few lines (fields,
 nodes, `/`, `$name`, `{{…}}`, `order`); a run puts it there once, also in

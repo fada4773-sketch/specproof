@@ -420,11 +420,15 @@ func TestTreeFix(t *testing.T) {
 		t.Fatalf("the change: %d %s", code, errOut)
 	}
 	code, out, errOut := cli("tree", "-spec", specPath, "-file", file, "-dry-run", "-fix")
-	if code != 0 || !strings.Contains(out, "1 fixes") || !strings.Contains(out, "fixed line") {
+	// the line twice, and the default of -fix: the update of the docks
+	// renames the dock
+	if code != 0 || !strings.Contains(out, "2 fixes") || !strings.Contains(out, "fixed line") ||
+		!strings.Contains(out, "docks.write.update: add change: {name: '{{.name}}-neu'}") {
 		t.Errorf("-fix: %d %s %s", code, out, errOut)
 	}
-	if b, _ := os.ReadFile(file); strings.Count(string(b), line) != 1 {
-		t.Errorf("the line once:\n%s", b)
+	b, _ = os.ReadFile(file)
+	if strings.Count(string(b), line) != 1 || !strings.Contains(string(b), "change: {name: '{{.name}}-neu'}") {
+		t.Errorf("the line once, the change of the name:\n%s", b)
 	}
 }
 

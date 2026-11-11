@@ -486,6 +486,12 @@ func (p *proposer) referencesOf(r *model.Resource) []reference {
 			out = append(out, reference{field: f, to: t, key: key})
 		}
 	}
+	// inside the objects of a list (crew.pilotId): each element names one
+	for _, f := range r.Listed {
+		if t, key := r.Ref(f); t != nil {
+			out = append(out, reference{field: f, to: t, key: key, many: true})
+		}
+	}
 	for _, f := range r.FieldNames() {
 		s := r.Schema(f)
 		if s == nil || s.Value == nil || value.Type(s.Value) != "array" || s.Value.Items == nil || s.Value.Items.Value == nil {
@@ -897,7 +903,7 @@ func (p *proposer) chainOf(n *Node) *chain {
 
 // refers reports whether a field of r refers to t.
 func (p *proposer) refers(r, t *model.Resource) bool {
-	for _, f := range slices.Concat(r.Relations, r.Nested) {
+	for _, f := range slices.Concat(r.Relations, r.Nested, r.Listed) {
 		if x, _ := r.Ref(f); x == t {
 			return true
 		}

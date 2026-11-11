@@ -353,6 +353,34 @@ contain breaking changes, which are listed here.
   - Token flags for both: `-token`, `-token-env`, `-forbidden-token`,
     `-forbidden-token-env`, `-header`. The settings file of a run is
     optional (spec, base URL, health, tokens, headers, report, unique).
+  - `apitest-gen tree`: references inside the objects of a list
+    (`crew: [{pilotId, role}]`, or a list of embedded records `pilots:
+    [{id, …}]`) are followed like those inside an object: the model finds
+    them, the proposal reads every record they name below the record
+    (`pilotId=.crew.pilotId`, `pick: all`) and gives the source in `order`
+    (`- ships: {crew.pilotId: shipPilot.id}`), the check and `-fix` name
+    and add a missing one, and the create sets in each element the
+    placeholder of the record that element named. A dot path through a
+    list (`.crew.pilotId`) reads the field in every element, so a path
+    value sends one request per value and `where` tests each.
+  - `apitest-gen tree -fix` gives each update without `change` and `body`
+    `change: {name: '{{.name}}-neu'}`, when the body has a field `name`
+    the test may change (a text without enum, pattern or format, not
+    unique, no key, and no request of the tree takes the record by its
+    name). `change: auto` and every other `change` stay.
+
+### Fixed
+
+- `apitest-gen tree`: the read of a record by a value of a list the
+  record above names (`GET /pilots/{pilotId} pilotId=.pilotIds`) sent
+  `null` when the test created that record above: the list held the
+  placeholders of the create, not the keys of the stage.
+- `apitest-gen tree`: an answer with one list of objects and at most four
+  fields counted as a page of that list, also when it was one record
+  with a list in it (a ship with its crew, `GET /ships/{shipId}`): its
+  read became a list check that failed. An answer with an `id`, or of a
+  path that ends in a key, is one record now; a page by its name
+  (`items`, `…Page`) stays one.
 
 ## v0.2.0
 

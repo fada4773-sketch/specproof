@@ -196,7 +196,8 @@ KEYS OF write
   A write in long form takes:
     call, path, query, header   the request (short: POST /path p=value)
     body          sent as it is, or "from <node>": built from that record
-    change        update/patch: {field: value}, or auto (one field changed)
+    change        update/patch: {field: value}, or auto (one field changed);
+                  -fix gives an update without it {name: '{{.name}}-neu'}
     expect        the status (default: the lowest documented 2xx)
     save          values of the answer, read later as $name
     onSeed        true: an update, patch or action also runs on a record
@@ -372,7 +373,7 @@ func treeFlags(name string, out io.Writer) (*flag.FlagSet, *treeOptions) {
 		fs.StringVar(&o.excludeOps, "exclude-ops", "", `never propose these operations (operationId or "METHOD /path"); added to scope.exclude.ops`)
 		fs.BoolVar(&o.deps, "with-deps", false, "also propose the reads of other tags that give values the scope needs (scope.deps)")
 		fs.StringVar(&o.only, "node", "", "with -base-url: fetch only this node and what hangs below it again; the other records stay")
-		fs.BoolVar(&o.fix, "fix", false, `make the changes the problems name with "(-fix does it)" in tree.yaml, then go on`)
+		fs.BoolVar(&o.fix, "fix", false, `make the changes the problems name with "(-fix does it)" in tree.yaml, then go on; also gives an update without change and body change: {name: '{{.name}}-neu'} when it may rename the record`)
 	}
 	return fs, o
 }
