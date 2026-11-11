@@ -215,9 +215,18 @@ scope:
   tags: [Planet, Moon, Garden, Person]
   exclude:
     tags: [Admin, Internal*]           # * matches any text
-    ops: [purgeAll, "DELETE /cache"]   # operationIds or METHOD /path
+    ops: [purgeAll, "DELETE /cache", "* /admin/*"]   # operationIds or METHOD /path
   deps: false                          # true: also the reads of other tags that give needed values
 ```
+
+`exclude.tags` is checked against the tags of an operation, not against
+its path: `GET /gardens/{gardenId}/admin/log` tagged `Garden` stays in
+when `Admin` is excluded. To leave out every operation below a path,
+whatever its tag, name the path in `exclude.ops` with `*` (it matches any
+text, `/` too): `"* /admin/*"`, `"GET /gardens/*/admin/*"`. A node `-fix`
+adds names its operation in the comment with its tags (`# getPerson · tag
+Person · added by -fix`), so a node of a tag you did not expect is easy
+to see.
 
 A value of another tag that is not in the scope yet becomes `$name` under
 `params`. When that tag comes in later, the run replaces `$name` by the
@@ -849,8 +858,20 @@ build finds (the problems that stop it and the keys of the stage), checks
 the nodes the changes need (`-node` for each, the outer one when one hangs
 below another; the whole tree when a change names none) and builds again.
 Each round prints `-fix, round n:` with its changes. It stops when a build
-has nothing to fix, after 5 rounds, or when no change of a round fits the
-file (it says which); what is left stands in the notes and problems.
+has nothing to fix, after 5 rounds, when no change of a round fits the
+file (it says which), and as soon as a round leaves `tree.yaml` as it was
+or as an earlier round left it (the changes undo each other: that is a
+bug of apitest-gen, the run says so). What is left stands in the notes
+and problems; the run counts the errors by kind (`411 errors -fix cannot
+change: 380× is a key of the stage, …`).
+
+Not a key of the stage: a value the record holds itself in that key field
+(the code of a record a second node reads too is its own, no reference to
+the copy), and a field inside an embedded record of another resource
+(`shipClass.crew.pilotId`: that record's relations are its
+own), except that record's key (`route.dock.id`). A node that reads
+through an embedded record of a resource the scope excludes (every
+operation of it) is named by the check, and `-fix` sets it off.
 Without `-base-url`, `-fix` makes the changes and builds again from the
 records fetched before when no node was added, else it asks to fetch again.
 A fix that does not fit the file any more after the fixes before it is

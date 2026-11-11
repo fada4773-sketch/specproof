@@ -417,6 +417,7 @@ const maxFixRounds = 5
 // nodes to fetch again: one per change that adds below a node, the outer
 // one when one hangs below another.
 func (o *treeOptions) fixRound(s *spec.Spec, t *tree.Tree, fixes []tree.Fix, round int, out io.Writer) (*tree.Tree, []string, error) {
+	before, _ := t.Bytes()
 	fixed, done, ferr := tree.ApplyFixes(t, fixes)
 	if len(done) == 0 {
 		if ferr == nil {
@@ -441,6 +442,11 @@ func (o *treeOptions) fixRound(s *spec.Spec, t *tree.Tree, fixes []tree.Fix, rou
 	if problems := tree.Check(s, next); len(problems) > 0 {
 		return next, nil, fmt.Errorf("%s:\n  %s", o.file, strings.Join(problems, "\n  "))
 	}
+	if after, _ := next.Bytes(); bytes.Equal(before, after) {
+		// the check took back what the build changed: another round
+		// would do the same
+		return next, nil, fmt.Errorf("%w: the check of tree.yaml took back the changes of round %d (%s)", errUndone, round, strings.Join(done, "; "))
+	}
 	var again []string
 	for _, f := range fixes {
 		if !f.NeedsFetch() {
@@ -464,6 +470,35 @@ func (o *treeOptions) fixRound(s *spec.Spec, t *tree.Tree, fixes []tree.Fix, rou
 	return next, slices.DeleteFunc(again, func(n string) bool {
 		return slices.ContainsFunc(again, func(up string) bool { return up != n && next.Node(n).Ancestor(up) != nil })
 	}), nil
+}
+
+// errUndone stops -fix when a round leaves tree.yaml as it was.
+var errUndone = errors.New("-fix stopped")
+
+// errorKinds groups the notes of level error by their kind: "is a key of
+// the stage", "does not fit the schema", …, with how many there are.
+func errorKinds(notes []tree.Note) string {
+	counts := map[string]int{}
+	var kinds []string
+	for _, n := range notes {
+		k := n.What
+		if i := strings.Index(k, " = "); i >= 0 {
+			// "field = value is a key of the stage": the kind is what follows the value
+			if j := strings.Index(k[i+3:], " "); j >= 0 {
+				k = k[i+3+j+1:]
+			}
+		}
+		if counts[k] == 0 {
+			kinds = append(kinds, k)
+		}
+		counts[k]++
+	}
+	slices.SortStableFunc(kinds, func(a, b string) int { return counts[b] - counts[a] })
+	var parts []string
+	for _, k := range kinds {
+		parts = append(parts, fmt.Sprintf("%d× %s", counts[k], k))
+	}
+	return strings.Join(parts, ", ")
 }
 
 // buildProblems writes the problems of a build into the review and returns
@@ -671,6 +706,8 @@ func treeMain(o *treeOptions, out io.Writer) (int, error) {
 	// build; with -fix make the changes the build finds and build again,
 	// fetching again the nodes a change needs, until none is left
 	var built *tree.Built
+	seen := map[string]int{} // tree.yaml after each round
+	stopped := ""
 	for round := 1; ; round++ {
 		review.SetPlan(tree.PlanSection(t, data))
 		var fe *tree.FindingError
@@ -685,9 +722,17 @@ func treeMain(o *treeOptions, out io.Writer) (int, error) {
 		default:
 			fixes = built.Fixes
 		}
-		if !o.fix || len(fixes) == 0 || round > maxFixRounds {
-			if o.fix && len(fixes) > 0 {
-				fmt.Fprintf(out, "  -fix stopped after %d rounds; %d changes are left, the notes and problems say which\n", maxFixRounds, len(fixes))
+		if round > maxFixRounds && stopped == "" {
+			stopped = fmt.Sprintf("-fix stopped after %d rounds; %d changes are left", maxFixRounds, len(fixes))
+		}
+		if !o.fix || len(fixes) == 0 || stopped != "" {
+			if stopped != "" {
+				fmt.Fprintf(out, "  %s\n", stopped)
+			}
+			if o.fix && built != nil {
+				if errs := built.Errors(); len(errs) > 0 {
+					fmt.Fprintf(out, "  %d errors -fix cannot change (see the notes in %s): %s\n", len(errs), treeReviewFile, errorKinds(errs))
+				}
 			}
 			if fe != nil {
 				return o.buildProblems(fe, review, out)
@@ -698,6 +743,12 @@ func treeMain(o *treeOptions, out io.Writer) (int, error) {
 			break
 		}
 		next, again, err := o.fixRound(s, t, fixes, round, out)
+		if errors.Is(err, errUndone) {
+			// build again without the changes: the run ends with what is left
+			t, stopped = next, err.Error()+"; this is a bug of apitest-gen, please report it with the lines above"
+			round--
+			continue
+		}
 		if err != nil {
 			if fe != nil {
 				_, _ = o.buildProblems(fe, review, out)
@@ -705,6 +756,11 @@ func treeMain(o *treeOptions, out io.Writer) (int, error) {
 			return 1, err
 		}
 		t = next
+		if b, _ := t.Bytes(); seen[string(b)] > 0 {
+			stopped = fmt.Sprintf("-fix stopped: round %d brought tree.yaml back to how round %d left it; the changes undo each other", round, seen[string(b)])
+		} else {
+			seen[string(b)] = round
+		}
 		switch {
 		case len(again) > 0 && o.baseURL == "":
 			if fe != nil {

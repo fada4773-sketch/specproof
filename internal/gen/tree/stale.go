@@ -8,6 +8,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/fada4773-sketch/specproof/internal/gen/model"
 	"github.com/fada4773-sketch/specproof/internal/spec"
 )
 
@@ -41,6 +42,12 @@ func checkScope(s *spec.Spec, t *Tree) ([]string, []Fix) {
 			why := "excluded by scope (" + sc.excludedBy(op) + ")"
 			fix(Fix{Line: n.Line, Change: n.Name + ": add off: true # " + why, apply: setNodeOff(n.Name, why)},
 				"%s: %s is %s, but the tree still fetches it", n.Name, callOf(op), why)
+		} else if n.Enabled() {
+			if field, res, by := throughExcluded(s, sc, n); res != "" {
+				why := "reads through " + res + ", excluded by scope (" + by + ")"
+				fix(Fix{Line: n.Line, Change: n.Name + ": add off: true # " + why, apply: setNodeOff(n.Name, why)},
+					"%s: reads %s through the embedded %s, which the scope excludes (%s): the records it names belong to that record, not to the test", n.Name, field, res, by)
+			}
 		}
 		for _, kind := range n.Kinds() {
 			w := n.Write[kind]
@@ -220,4 +227,41 @@ func unknownNodeRef(t *Tree, v any) bool {
 	}
 	name, field, ok := strings.Cut(str, ".")
 	return ok && field != "" && nameForm(name) && t.Node(name) == nil
+}
+
+// throughExcluded finds a value of a node (path or query) that reads the
+// record above through an embedded record of a resource the scope
+// excludes (.shipClass.crew.pilotId with ShipClass excluded): the
+// field, the resource and what excludes it; "" when none. A resource is
+// excluded when the scope excludes every operation of it.
+func throughExcluded(s *spec.Spec, sc Scope, n *Node) (string, string, string) {
+	m := modelOf(s)
+	for _, v := range append(sortedValues(n.Path), sortedValues(n.Query)...) {
+		str, ok := v.(string)
+		if !ok || !strings.HasPrefix(str, ".") {
+			continue
+		}
+		segs := strings.Split(strings.TrimPrefix(str, "."), ".")
+		for _, seg := range segs[:max(len(segs)-1, 0)] {
+			for _, res := range m.Resources {
+				if !strings.EqualFold(res.Name, seg) && !strings.EqualFold(res.Name, singular(seg)) {
+					continue
+				}
+				if len(res.Ops) == 0 || slices.ContainsFunc(res.Ops, func(o *model.Op) bool { return !sc.Excluded(o.Op) }) {
+					continue
+				}
+				return str, res.Name, sc.excludedBy(res.Ops[0].Op)
+			}
+		}
+	}
+	return "", "", ""
+}
+
+// sortedValues are the values of a map in the order of its keys.
+func sortedValues(m map[string]any) []any {
+	var out []any
+	for _, k := range sortedKeys(m) {
+		out = append(out, m[k])
+	}
+	return out
 }

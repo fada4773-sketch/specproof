@@ -410,6 +410,24 @@ contain breaking changes, which are listed here.
   They now take the record their field names by value, from the records
   the fetch took anywhere; when it took none, `-fix` adds a read below
   each of those nodes and fetches them again.
+- `apitest-gen tree`: the key a record holds itself (its code, read by a
+  second node too) was taken for the key of another record the test
+  creates: hundreds of errors "is a key of the stage", and a change of
+  `order` that the check took back, five rounds long. Such a value is the
+  record's own now; so is a field inside an embedded record of another
+  resource (except its key).
+- `apitest-gen tree -fix` stops as soon as a round leaves `tree.yaml` as it
+  was or as an earlier round left it, and counts the errors it leaves by
+  kind.
+- `apitest-gen tree`: a node that reads through an embedded record of a
+  resource the scope excludes is named by the check; `-fix` sets it off.
+- `apitest-gen tree -fix`: the change of a path value that is a key of the
+  stage named the node above of that resource also when the scope
+  excludes it or it is off; such a node is skipped now.
+- `apitest-gen tree -fix`: a node it adds names its tags in the comment
+  (`# getPilot · tag Pilot · added by -fix`); the docs say that
+  `exclude.tags` checks the tags of an operation, not its path, and how
+  `exclude.ops` leaves out a path (`"* /admin/*"`).
 - `apitest-gen tree`: a path value whose field is empty in the record
   (null or missing on the way) was reported as an unknown field with a fix
   to rename it; the note now says the record names none.

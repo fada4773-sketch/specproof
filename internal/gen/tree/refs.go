@@ -399,6 +399,13 @@ func newSourceFix(s *spec.Spec, t *Tree, n *Node, e OrderEntry, need refNeed) Fi
 	}
 }
 
+// addedComment is the comment of a node -fix adds: the operationId, its
+// tags (exclude.tags is checked against them, not against the path) and
+// who added it.
+func addedComment(op *spec.Operation) string {
+	return op.ID + " · tag " + strings.Join(tagsOf(op), ", ") + " · added by -fix"
+}
+
 // sourceNode is the node to add below n that reads the records a field of
 // its records names: the read by the key the field holds (by another key
 // only when the resource has one), else a list of the resource with a
@@ -429,7 +436,7 @@ func sourceNode(s *spec.Spec, t *Tree, n *Node, need refNeed, taken map[string]b
 		taken[name] = true
 	}
 	if read != nil {
-		c := &Node{Name: name, Call: callOf(read), Comment: read.ID, Path: map[string]any{pathParams(read)[0]: "." + need.field}}
+		c := &Node{Name: name, Call: callOf(read), Comment: addedComment(read), Path: map[string]any{pathParams(read)[0]: "." + need.field}}
 		short, _ := shortText(c.Call, c.Path)
 		return c, short
 	}
@@ -443,7 +450,7 @@ func sourceNode(s *spec.Spec, t *Tree, n *Node, need refNeed, taken map[string]b
 	if list == nil {
 		return nil, ""
 	}
-	c := &Node{Name: name, Call: callOf(list), Comment: list.ID, Key: keyPointers(need.to), Page: pageOf(list),
+	c := &Node{Name: name, Call: callOf(list), Comment: addedComment(list), Key: keyPointers(need.to), Page: pageOf(list),
 		Where: []Clause{{Field: need.key, Test: n.Name + "." + need.field, Note: "the " + lowerFirst(need.to.Name) + " " + n.Name + " refers to"}}}
 	if need.many {
 		c.Pick = Pick{All: true}
@@ -513,6 +520,10 @@ func checkPathKeys(s *spec.Spec, m *model.Model, t *Tree, created map[*model.Res
 				start = n
 			}
 			for a := start; a != nil; a = a.Parent {
+				// a node the scope excludes or that is off gives nothing
+				if a != n && !usable(s, t, a) {
+					continue
+				}
 				if sameKind(p, nodeResource(s, m, a), to, key) {
 					src = a.Name + "." + key
 					if a == n {

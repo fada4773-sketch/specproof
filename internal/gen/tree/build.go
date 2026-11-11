@@ -998,7 +998,7 @@ func (b *builder) placeholderFor(v any, fields []string, at string, exclude *Rec
 	}
 	if b.strict {
 		// the file says where values come from: a match is only a hint
-		if len(best) == 1 {
+		if len(best) == 1 && !b.inEmbedded(exclude, at) {
 			b.keyGap(step, exclude, what, at, v, best[0])
 		}
 		return v
@@ -1017,6 +1017,58 @@ func (b *builder) placeholderFor(v any, fields []string, at string, exclude *Rec
 	return v
 }
 
+// ownKey reports whether a key the value matches is the record's own: the
+// body field is that key field and the record (one of its resource, read
+// by another node too) has the value there. A record's own code is no
+// reference to the copy of it another node read.
+func (b *builder) ownKey(r *Record, kr keyRef, fields []string, v any) bool {
+	if r == nil {
+		return false
+	}
+	if kr.rec == b.entity(r) {
+		return true
+	}
+	if !slices.ContainsFunc(fields, func(f string) bool { return strings.EqualFold(f, kr.field) }) {
+		return false
+	}
+	own, ok := b.entity(r).Get(kr.field)
+	if !ok || text(own) != text(v) {
+		return false
+	}
+	res := b.resourceOf(kr.rec.Node)
+	return res != nil && res == b.resourceOf(b.entity(r).Node)
+}
+
+// inEmbedded reports whether a body field of r lies inside an object of
+// another resource embedded in the body (shipClass.crew.pilotId in a
+// ship): that record's relations are its own, only its key names it
+// (route.dock.id), as the model takes them.
+func (b *builder) inEmbedded(r *Record, path string) bool {
+	segs := strings.Split(path, ".")
+	var own *model.Resource
+	if r != nil {
+		own = b.resourceOf(b.entity(r).Node)
+	}
+	for i, seg := range segs[:len(segs)-1] {
+		var res *model.Resource
+		for _, x := range b.m.Resources {
+			if strings.EqualFold(x.Name, seg) || strings.EqualFold(x.Name, singular(seg)) {
+				res = x
+				break
+			}
+		}
+		if res == nil || res == own {
+			continue
+		}
+		last := segs[len(segs)-1]
+		key := i == len(segs)-2 && slices.ContainsFunc(res.Keys, func(k string) bool {
+			return strings.EqualFold(k, last) || strings.EqualFold(res.Name+k, last)
+		})
+		return !key
+	}
+	return false
+}
+
 // matches are the keys of created records a value of the stage is, whose
 // record the field names best.
 func (b *builder) matches(v any, fields []string, exclude *Record) []keyRef {
@@ -1030,7 +1082,7 @@ func (b *builder) matches(v any, fields []string, exclude *Record) []keyRef {
 	var best []keyRef
 	score := 0
 	for _, kr := range b.byValue[text(v)] {
-		if kr.rec == exclude {
+		if kr.rec == exclude || b.ownKey(exclude, kr, fields, v) {
 			continue
 		}
 		s := 0

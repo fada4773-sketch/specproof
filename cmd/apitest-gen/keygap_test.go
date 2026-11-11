@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/fada4773-sketch/specproof/internal/gen/tree"
 	"github.com/fada4773-sketch/specproof/internal/testserver"
 )
 
@@ -148,5 +149,17 @@ func TestTreeFixLoop(t *testing.T) {
 	review, _ := os.ReadFile(dir + "tree-review_gen.md")
 	if strings.Contains(string(review), "error: ") || !strings.Contains(string(review), "info: ") {
 		t.Errorf("no error left, the notes marked:\n%s", review)
+	}
+}
+
+// TestErrorKinds: the errors -fix leaves are counted by kind, the most
+// first; the values of the fields do not split a kind.
+func TestErrorKinds(t *testing.T) {
+	notes := []tree.Note{
+		{What: "pilotId = 3 is a key of the stage"}, {What: "dockId = 7 is a key of the stage"},
+		{What: "name = 42 does not fit the schema"},
+	}
+	if got := errorKinds(notes); got != "2× is a key of the stage, 1× does not fit the schema" {
+		t.Errorf("kinds: %s", got)
 	}
 }

@@ -339,3 +339,105 @@ func TestFetchNamesNone(t *testing.T) {
 		}
 	}
 }
+
+// TestPathKeyFixSkipsExcluded: the fix of a path value that is a key of
+// the stage names the node above that reads the record, but not one the
+// scope excludes (or that is off): it reads no records.
+func TestPathKeyFixSkipsExcluded(t *testing.T) {
+	s := loadStarport(t)
+	file := strings.Replace(orderTree, "              shipPilot: GET /pilots/{pilotId} pilotId=.pilotId\n",
+		"              shipPilot: GET /pilots/{pilotId} pilotId=.pilotId\n              shipDock: GET /docks/{dockId} dockId=106\n", 1)
+	pick := func(problems []string) string {
+		for _, p := range problems {
+			if strings.Contains(p, "shipDock: {dockId} = 106 is the id of a dock of the stage") {
+				return p
+			}
+		}
+		return ""
+	}
+	if p := pick(Check(s, parse(t, file))); !strings.Contains(p, "dockId=106 → dockId=docks.id (-fix does it)") {
+		t.Fatalf("the docks above give it: %q", p)
+	}
+	excluded := "scope:\n  exclude:\n    ops: [listDocks]\n" + file
+	if p := pick(Check(s, parse(t, excluded))); p == "" || strings.Contains(p, "docks.id") || strings.Contains(p, "(-fix does it)") {
+		t.Errorf("an excluded node gives nothing: %q", p)
+	}
+}
+
+// TestAddedNodeNamesItsTag: a node -fix adds says in its comment its
+// operationId, its tag and that -fix added it.
+func TestAddedNodeNamesItsTag(t *testing.T) {
+	v := leadStarport
+	s, _ := v.load(t)
+	file := strings.NewReplacer(
+		"    pick: 1\n    off: true\n", "    pick: all\n",
+		"            each:\n              shipPilot: GET /pilots/{pilotId} pilotId=.leadPilotId\n", "",
+	).Replace(leadTree)
+	tr, built := buildFrom(t, s, file, v.stage(t))
+	fixed, _, err := ApplyFixes(tr, built.Fixes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := fixed.Bytes()
+	if !strings.Contains(string(b), "# getPilot · tag Pilot · added by -fix") {
+		t.Errorf("the comment of the added node:\n%s", b)
+	}
+}
+
+// TestOwnKeyAndEmbedded: the key a record holds itself is no reference to
+// a copy of it another node read; a field inside an embedded record of
+// another resource is none either, except that record's key.
+func TestOwnKeyAndEmbedded(t *testing.T) {
+	s := loadStarport(t)
+	tr := parse(t, orderTree)
+	b := &builder{s: s, t: tr, m: modelOf(s), d: &Data{}, canon: map[*Record]*Record{}}
+	pilot := &Record{ID: "pilots1", Node: tr.Node("pilots"), Value: map[string]any{"id": 5, "name": "Ada"}}
+	copyOf := &Record{ID: "shipPilot1", Node: tr.Node("shipPilot"), Value: map[string]any{"id": 5, "name": "Ada"}}
+	ship := &Record{ID: "ships1", Node: tr.Node("ships"), Value: map[string]any{"id": 9, "pilotId": 5}}
+	kr := keyRef{rec: pilot, field: "id"}
+	if !b.ownKey(copyOf, kr, []string{"id"}, 5) {
+		t.Error("the id of the pilot read twice is its own")
+	}
+	if b.ownKey(ship, kr, []string{"pilotId"}, 5) {
+		t.Error("the pilotId of a ship names the pilot")
+	}
+	for path, want := range map[string]bool{
+		"dock.pilots.pilotId": true,  // inside the embedded dock
+		"dock.id":             false, // the key of the dock
+		"route.dock.id":       false, // the key of a dock inside route
+		"crew.pilotId":        false, // crew is no resource
+		"pilotId":             false,
+	} {
+		if got := b.inEmbedded(ship, path); got != want {
+			t.Errorf("%s: embedded %v, want %v", path, got, want)
+		}
+	}
+}
+
+// TestThroughExcludedRecord: a node that reads through an embedded record
+// of a resource the scope excludes (.pilot.pilotId with Pilot excluded) is
+// named, and -fix sets it off; its own request (getLicense) is in scope.
+func TestThroughExcludedRecord(t *testing.T) {
+	s := loadStarport(t)
+	file := "scope:\n  exclude:\n    tags: [Pilot]\n" + strings.Replace(orderTree,
+		"              shipPilot: GET /pilots/{pilotId} pilotId=.pilotId\n",
+		"              shipPilot: GET /pilots/{pilotId} pilotId=.pilotId\n              shipLicense: GET /licenses/{pilotId} pilotId=.pilot.pilotId\n", 1)
+	problems := Check(s, parse(t, file))
+	if !slices.ContainsFunc(problems, func(p string) bool {
+		return strings.Contains(p, "shipLicense: reads .pilot.pilotId through the embedded Pilot, which the scope excludes (tag Pilot)") && strings.Contains(p, "(-fix does it)")
+	}) {
+		t.Fatalf("the read through the excluded pilot: %v", problems)
+	}
+	fixed, _, err := Repair(s, parse(t, file))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := fixed.Node("shipLicense"); n == nil || !n.Off {
+		b, _ := fixed.Bytes()
+		t.Errorf("shipLicense is off:\n%s", b)
+	}
+	// .pilotId of the ship itself is no read through a pilot
+	if _, res, _ := throughExcluded(s, fixed.Scope, &Node{Path: map[string]any{"pilotId": ".pilotId"}}); res != "" {
+		t.Errorf("a field on top reads through nothing: %s", res)
+	}
+}
