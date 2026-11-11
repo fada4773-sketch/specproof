@@ -446,13 +446,18 @@ func (o *treeOptions) fixRound(s *spec.Spec, t *tree.Tree, fixes []tree.Fix, rou
 		if !f.NeedsFetch() {
 			continue
 		}
-		n := f.FetchNode()
-		if n == "" || next.Node(n) == nil {
+		nodes := f.FetchNodes()
+		if len(nodes) == 0 {
 			// no node named: the whole tree
 			return next, []string{""}, nil
 		}
-		if !slices.Contains(again, n) {
-			again = append(again, n)
+		for _, n := range nodes {
+			if next.Node(n) == nil {
+				return next, []string{""}, nil
+			}
+			if !slices.Contains(again, n) {
+				again = append(again, n)
+			}
 		}
 	}
 	// a node below another one fetched again comes with it

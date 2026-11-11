@@ -370,11 +370,21 @@ func (b *builder) sourceValues(r *Record, e *OrderEntry, field string) ([]any, [
 		}
 	}
 	if len(from) == 0 {
-		if v, found := b.entity(r).Get(field); !found || empty(v) {
+		v, found := r.Get(field)
+		if !found || empty(v) {
+			v, found = b.entity(r).Get(field)
+		}
+		if !found || empty(v) {
 			// the record names no such record: nothing to take
 			return nil, nil, false
 		}
-		b.noSource(r, e, field, ref)
+		// not below the record: the records of the source's resource the
+		// fetch took elsewhere, by the values the record names
+		if vals, stage, ok := b.sourceByValue(v, ref); ok {
+			return vals, stage, true
+		}
+		_, many := v.([]any)
+		b.noSource(r, e, field, ref, many)
 		return nil, nil, false
 	}
 	var vals, stage []any
@@ -401,11 +411,15 @@ func (b *builder) sourceValues(r *Record, e *OrderEntry, field string) ([]any, [
 type sourceGap struct {
 	at, fix int
 	ids     []string
+	// nodes are the nodes of the records, many whether the field names
+	// several records (a list)
+	nodes []*Node
+	many  bool
 }
 
 // noSource notes a source of order without a record for r, once per line
 // and field with all records that lack one.
-func (b *builder) noSource(r *Record, e *OrderEntry, field string, ref Ref) {
+func (b *builder) noSource(r *Record, e *OrderEntry, field string, ref Ref, many bool) {
 	if b.gaps == nil {
 		b.gaps = map[string]*sourceGap{}
 	}
@@ -420,7 +434,11 @@ func (b *builder) noSource(r *Record, e *OrderEntry, field string, ref Ref) {
 		return
 	}
 	g.ids = append(g.ids, r.ID)
-	msg, f := b.noSourceRecord(g.ids, e, field, ref)
+	if !slices.Contains(g.nodes, r.Node) {
+		g.nodes = append(g.nodes, r.Node)
+	}
+	g.many = g.many || many
+	msg, f := b.noSourceRecord(g, e, field, ref)
 	b.problems[g.at] = msg
 	if f.apply != nil {
 		if g.fix < 0 {
@@ -433,8 +451,25 @@ func (b *builder) noSource(r *Record, e *OrderEntry, field string, ref Ref) {
 
 // noSourceRecord says in short what a source of order without a record for
 // the records ids needs: the change of tree.yaml, and the fetch after it.
-func (b *builder) noSourceRecord(ids []string, e *OrderEntry, field string, ref Ref) (string, Fix) {
+func (b *builder) noSourceRecord(g *sourceGap, e *OrderEntry, field string, ref Ref) (string, Fix) {
+	ids := g.ids
 	src, at := b.t.Node(ref.Node), b.t.Node(e.Node)
+	// records of other nodes than the one with the line of order (a list
+	// of the same records by another filter): the source does not hang
+	// below them; a read below each of them gives the records by value
+	if src != nil {
+		var others []*Node
+		for _, rn := range g.nodes {
+			n := b.t.Node(rn.Name)
+			if n == nil || at != nil && n.Name == at.Name || below(src, n) || n.Ancestor(ref.Node) != nil {
+				continue
+			}
+			others = append(others, n)
+		}
+		if len(others) > 0 {
+			return b.readBelowFix(g, others, e, field, ref, src)
+		}
+	}
 	where := "below or above"
 	var conds []string // the fields of the record the source reads with (.pilotId)
 	if src != nil && at != nil {
@@ -473,6 +508,101 @@ func (b *builder) noSourceRecord(ids []string, e *OrderEntry, field string, ref 
 		f = Fix{Line: e.Line, Change: fmt.Sprintf("remove {%s: …}, or fetch a record of %s for %s", field, ref.Node, them)}
 	}
 	return msg + f.change(), f
+}
+
+// readBelowFix is the change for records of nodes the source of order does
+// not hang below: below each of those nodes a node that reads the records
+// the field names (the build then takes them by their value); the records
+// are fetched again.
+func (b *builder) readBelowFix(g *sourceGap, nodes []*Node, e *OrderEntry, field string, ref Ref, src *Node) (string, Fix) {
+	who := g.ids[0] + " has"
+	if len(g.ids) > 1 {
+		who = strings.Join(g.ids, ", ") + " have"
+	}
+	var names []string
+	for _, n := range nodes {
+		names = append(names, n.Name)
+	}
+	msg := fmt.Sprintf("line %d: order: %s: {%s: %s}: %s no record of %s below them: %s hangs below %s, the records are read by %s, and the fetch took none of the records they name elsewhere",
+		e.Line, e.Node, field, ref, who, ref.Node, ref.Node, src.Parent.Name, strings.Join(names, ", "))
+	to := b.resourceOf(src)
+	if to == nil {
+		f := Fix{Line: e.Line, Change: fmt.Sprintf("add below %s a node that reads the records %s names", strings.Join(names, ", "), field)}
+		return msg + f.change(), f
+	}
+	need := refNeed{field: field, to: to, key: ref.Field, many: g.many}
+	if k := to.Field(ref.Field); k != "" {
+		need.key = k
+	}
+	taken := map[string]bool{}
+	var adds []*Node
+	var parts []string
+	for _, n := range nodes {
+		c, desc := sourceNode(b.s, b.t, n, need, taken)
+		if c == nil {
+			f := Fix{Line: e.Line, Change: fmt.Sprintf("add below %s a node that reads the %s records by .%s", n.Name, lowerFirst(to.Name), field)}
+			return msg + f.change(), f
+		}
+		adds = append(adds, c)
+		parts = append(parts, fmt.Sprintf("below %s the node %s: %s", n.Name, c.Name, desc))
+	}
+	f := Fix{Line: e.Line, fetch: names,
+		Change: fmt.Sprintf("add %s (the build takes the records by the values the field holds); then fetch again with -node %s", strings.Join(parts, ", "), strings.Join(names, ", ")),
+		apply: func(t *Tree) bool {
+			for i, n := range nodes {
+				if !addChildNode(t, n.Name, adds[i]) {
+					return false
+				}
+			}
+			return true
+		}}
+	return msg + f.change(), f
+}
+
+// sourceByValue are the values of a source of order for a record that has
+// no record of the source node below or above it: per value the record
+// names (one, or each of a list), a record of the source node or of its
+// resource the fetch took elsewhere whose field has it, as its placeholder
+// when the test creates it. ok only when every value has one.
+func (b *builder) sourceByValue(v any, ref Ref) ([]any, []any, bool) {
+	src := b.t.Node(ref.Node)
+	if src == nil {
+		return nil, nil, false
+	}
+	if !slices.ContainsFunc(b.d.Records, func(c *Record) bool { return c.Node.Name == ref.Node }) {
+		// the source has no record at all: the data is older than the
+		// tree, fetch again
+		return nil, nil, false
+	}
+	res := b.resourceOf(src)
+	values, isList := v.([]any)
+	if !isList {
+		values = []any{v}
+	}
+	var vals, stage []any
+	for _, sv := range values {
+		var hit *Record
+		for _, c := range b.d.Records {
+			if c.Node.IsRequire || c.Node.Name != ref.Node && (res == nil || b.resourceOf(c.Node) != res) {
+				continue
+			}
+			if cv, ok := c.Get(ref.Field); ok && text(cv) == text(sv) {
+				hit = c
+				break
+			}
+		}
+		if hit == nil {
+			return nil, nil, false
+		}
+		val := sv
+		if ce := b.entity(hit); b.created[ce] {
+			if name := b.keyVar[ce][ref.Field]; name != "" {
+				val = "{{" + name + "}}"
+			}
+		}
+		vals, stage = append(vals, val), append(stage, sv)
+	}
+	return vals, stage, len(vals) > 0
 }
 
 // sentField is a field of a record whose sent value is being resolved.

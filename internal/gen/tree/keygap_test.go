@@ -1,6 +1,7 @@
 package tree
 
 import (
+	"errors"
 	"net/http/httptest"
 	"slices"
 	"strings"
@@ -236,5 +237,105 @@ func TestNoteLevels(t *testing.T) {
 	}
 	if summary, _ := ScenarioSection(built); !strings.Contains(summary, "errors") {
 		t.Errorf("the summary counts the errors: %s", summary)
+	}
+}
+
+// otherReadTree lists the ships of a dock twice: ships (the first one,
+// with the source of the pilot below it) and dockShips (all of them), both
+// created by the create of ships; order names the source below ships.
+var otherReadTree = strings.NewReplacer(
+	"  - ships\n", "  - ships: {leadPilotId: shipPilot.id}\n",
+	"            pick: all\n            key: [/id]\n            write:\n              create: POST /docks/{dockId}/ships dockId=docks.id\n",
+	"            pick: {first: 1}\n            key: [/id]\n            write:\n              create: POST /docks/{dockId}/ships dockId=docks.id\n",
+).Replace(leadTree) + "          dockShips:\n            call: GET /docks/{dockId}/ships\n            path: {dockId: .id}\n            pick: all\n            key: [/id]\n"
+
+// TestSourceForOtherReads: records of another node of the same resource
+// (dockShips) have no record of the source of order below them. The build
+// takes the pilot each names by its value from the records the fetch took
+// elsewhere; for the pilots it took nowhere, -fix adds a read below
+// dockShips (order stays), and after the fetch of dockShips the test runs
+// on an empty instance.
+func TestSourceForOtherReads(t *testing.T) {
+	v := leadStarport
+	s, path := v.load(t)
+	base := v.stage(t)
+	if !strings.Contains(otherReadTree, "dockShips:") || !strings.Contains(otherReadTree, "pick: {first: 1}") {
+		t.Fatal("the tree of the test changed")
+	}
+	tr, d := fetch(t, s, otherReadTree, base)
+	_, err := Build(s, tr, d)
+	var fe *FindingError
+	if !errors.As(err, &fe) || len(fe.Fixes) != 1 || !strings.Contains(err.Error(), "the records are read by dockShips") ||
+		!strings.Contains(fe.Fixes[0].Change, "below dockShips the node") || !slices.Equal(fe.Fixes[0].FetchNodes(), []string{"dockShips"}) {
+		t.Fatalf("a read below dockShips: %v", err)
+	}
+	fixed, _, err := ApplyFixes(tr, fe.Fixes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := fixed.Bytes()
+	if e := fixed.Entry("ships"); e.Values["leadPilotId"] != "shipPilot.id" || len(fixed.Node("dockShips").Each) != 1 {
+		t.Fatalf("order stays, a node below dockShips:\n%s", b)
+	}
+	tr, d = fetch(t, s, string(b), base)
+	built, err := Build(s, tr, d)
+	if err != nil {
+		t.Fatalf("built again: %v", err)
+	}
+	if len(built.Errors()) > 0 {
+		t.Errorf("no error left: %v", built.Errors())
+	}
+	for _, st := range built.Scenario.Steps {
+		if st.Call == "POST /docks/{dockId}/ships" && !strings.HasPrefix(text(st.Body.(map[string]any)["leadPilotId"]), "{{") {
+			t.Errorf("%s sends the pilot the test created: %v", st.ID, st.Body)
+		}
+	}
+	if res, log := runEmptyAt(t, path, v.server(1), built); res.Failed {
+		t.Errorf("the scenario failed on an empty instance:\n%s", log)
+	}
+}
+
+// TestSourceByValue: when the fetch took the pilots elsewhere (the list of
+// pilots at the root), the records of dockShips take the pilot they name by
+// its value: no problem, no fix, the placeholder of that pilot.
+func TestSourceByValue(t *testing.T) {
+	v := leadStarport
+	s, _ := v.load(t)
+	file := strings.Replace(otherReadTree, "    pick: 1\n    off: true\n", "    pick: all\n", 1)
+	_, built := buildFrom(t, s, file, v.stage(t))
+	if len(built.Fixes) > 0 || len(built.Errors()) > 0 {
+		t.Fatalf("nothing to fix: %v %v", built.Fixes, built.Errors())
+	}
+	creates := 0
+	for _, st := range built.Scenario.Steps {
+		if st.Call != "POST /docks/{dockId}/ships" {
+			continue
+		}
+		creates++
+		if !strings.HasPrefix(text(st.Body.(map[string]any)["leadPilotId"]), "{{") {
+			t.Errorf("%s sends the pilot the test created: %v", st.ID, st.Body)
+		}
+	}
+	if creates < 2 {
+		t.Errorf("the ships of both nodes are created: %d", creates)
+	}
+}
+
+// TestFetchNamesNone: a path value whose field is empty in the record (null
+// on the way) leaves the node out with a note that the record names none,
+// not that the field is unknown.
+func TestFetchNamesNone(t *testing.T) {
+	for path, want := range map[string]bool{
+		"crew.pilotId":   true,  // crew is null
+		"route.dock.id":  true,  // route has no dock
+		"tags.pilotId":   true,  // an empty list
+		"name.first":     false, // a text has no fields
+		"crwe.pilotId":   false, // a slip: the record has no crwe
+		"route.originId": false, // route has it
+	} {
+		rec := map[string]any{"name": "Comet", "crew": nil, "route": map[string]any{"originId": 3}, "tags": []any{}}
+		if _, got := emptyAlong(rec, path); got != want {
+			t.Errorf("%s: empty %v, want %v", path, got, want)
+		}
 	}
 }

@@ -373,11 +373,41 @@ func orWithout(n *Node, w *Write, op *spec.Operation, need refNeed) string {
 // a where on the key (as the proposal does); only requests the scope does
 // not exclude. The records are fetched again after it.
 func newSourceFix(s *spec.Spec, t *Tree, n *Node, e OrderEntry, need refNeed) Fix {
+	c, desc := sourceNode(s, t, n, need, nil)
+	if c == nil {
+		// no read of these records the scope allows: the test cannot take
+		// the one a record names; its records become seed (the instance
+		// holds them), or the read leaves exclude
+		what := lowerFirst(need.to.Name)
+		if cs := creators(s, modelOf(s), t, need.to); len(cs) > 0 && len(t.Scope.ExcludeTags)+len(t.Scope.ExcludeOps) > 0 {
+			c := cs[0]
+			why := "no read of " + what + " records in scope: the instance holds them"
+			return Fix{Line: e.Line, Change: fmt.Sprintf("%s.write.create: add off: true (the instance must hold the %s records), or take a read of them out of scope.exclude", c.Name, what),
+				apply: setWriteOff(c.Name, WriteCreate, why)}
+		}
+		return Fix{Line: e.Line, Change: fmt.Sprintf("add below %s a node that reads the %s records by .%s, then name it: - %s: {%s: <node>.%s}",
+			n.Name, what, need.field, e.Node, need.field, need.key)}
+	}
+	source := c.Name + "." + need.key
+	return Fix{
+		Line: e.Line, adds: c.Name, under: n.Name, fetch: []string{n.Name},
+		Change: fmt.Sprintf("add below %s the node %s: %s, and - %s: {…, %s: %s}; then fetch again with -node %s",
+			n.Name, c.Name, desc, e.Node, need.field, source, n.Name),
+		apply: func(t *Tree) bool {
+			return putOrderSource(e.Line, need.field, source)(t) && addChildNode(t, n.Name, c)
+		},
+	}
+}
+
+// sourceNode is the node to add below n that reads the records a field of
+// its records names: the read by the key the field holds (by another key
+// only when the resource has one), else a list of the resource with a
+// where on the key; nil when the scope allows neither. taken are names
+// other nodes to be added have.
+func sourceNode(s *spec.Spec, t *Tree, n *Node, need refNeed, taken map[string]bool) (*Node, string) {
 	excluded := func(op *spec.Operation) bool { return t.Scope.Excluded(op) }
 	var read *spec.Operation
 	if !need.many {
-		// a read by the key the field holds; by another key only when the
-		// resource has one key (the read by id with a code would not find it)
 		for _, mo := range need.to.OpsWith(model.RoleRead) {
 			if len(pathParams(mo.Op)) != 1 || excluded(mo.Op) {
 				continue
@@ -392,18 +422,16 @@ func newSourceFix(s *spec.Spec, t *Tree, n *Node, e OrderEntry, need refNeed) Fi
 		}
 	}
 	name := freeNodeName(t, lowerFirst(need.to.Name), lowerFirst(singular(n.Name))+need.to.Name)
-	source := name + "." + need.key
+	for i := 2; taken[name]; i++ {
+		name = freeNodeName(t, fmt.Sprintf("%s%s%d", lowerFirst(singular(n.Name)), need.to.Name, i))
+	}
+	if taken != nil {
+		taken[name] = true
+	}
 	if read != nil {
 		c := &Node{Name: name, Call: callOf(read), Comment: read.ID, Path: map[string]any{pathParams(read)[0]: "." + need.field}}
 		short, _ := shortText(c.Call, c.Path)
-		return Fix{
-			Line: e.Line, adds: name, under: n.Name, fetch: n.Name,
-			Change: fmt.Sprintf("add below %s the node %s: %s, and - %s: {…, %s: %s}; then fetch again with -node %s",
-				n.Name, name, short, e.Node, need.field, source, n.Name),
-			apply: func(t *Tree) bool {
-				return putOrderSource(e.Line, need.field, source)(t) && addChildNode(t, n.Name, c)
-			},
-		}
+		return c, short
 	}
 	var list *spec.Operation
 	for _, mo := range need.to.OpsWith(model.RoleList) {
@@ -413,32 +441,14 @@ func newSourceFix(s *spec.Spec, t *Tree, n *Node, e OrderEntry, need refNeed) Fi
 		}
 	}
 	if list == nil {
-		// no read of these records the scope allows: the test cannot take
-		// the one a record names; its records become seed (the instance
-		// holds them), or the read leaves exclude
-		what := lowerFirst(need.to.Name)
-		if cs := creators(s, modelOf(s), t, need.to); len(cs) > 0 && len(t.Scope.ExcludeTags)+len(t.Scope.ExcludeOps) > 0 {
-			c := cs[0]
-			why := "no read of " + what + " records in scope: the instance holds them"
-			return Fix{Line: e.Line, Change: fmt.Sprintf("%s.write.create: add off: true (the instance must hold the %s records), or take a read of them out of scope.exclude", c.Name, what),
-				apply: setWriteOff(c.Name, WriteCreate, why)}
-		}
-		return Fix{Line: e.Line, Change: fmt.Sprintf("add below %s a node that reads the %s records by .%s, then name it: - %s: {%s: <node>.%s}",
-			n.Name, what, need.field, e.Node, need.field, need.key)}
+		return nil, ""
 	}
 	c := &Node{Name: name, Call: callOf(list), Comment: list.ID, Key: keyPointers(need.to), Page: pageOf(list),
 		Where: []Clause{{Field: need.key, Test: n.Name + "." + need.field, Note: "the " + lowerFirst(need.to.Name) + " " + n.Name + " refers to"}}}
 	if need.many {
 		c.Pick = Pick{All: true}
 	}
-	return Fix{
-		Line: e.Line, adds: name, under: n.Name, fetch: n.Name,
-		Change: fmt.Sprintf("add below %s the node %s: %s where {%s: %s.%s}, and - %s: {…, %s: %s}; then fetch again with -node %s",
-			n.Name, name, callOf(list), need.key, n.Name, need.field, e.Node, need.field, source, n.Name),
-		apply: func(t *Tree) bool {
-			return putOrderSource(e.Line, need.field, source)(t) && addChildNode(t, n.Name, c)
-		},
-	}
+	return c, fmt.Sprintf("%s where {%s: %s.%s}", callOf(list), need.key, n.Name, need.field)
 }
 
 // checkPathKeys finds path values of nodes and writes that are a key of
@@ -701,7 +711,7 @@ func (b *builder) keySource(n *Node, e OrderEntry, field string, to *model.Resou
 	}
 	if added := b.added[group]; added != "" {
 		src := added + "." + need.key
-		return Fix{Line: e.Line, fetch: n.Name,
+		return Fix{Line: e.Line, fetch: []string{n.Name},
 			Change: fmt.Sprintf("- %s → - %s: {…, %s: %s} (%s: the node the fix before adds); then fetch again with -node %s", e.Node, e.Node, field, src, added, n.Name),
 			apply:  putOrderSource(e.Line, field, src)}
 	}

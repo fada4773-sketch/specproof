@@ -783,7 +783,12 @@ sent. Per node and record above it:
 
 A path value that is a reference to a list (`dockCode=.docks`) sends one
 request per value; an empty list sends none, and the note says which
-`where` lets only records with values through. The same request is sent once. A request that fails is noted, and its
+`where` lets only records with values through. A path value whose field
+is empty in the record (null, missing in an object of it, an empty list on
+the way: `.route.dock.id` of a ship without route) sends none either: the
+note says the record names none. Only a field the record lacks on top
+(`.crwe.pilotId`) or that an object with fields lacks is taken for a slip,
+with the fields it has. The same request is sent once. A request that fails is noted, and its
 branch is left out; the fetch goes on. When `budget` is used up, the rest
 is not fetched. A node without records, candidates `where` or `require`
 left out, keys `pick` names that are not there, and every failed request
@@ -826,6 +831,16 @@ fetch again with `-node`). The build itself does not stop for it; without
 name the same records (`leadDetails.leadPilotId` and
 `leadDetails.leadPilot.leadPilotId`) get one node: the second fix names
 the node the first adds.
+
+**Other reads of the same records.** Nodes that read records of the same
+resource by another filter (`gardensByMoon`, `gardensByPerson`) create
+them with the create of the line in `order`, but the source named there
+hangs below one node only. A record without the source below it takes the
+record its field names by value: a record of the source node, or of its
+resource, that the fetch took anywhere in the tree and whose field has
+that value (its placeholder when the test creates it). When the fetch
+took none of them, `-fix` adds below each of those nodes a read of the
+records the field names (`order` stays) and fetches those nodes again.
 
 **`-fix` with `-base-url`: until it fits.** With both, one run goes on
 after the build until nothing is left to fix: it makes the changes the

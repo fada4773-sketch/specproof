@@ -914,6 +914,10 @@ func resolveFetch(v any, at *Record, t *Tree, scope func(string) bool, first fun
 // it has, and the likely slip of a leading dot before a node name
 // (".planets.code" reads the field planets of the record itself).
 func missingField(ref Ref, rec *Record, scope func(string) bool) error {
+	if at, ok := emptyAlong(rec.Value, ref.Field); ok {
+		// the path is right, this record names nothing there
+		return fmt.Errorf("%s: %s names none: %s is empty there (null, missing or an empty list); nothing to read below it", ref, rec.ID, at)
+	}
 	msg := fmt.Sprintf("%s: the record %s has no field %q", ref, rec.ID, ref.Field)
 	if names := fieldNames(rec); len(names) > 0 {
 		msg += " (its fields: " + strings.Join(names, ", ") + ")"
@@ -927,6 +931,53 @@ func missingField(ref Ref, rec *Record, scope func(string) bool) error {
 		return fmt.Errorf("%s\n  fix: .field reads the record the node runs under (%s); name one of its fields, or <node>.field for the record of another node", msg, rec.Node.Name)
 	}
 	return fmt.Errorf("%s\n  fix: name one of its fields, or a node whose records have %q", msg, ref.Field)
+}
+
+// emptyAlong reports whether a dot path of a record ends in nothing
+// because a part on the way is empty (null, an empty list or object, or
+// missing in an object whose other fields are there): the record names no
+// value, the path is no slip. A first part the record lacks, or a part an
+// object with fields lacks while others of its list have it, is a slip:
+// false. at is the part that is empty.
+func emptyAlong(v any, path string) (string, bool) {
+	segs := strings.Split(path, ".")
+	m, ok := v.(map[string]any)
+	if !ok {
+		return "", false
+	}
+	if _, has := lookupFold(m, segs[0]); !has {
+		return "", false
+	}
+	var walk func(v any, i int) bool
+	walk = func(v any, i int) bool {
+		if i == len(segs) {
+			return v == nil || empty(v)
+		}
+		switch x := v.(type) {
+		case nil:
+			return true
+		case map[string]any:
+			c, has := lookupFold(x, segs[i])
+			if !has {
+				// an optional field left out: empty, when the object is
+				// one of the record (not a typo of its first part)
+				return i > 0
+			}
+			return walk(c, i+1)
+		case []any:
+			for _, el := range x {
+				if !walk(el, i) {
+					return false
+				}
+			}
+			return true
+		}
+		return false
+	}
+	if !walk(m, 0) {
+		return "", false
+	}
+	return strings.Join(segs, "."), true
 }
 
 // fieldNames are the top fields of a record and its saved values, sorted.

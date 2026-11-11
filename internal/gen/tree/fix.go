@@ -21,7 +21,8 @@ type Fix struct {
 	apply  func(t *Tree) bool
 	// adds is the node the fix adds below the node under; fetch the node
 	// the records must be fetched again from ("" when none).
-	adds, under, fetch string
+	adds, under string
+	fetch       []string
 }
 
 // change is the line a problem ends with: what to change where; a fix
@@ -39,18 +40,18 @@ func (f Fix) change() string {
 
 // NeedsFetch reports whether the records must be fetched again after the
 // fix: it adds a node or a condition.
-func (f Fix) NeedsFetch() bool { return f.fetch != "" || strings.Contains(f.Change, "fetch again") }
+func (f Fix) NeedsFetch() bool { return len(f.fetch) > 0 || strings.Contains(f.Change, "fetch again") }
 
-// FetchNode is the node whose records must be fetched again after the fix
-// (-node), "" when the fix names none.
-func (f Fix) FetchNode() string {
-	if f.fetch != "" {
+// FetchNodes are the nodes whose records must be fetched again after the
+// fix (-node), none when the fix names none (then the whole tree).
+func (f Fix) FetchNodes() []string {
+	if len(f.fetch) > 0 {
 		return f.fetch
 	}
 	if _, after, ok := strings.Cut(f.Change, "fetch again with -node "); ok {
-		return strings.Fields(after)[0]
+		return []string{strings.Fields(after)[0]}
 	}
-	return ""
+	return nil
 }
 
 // Fixes are the changes -fix makes for the problems Check finds.

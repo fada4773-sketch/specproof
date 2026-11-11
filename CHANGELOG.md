@@ -403,6 +403,16 @@ contain breaking changes, which are listed here.
   read became a list check that failed. An answer with an `id`, or of a
   path that ends in a key, is one record now; a page by its name
   (`items`, `…Page`) stays one.
+- `apitest-gen tree`: records of another node of the same resource
+  (a list of the records by another filter) whose create takes a source of
+  `order` that hangs below one node only stopped the build with "have no
+  record of … below them" and a change that did not help (`require …`).
+  They now take the record their field names by value, from the records
+  the fetch took anywhere; when it took none, `-fix` adds a read below
+  each of those nodes and fetches them again.
+- `apitest-gen tree`: a path value whose field is empty in the record
+  (null or missing on the way) was reported as an unknown field with a fix
+  to rename it; the note now says the record names none.
 - `apitest-gen tree -fix`: two fixes of one build for fields of the same
   list element both added the node that reads their records; the second
   stopped with "could not change tree.yaml there". The second now names
