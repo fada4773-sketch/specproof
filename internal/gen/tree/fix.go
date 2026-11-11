@@ -33,6 +33,10 @@ func (f Fix) change() string {
 	return s
 }
 
+// NeedsFetch reports whether the records must be fetched again after the
+// fix: it adds a node or a condition.
+func (f Fix) NeedsFetch() bool { return strings.Contains(f.Change, "fetch again") }
+
 // Fixes are the changes -fix makes for the problems Check finds.
 func Fixes(s *spec.Spec, t *Tree) []Fix {
 	_, fixes := check(s, t)

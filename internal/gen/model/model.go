@@ -1022,6 +1022,13 @@ func (d *detector) nested(r *Resource, path, owner string, s *openapi3.Schema, a
 				to = nil
 			}
 		}
+		if to == nil && embedded != nil {
+			// the key spelled with the name of the resource (pilot.pilotId,
+			// garden.gardenCode)
+			if to, key = d.refers(r, k, above); to != embedded {
+				to = nil
+			}
+		}
 		if to != nil && to != r {
 			if list {
 				r.Listed = append(r.Listed, full)

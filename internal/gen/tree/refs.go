@@ -152,6 +152,20 @@ func refSource(s *spec.Spec, m *model.Model, t *Tree, n *Node, need refNeed, fie
 			return c.Name + "." + need.key
 		}
 	}
+	if list, _, inList := strings.Cut(field, "."); need.many && inList {
+		// another field of the same list names the same records
+		// (crew.pilotId and crew.pilot.pilotId): the node that reads them
+		// by it gives them too, the build takes per element the record
+		// with its value
+		for _, c := range n.Each {
+			if c.IsRequire || !usable(s, t, c) || !sameKind(p, nodeResource(s, m, c), need.to, need.key) {
+				continue
+			}
+			if readsByPrefix(c, n, list) {
+				return c.Name + "." + need.key
+			}
+		}
+	}
 	if need.many {
 		return ""
 	}
@@ -179,6 +193,35 @@ func readsBy(c, n *Node, field string) bool {
 	is := func(v any) bool {
 		str, ok := v.(string)
 		return ok && (strings.EqualFold(str, "."+field) || strings.EqualFold(str, n.Name+"."+field))
+	}
+	for _, v := range c.Path {
+		if is(v) {
+			return true
+		}
+	}
+	for _, cl := range slices.Concat(c.Where, c.WhereAny) {
+		if is(cl.Test) {
+			return true
+		}
+	}
+	return false
+}
+
+// readsByPrefix reports whether c reads its records by a field inside the
+// list field of the record of n (.crew.pilotId for crew).
+func readsByPrefix(c, n *Node, list string) bool {
+	is := func(v any) bool {
+		str, ok := v.(string)
+		if !ok {
+			return false
+		}
+		str = strings.ToLower(str)
+		for _, p := range []string{".", strings.ToLower(n.Name) + "."} {
+			if strings.HasPrefix(str, p+strings.ToLower(list)+".") {
+				return true
+			}
+		}
+		return false
 	}
 	for _, v := range c.Path {
 		if is(v) {
@@ -333,11 +376,14 @@ func newSourceFix(s *spec.Spec, t *Tree, n *Node, e OrderEntry, need refNeed) Fi
 	excluded := func(op *spec.Operation) bool { return t.Scope.Excluded(op) }
 	var read *spec.Operation
 	if !need.many {
+		// a read by the key the field holds; by another key only when the
+		// resource has one key (the read by id with a code would not find it)
 		for _, mo := range need.to.OpsWith(model.RoleRead) {
 			if len(pathParams(mo.Op)) != 1 || excluded(mo.Op) {
 				continue
 			}
-			if exact := strings.EqualFold(byField(mo), need.key); read == nil || exact {
+			exact := strings.EqualFold(byField(mo), need.key)
+			if exact || read == nil && len(need.to.Keys) <= 1 {
 				read = mo.Op
 				if exact {
 					break
@@ -588,4 +634,60 @@ func addChildNode(t *Tree, parent string, c *Node) bool {
 	}
 	each.Content = append(each.Content, scalar(c.Name), nodeYAML(c))
 	return true
+}
+
+// keyGap notes a body field of r that sends a key of the stage: kr is the
+// record the test creates anew with another key, so the empty instance
+// lacks the value. When the body is built from the record of a node with a
+// line in order, the fix gives the field its source there: a node below
+// that reads that record by the field, or one -fix adds (then the records
+// are fetched again).
+func (b *builder) keyGap(step string, r *Record, what, field string, v any, kr keyRef) {
+	msg := fmt.Sprintf("it is the key of %s on the stage; the test creates %s anew with another key, so the empty instance has no %s %s",
+		kr.rec.ID, kr.rec.ID, kr.field, text(v))
+	var e *Record
+	var entry *OrderEntry
+	if r != nil {
+		e = b.entity(r)
+		entry = b.entryOf(e)
+	}
+	to := b.resourceOf(kr.rec.Node)
+	if entry == nil || to == nil || field == "" {
+		b.note(step, fmt.Sprintf("%s = %s is a key of the stage", what, text(v)), msg+"; give the source in order ("+field+": <node>."+kr.field+")")
+		return
+	}
+	f := b.keySource(e.Node, *entry, field, to, kr.field)
+	// one line: the note stands in a table and in the timeline
+	b.note(step, fmt.Sprintf("%s = %s is a key of the stage", what, text(v)), msg+strings.ReplaceAll(f.change(), "\n  ", "; "))
+	k := fmt.Sprintf("%d|%s", entry.Line, strings.ToLower(field))
+	if f.apply == nil || b.keyGaps[k] {
+		return
+	}
+	if b.keyGaps == nil {
+		b.keyGaps = map[string]bool{}
+	}
+	b.keyGaps[k] = true
+	b.out.Fixes = append(b.out.Fixes, f)
+}
+
+// keySource is the change of tree.yaml that gives a body field of the
+// records of n the key of the record of resource to it names: the source in
+// order when a node below n reads that record by the field, else a node
+// added below n and the source (newSourceFix).
+func (b *builder) keySource(n *Node, e OrderEntry, field string, to *model.Resource, key string) Fix {
+	many := false
+	for _, r := range b.d.Of(n) {
+		if v, ok := Field(r.Value, field); ok {
+			_, many = v.([]any)
+			break
+		}
+	}
+	need := refNeed{field: field, to: to, key: to.Field(key), many: many}
+	if need.key == "" {
+		need.key = key
+	}
+	if src := refSource(b.s, b.m, b.t, n, need, field); src != "" {
+		return Fix{Line: e.Line, Change: fmt.Sprintf("- %s → - %s: {…, %s: %s}", e.Node, e.Node, field, src), apply: addOrderSource(e.Line, field, src)}
+	}
+	return newSourceFix(b.s, b.t, n, e, need)
 }

@@ -14,20 +14,30 @@ import (
 	"github.com/fada4773-sketch/specproof/internal/testserver"
 )
 
-// listStarport is a Starport whose ships name several pilots: in a list of
-// keys (pilotIds) or in a list of objects (crew: [{pilotId, role}]).
+// listStarport is a Starport whose ships name their pilots in another
+// form than one pilotId (testserver.Starport.PilotField).
 type listStarport struct {
 	name  string
+	mode  string // the PilotField of the Starport
 	field string // the body field that names the pilots (pilotIds, crew.pilotId)
 	props string // the property of NewShip and Ship in place of pilotId
-	crew  bool   // testserver.Starport.Crew, else PilotLists
 }
 
 var listStarports = []listStarport{
-	{name: "list of keys", field: "pilotIds", props: "        pilotIds:\n          type: array\n          items: {type: integer}"},
-	{name: "list of objects", field: "crew.pilotId", crew: true,
+	{name: "list of keys", mode: "pilotIds", field: "pilotIds", props: "        pilotIds:\n          type: array\n          items: {type: integer}"},
+	{name: "list of objects", mode: "crew", field: "crew.pilotId",
 		props: "        crew:\n          type: array\n          items:\n            type: object\n            required: [pilotId]\n            properties:\n              pilotId: {type: integer}\n              role: {type: string}"},
 }
+
+// detailsStarport names each pilot twice in an element of a list: by its
+// key and in the embedded pilot, whose key is spelled with the resource
+// name (crewDetails: [{pilotId, pilot: {pilotId, name}}]).
+var detailsStarport = listStarport{name: "details", mode: "crewDetails", field: "crewDetails.pilotId",
+	props: "        crewDetails:\n          type: array\n          items:\n            type: object\n            properties:\n              pilotId: {type: integer}\n              pilot:\n                type: object\n                properties:\n                  pilotId: {type: integer}\n                  name: {type: string}"}
+
+// leadStarport names the pilot in a field the model does not take for a
+// reference (leadPilotId): only its value tells.
+var leadStarport = listStarport{name: "lead", mode: "leadPilotId", field: "leadPilotId", props: "        leadPilotId:\n          type: integer"}
 
 // load writes the spec of the variant and loads it.
 func (v listStarport) load(t *testing.T) (*spec.Spec, string) {
@@ -59,7 +69,7 @@ func (v listStarport) load(t *testing.T) (*spec.Spec, string) {
 
 func (v listStarport) server(first int) *testserver.Starport {
 	st := testserver.NewStarport(treeToken, first)
-	st.PilotLists, st.Crew = !v.crew, v.crew
+	st.PilotField = v.mode
 	return st
 }
 

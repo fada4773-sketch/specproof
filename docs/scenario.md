@@ -469,7 +469,8 @@ inside the objects of a list is named the same way (`crew.pilotId` for
 `crew: [{pilotId, role}]`, `pilots.id` for a list of embedded pilots):
 each element names a record. The proposal reads all of them below the
 record (`pick: all`), the check and `-fix` name and add a missing
-source, and the create sets in each element the placeholder of the record
+source (two fields of one element that name the same record, `crew.pilotId`
+and `crew.pilot.pilotId`, share the node that reads it), and the create sets in each element the placeholder of the record
 the element named on the stage (an element whose record was not fetched
 keeps its value and is noted).
 
@@ -797,6 +798,18 @@ another type (→ the key of that node of the right type); after a build, a
 them (then fetch again). The others name the change to make by hand. A
 reference to a field the record lacks lists the fields it has.
 
+**Keys of the stage in a body.** A body field the model takes for no
+reference (`leadPilotId`), but whose value is the key of a record the test
+creates and whose name names that record, would send the key of the stage,
+which the empty instance lacks. The build notes it at the step
+(`leadPilotId = 101 is a key of the stage: it is the key of shipPilot1 on
+the stage; the test creates shipPilot1 anew with another key …`) with the
+change, and `-fix` makes it: the source in order from the node below that
+reads the record by the field (then the test is built again from the same
+records), else a node added below that reads it and the source (then
+fetch again with `-node`). The build itself does not stop for it; without
+`-fix` the run says how many there are.
+
 Besides the problems, `-fix` gives each update (PUT, also by another key)
 that has neither `change` nor `body` the change of its name:
 `change: {name: '{{.name}}-neu'}` (the name of the record with `-neu`
@@ -852,8 +865,10 @@ the records in an empty instance:
   taken when the fields of the best kind hold one value (noted with the
   path); several values are noted and none is taken: `fields` of the node
   decides. A source in `order` or `fields` comes first. The fields of the
-  record the body leaves out are noted at the step with their reason
-  (`readOnly`, `null` in the record, not in the schema of the request).
+  record the body leaves out are noted at the step, each field once
+  under its reason (`3 fields of the record not sent`: `readOnly in
+  ShipWrite: id`, `not in ShipWrite, the schema of the request: …`,
+  `null in the record: …`).
   `unique` marks fields like `code`
   or `email` and client-chosen keys, for `-unique`.
 - **Saved keys** come from the answer of the create, else the request

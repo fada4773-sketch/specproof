@@ -37,6 +37,12 @@ type Built struct {
 	Seeds []*Record
 	// Created are the records the scenario creates.
 	Created []*Record
+	// Fixes are changes of tree.yaml for values the test sends although
+	// they are keys of the stage (a field that names a record the test
+	// creates, without a source in order); -fix makes them and builds
+	// again, or fetches again when one adds a node (NeedsFetch). The build
+	// does not stop for them.
+	Fixes []Fix
 }
 
 // uniqueNames are fields that usually must be unique per record.
@@ -89,6 +95,9 @@ type builder struct {
 	// one problem names all records that lack one
 	gaps  map[string]*sourceGap
 	fixes []Fix
+	// keyGaps are the body fields that send a key of the stage of a record
+	// the test creates, per line of order and field: one fix each
+	keyGaps map[string]bool
 	// slot is the line of order the steps being added belong to (ships,
 	// ships.read, ships.update); slotOf keeps it per step. changes are the
 	// writes that change a record, reader the reads that check one.
@@ -824,8 +833,7 @@ func (b *builder) placeholderFor(v any, fields []string, at string, exclude *Rec
 	if b.strict {
 		// the file says where values come from: a match is only a hint
 		if len(best) == 1 {
-			b.note(step, fmt.Sprintf("%s = %s stays as it is", what, text(v)),
-				"it is the key of "+best[0].rec.ID+", which the test creates; to send that, give the source in order ("+at+": <node>."+best[0].field+")")
+			b.keyGap(step, exclude, what, at, v, best[0])
 		}
 		return v
 	}
@@ -1644,22 +1652,25 @@ func (b *builder) noteDropped(step, dto string, pj *projection) {
 		return
 	}
 	by := map[string][]string{}
-	var names []string
 	for _, path := range sortedKeys(pj.drop) {
-		name := pj.rel(path)
-		by[pj.drop[path]] = append(by[pj.drop[path]], name)
-		names = append(names, name)
+		by[pj.drop[path]] = append(by[pj.drop[path]], pj.rel(path))
 	}
+	// the count on top, the fields once, by reason
 	var why []string
-	for _, reason := range []string{dropReadOnly, dropNull, dropUnknown} {
-		if l := by[reason]; len(l) > 0 {
-			if reason != dropNull {
-				reason += " of " + dto
-			}
-			why = append(why, reason+": "+strings.Join(l, ", "))
+	for _, reason := range []string{dropReadOnly, dropUnknown, dropNull} {
+		l := by[reason]
+		if len(l) == 0 {
+			continue
 		}
+		switch reason {
+		case dropReadOnly:
+			reason = "readOnly in " + dto
+		case dropUnknown:
+			reason = "not in " + dto + ", the schema of the request"
+		}
+		why = append(why, reason+": "+strings.Join(l, ", "))
 	}
-	b.note(step, plural(len(names), "field")+" of the record left out: "+strings.Join(names, ", "), strings.Join(why, "; "))
+	b.note(step, plural(len(pj.drop), "field")+" of the record not sent", strings.Join(why, "; "))
 }
 
 func lookupFold(m map[string]any, name string) (any, bool) {

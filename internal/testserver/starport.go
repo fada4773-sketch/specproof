@@ -24,9 +24,12 @@ type Starport struct {
 	mux     *http.ServeMux
 	// Requests counts the requests by method.
 	Requests map[string]int
-	// PilotLists makes a ship name its pilots in a list (pilotIds) instead
-	// of one pilotId; Crew in a list of objects (crew: [{pilotId, role}]).
-	PilotLists, Crew bool
+	// PilotField says how a ship names its pilots: "" one pilotId,
+	// "pilotIds" a list of keys, "crew" a list of objects (crew: [{pilotId,
+	// role}]), "crewDetails" a list of objects with the key and the pilot
+	// embedded (crewDetails: [{pilotId, pilot: {pilotId, name}}]),
+	// "leadPilotId" one key under a name of its own.
+	PilotField string
 }
 
 type dock struct {
@@ -306,17 +309,40 @@ func (s *Starport) deletePilot(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// flies reports whether a ship names the pilot: as pilotId, in pilotIds or
-// in its crew.
-func flies(sh map[string]any, id int) bool {
-	if sh["pilotId"] == id {
-		return true
+// flies reports whether a ship names the pilot.
+func flies(sh map[string]any, id int) bool { return slices.Contains(pilotsOf(sh), id) }
+
+// pilotsOf are the pilots a ship (or the body of its create) names, in
+// any of the forms of PilotField.
+func pilotsOf(sh map[string]any) []int {
+	var named []any
+	for _, k := range []string{"pilotId", "leadPilotId"} {
+		if v, ok := sh[k]; ok {
+			named = append(named, v)
+		}
 	}
-	if ids, _ := sh["pilotIds"].([]int); slices.Contains(ids, id) {
-		return true
+	if l, ok := sh["pilotIds"].([]any); ok {
+		named = append(named, l...)
 	}
-	crew, _ := sh["crew"].([]any)
-	return slices.ContainsFunc(crew, func(m any) bool { return m.(map[string]any)["pilotId"] == id })
+	for _, k := range []string{"crew", "crewDetails"} {
+		list, _ := sh[k].([]any)
+		for _, m := range list {
+			member, _ := m.(map[string]any)
+			named = append(named, member["pilotId"])
+			if p, ok := member["pilot"].(map[string]any); ok {
+				named = append(named, p["pilotId"])
+			}
+		}
+	}
+	var out []int
+	for _, v := range named {
+		n, err := strconv.Atoi(fmt.Sprint(v))
+		if err != nil {
+			n = -1
+		}
+		out = append(out, n)
+	}
+	return out
 }
 
 func (s *Starport) listShips(w http.ResponseWriter, r *http.Request) {
@@ -336,52 +362,27 @@ func (s *Starport) createShip(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	in := readBody(r)
-	if s.PilotLists || s.Crew {
-		s.createCrewShip(w, dockID, in)
-		return
+	field := s.PilotField
+	if field == "" {
+		field = "pilotId"
 	}
-	pilot, _ := strconv.Atoi(fmt.Sprint(in["pilotId"]))
-	if s.pilots[pilot] == nil {
-		reply(w, http.StatusUnprocessableEntity, map[string]any{"error": fmt.Sprintf("no pilot %v", in["pilotId"])})
-		return
+	named := pilotsOf(map[string]any{field: in[field]})
+	if len(named) == 0 && field != "pilotIds" {
+		named = []int{-1}
 	}
-	sh := map[string]any{"id": s.id(), "dockId": dockID, "name": in["name"], "pilotId": pilot}
-	s.ships[sh["id"].(int)] = sh
-	w.Header().Set("Location", "/api/ships/"+strconv.Itoa(sh["id"].(int)))
-	w.WriteHeader(http.StatusCreated)
-}
-
-// createCrewShip creates a ship with PilotLists or Crew: every pilot it
-// names must exist.
-func (s *Starport) createCrewShip(w http.ResponseWriter, dockID int, in map[string]any) {
-	sh := map[string]any{"id": 0, "dockId": dockID, "name": in["name"]}
-	var named []any
-	if s.Crew {
-		list, _ := in["crew"].([]any)
-		var crew []any
-		for _, m := range list {
-			member, _ := m.(map[string]any)
-			named = append(named, member["pilotId"])
-			pilot, _ := strconv.Atoi(fmt.Sprint(member["pilotId"]))
-			crew = append(crew, map[string]any{"pilotId": pilot, "role": member["role"]})
-		}
-		sh["crew"] = crew
-	} else {
-		named, _ = in["pilotIds"].([]any)
-	}
-	var pilots []int
-	for _, v := range named {
-		pilot, _ := strconv.Atoi(fmt.Sprint(v))
-		if s.pilots[pilot] == nil {
-			reply(w, http.StatusUnprocessableEntity, map[string]any{"error": fmt.Sprintf("no pilot %v", v)})
+	for _, p := range named {
+		if s.pilots[p] == nil {
+			reply(w, http.StatusUnprocessableEntity, map[string]any{"error": fmt.Sprintf("no pilot %v", p)})
 			return
 		}
-		pilots = append(pilots, pilot)
 	}
-	if !s.Crew {
-		sh["pilotIds"] = pilots
+	sh := map[string]any{"id": s.id(), "dockId": dockID, "name": in["name"]}
+	switch field {
+	case "pilotId", "leadPilotId":
+		sh[field] = named[0]
+	default:
+		sh[field] = in[field]
 	}
-	sh["id"] = s.id()
 	s.ships[sh["id"].(int)] = sh
 	w.Header().Set("Location", "/api/ships/"+strconv.Itoa(sh["id"].(int)))
 	w.WriteHeader(http.StatusCreated)
@@ -435,16 +436,24 @@ func (s *Starport) Fill() {
 		s.docks[id] = &dock{v: map[string]any{"id": id, "planetCode": spec.planet, "name": spec.name, "capacity": 4 + i}, version: 1}
 		for j := range 2 {
 			sid := s.id()
-			s.ships[sid] = map[string]any{"id": sid, "dockId": id, "name": spec.name + "-" + strconv.Itoa(j+1), "pilotId": pilots[(i+j)%len(pilots)]}
+			sh := map[string]any{"id": sid, "dockId": id, "name": spec.name + "-" + strconv.Itoa(j+1)}
 			first, second := pilots[(i+j)%len(pilots)], pilots[(i+j+1)%len(pilots)]
-			switch {
-			case s.Crew:
-				delete(s.ships[sid], "pilotId")
-				s.ships[sid]["crew"] = []any{map[string]any{"pilotId": first, "role": "captain"}, map[string]any{"pilotId": second, "role": "pilot"}}
-			case s.PilotLists:
-				delete(s.ships[sid], "pilotId")
-				s.ships[sid]["pilotIds"] = []int{first, second}
+			switch s.PilotField {
+			case "":
+				sh["pilotId"] = first
+			case "leadPilotId":
+				sh["leadPilotId"] = first
+			case "pilotIds":
+				sh["pilotIds"] = []any{first, second}
+			case "crew":
+				sh["crew"] = []any{map[string]any{"pilotId": first, "role": "captain"}, map[string]any{"pilotId": second, "role": "pilot"}}
+			case "crewDetails":
+				detail := func(p int) any {
+					return map[string]any{"pilotId": p, "pilot": map[string]any{"pilotId": p, "name": s.pilots[p]["name"]}}
+				}
+				sh["crewDetails"] = []any{detail(first), detail(second)}
 			}
+			s.ships[sid] = sh
 		}
 	}
 }

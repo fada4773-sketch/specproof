@@ -368,6 +368,20 @@ contain breaking changes, which are listed here.
     the test may change (a text without enum, pattern or format, not
     unique, no key, and no request of the tree takes the record by its
     name). `change: auto` and every other `change` stay.
+  - `apitest-gen tree -fix` also fixes what the build finds: a body field
+    the model takes for no reference (`leadPilotId`) whose value is the
+    key of a record the test creates. The note at the step says so (`… is
+    a key of the stage`) with the change; `-fix` gives the field its
+    source in order from the node below that reads the record by it and
+    builds again from the same records, or adds that node (then fetch
+    again). Without `-fix` the run says how many there are. Before, the
+    note only said to give a source and the test sent the key of the stage.
+  - `apitest-gen tree`: the model finds the key of an embedded record
+    spelled with the resource name (`pilot.pilotId`, `garden.gardenCode`);
+    two fields of one list element that name the same record share the
+    node that reads it.
+  - `apitest-gen tree`: the note of the fields a body leaves out names each
+    field once, under its reason (`3 fields of the record not sent`).
 
 ### Fixed
 
@@ -381,6 +395,9 @@ contain breaking changes, which are listed here.
   read became a list check that failed. An answer with an `id`, or of a
   path that ends in a key, is one record now; a page by its name
   (`items`, `…Page`) stays one.
+- `apitest-gen tree -fix`: the node it adds to read a record by a field
+  read it by any key of the resource (`GET /pilots/{id}` with a code); it
+  now takes a read by the key the field holds, else a list with `where`.
 
 ## v0.2.0
 

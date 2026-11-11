@@ -408,6 +408,31 @@ func (o *treeOptions) writeFixes(t *tree.Tree, done []string, out io.Writer) err
 	return nil
 }
 
+// fixKeys makes the fixes of a build for body fields that send a key of
+// the stage: a source in order is built again from the same records; a
+// node added below needs its records, so the fetch must run again.
+func (o *treeOptions) fixKeys(s *spec.Spec, t *tree.Tree, built *tree.Built, dataPath string, out io.Writer) (*tree.Built, error) {
+	fixed, done, err := tree.ApplyFixes(t, built.Fixes)
+	if err != nil {
+		return built, err
+	}
+	if err := o.writeFixes(fixed, done, out); err != nil {
+		return built, err
+	}
+	if slices.ContainsFunc(built.Fixes, tree.Fix.NeedsFetch) {
+		return built, errors.New("tree.yaml changed: nodes were added below; fetch again with -base-url (the change lines say which -node), nothing was built")
+	}
+	if t, err = tree.Load(o.file); err != nil {
+		return built, err
+	}
+	data, _, err := tree.LoadData(dataPath, t)
+	if err != nil {
+		return built, err
+	}
+	fmt.Fprintf(out, "  built again from %s with the sources of order\n", dataPath)
+	return tree.Build(s, t, data)
+}
+
 // fixHint is the line after problems that -fix can change.
 func (o *treeOptions) fixHint(n int) string {
 	if n == 0 || o.fix {
@@ -612,6 +637,15 @@ func treeMain(o *treeOptions, out io.Writer) (int, error) {
 			return 1, fmt.Errorf("%w%s", err, o.fixHint(len(fe.Fixes)))
 		}
 		return 1, err
+	}
+	if len(built.Fixes) > 0 {
+		if !o.fix {
+			fmt.Fprintf(out, "  %d body fields send a key of the stage of a record the test creates (notes \"is a key of the stage\"): add -fix to the same command\n", len(built.Fixes))
+		} else {
+			if built, err = o.fixKeys(s, t, built, dataPath, out); err != nil {
+				return 1, err
+			}
+		}
 	}
 	text, err := built.Scenario.Encode(testHead(o.file))
 	if err != nil {

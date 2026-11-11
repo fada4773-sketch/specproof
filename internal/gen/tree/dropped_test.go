@@ -90,11 +90,11 @@ func TestBodyDroppedNote(t *testing.T) {
 	if n.Step != "ships.create" {
 		t.Errorf("the note stands at the create: %q", n.Step)
 	}
-	want := "6 fields of the record left out: callsign, createdAt, crew[].since, id, pilot.rank, status"
-	if !strings.HasPrefix(n.What, want) {
+	want := "6 fields of the record not sent"
+	if n.What != want {
 		t.Errorf("what:\n got %q\nwant %q", n.What, want)
 	}
-	for _, w := range []string{"readOnly of ShipWrite: id, status", "null in the record: callsign", "not in the schema of ShipWrite: createdAt, crew[].since, pilot.rank"} {
+	for _, w := range []string{"readOnly in ShipWrite: id, status", "null in the record: callsign", "not in ShipWrite, the schema of the request: createdAt, crew[].since, pilot.rank"} {
 		if !strings.Contains(n.Why, w) {
 			t.Errorf("why lacks %q: %q", w, n.Why)
 		}
