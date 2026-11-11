@@ -124,6 +124,9 @@ type builder struct {
 	// keyGaps are the body fields that send a key of the stage of a record
 	// the test creates, per line of order and field: one fix each
 	keyGaps map[string]bool
+	// stepOwn is the record the step being built reads or writes: a value
+	// that is its own key of the stage takes the placeholder of its create
+	stepOwn *Record
 	// schemaFixed are the fields a fix of this build gives a value that
 	// fits (node|field), once each
 	schemaFixed map[string]bool
@@ -1003,6 +1006,11 @@ func (b *builder) readBy(n *Node, field string) bool {
 // record: pilotId 3 → {{pilots2.id}}. Without a fitting record the value
 // stays.
 func (b *builder) placeholderFor(v any, fields []string, at string, exclude *Record, step string) any {
+	if name := b.ownPlaceholder(v, fields); name != "" {
+		// the key of the record the step reads or writes itself (GET
+		// /docks/{id} of a dock the test created): its new key
+		return "{{" + name + "}}"
+	}
 	best := b.matches(v, fields, exclude)
 	what := strings.Join(fields, "/")
 	if at == "" {
@@ -1016,6 +1024,10 @@ func (b *builder) placeholderFor(v any, fields []string, at string, exclude *Rec
 		case b.inEmbedded(exclude, at):
 		case len(best) == 1:
 			b.keyGap(step, exclude, what, at, v, best[0])
+		case len(best) > 1 && b.oneRecord(best):
+			// several fields of one record hold the value (its code and its
+			// name): the one the name of the field says
+			b.keyGap(step, exclude, what, at, v, byName(best, fields))
 		case len(best) > 1:
 			// keys of several records (the dock 1 of two planets): the
 			// one closest to the record in the tree; the source the fix
@@ -1210,6 +1222,80 @@ func (b *builder) closest(list []keyRef, r *Record) keyRef {
 	return best
 }
 
+// below is the first record of the node name under r, its entity or
+// another read of the same record; nil when there is none.
+func (b *builder) below(r *Record, name string) *Record {
+	unders := []*Record{r, b.entity(r)}
+	for _, c := range b.d.Records {
+		if c != r && c.Node != r.Node && b.entity(c) == b.entity(r) {
+			unders = append(unders, c)
+		}
+	}
+	for _, u := range unders {
+		for _, c := range b.d.Records {
+			if c.Parent == u && c.Node.Name == name {
+				return c
+			}
+		}
+	}
+	return nil
+}
+
+// ownPlaceholder is the placeholder of the key of the record the step reads
+// or writes (stepOwn) that has the value v, "" when there is none: the
+// field the name says first.
+func (b *builder) ownPlaceholder(v any, fields []string) string {
+	if b.stepOwn == nil || v == nil {
+		return ""
+	}
+	e := b.entity(b.stepOwn)
+	if !b.created[e] {
+		return ""
+	}
+	var own []keyRef
+	for _, kr := range b.byValue[text(v)] {
+		if b.entity(kr.rec) == e && b.keyVar[e][kr.field] != "" {
+			own = append(own, kr)
+		}
+	}
+	if len(own) == 0 {
+		return ""
+	}
+	return b.keyVar[e][byName(own, fields).field]
+}
+
+// oneRecord reports whether keys are all of one record.
+func (b *builder) oneRecord(list []keyRef) bool {
+	for _, kr := range list[1:] {
+		if b.entity(kr.rec) != b.entity(list[0].rec) {
+			return false
+		}
+	}
+	return true
+}
+
+// byName is the key whose field the names say (dockCode: DockCode), else
+// one whose field ends in a name or a name in it (code: DockCode), else the
+// first.
+func byName(list []keyRef, names []string) keyRef {
+	last := func(s string) string { return strings.ToLower(s[strings.LastIndex(s, ".")+1:]) }
+	for _, n := range names {
+		for _, kr := range list {
+			if last(kr.field) == last(n) {
+				return kr
+			}
+		}
+	}
+	for _, n := range names {
+		for _, kr := range list {
+			if f, l := last(kr.field), last(n); f != "" && l != "" && (strings.HasSuffix(l, f) || strings.HasSuffix(f, l)) {
+				return kr
+			}
+		}
+	}
+	return list[0]
+}
+
 // sameKindOf reports whether keys are all the same field of records of one
 // resource.
 func (b *builder) sameKindOf(list []keyRef) bool {
@@ -1277,6 +1363,11 @@ func (b *builder) resolve(v any, at *Record, scope *Node, param, step string, ex
 		rec = nil
 		if at != nil {
 			rec = at.Ancestor(ref.Node)
+		}
+		if rec == nil && at != nil {
+			// a node below the record (fields: {pilotId: shipPilot.id}):
+			// its record under this one
+			rec = b.below(at, ref.Node)
 		}
 		if rec == nil {
 			// another node of the tree: its first record
@@ -2121,6 +2212,9 @@ func (b *builder) validate(step string, r *Record, m map[string]any, s *openapi3
 // it out). A field fields already gives is changed there by hand.
 func (b *builder) schemaFix(r *Record, k string, old any, p *openapi3.Schema, required bool, dto, reason string, rules map[string]any) Fix {
 	n := b.entity(r).Node
+	if w := b.writer(r); w != nil {
+		n = w.Node
+	}
 	if _, set, ok := foldEntry(rules, k); ok {
 		return Fix{Line: n.Line, Change: fmt.Sprintf("%s.fields.%s: %s does not fit; give a value that does", n.Name, set, text(old)), why: "fields gives the value"}
 	}
@@ -2343,7 +2437,9 @@ func (b *builder) readStep(r *Record, op *spec.Operation) {
 	if st.Expect == 0 {
 		st.Expect = http.StatusOK
 	}
+	b.stepOwn = r
 	b.params(st, op, n.Path, singleValues(n.Query), n.Header, r.Parent, n.Parent, nil)
+	b.stepOwn = nil
 	b.ownKeys(st, r, e)
 	if n.HasBody {
 		st.Body, st.HasBody = b.resolve(n.Body, r.Parent, n.Parent, "", st.ID, nil), true
@@ -2503,7 +2599,9 @@ func (b *builder) update(r *Record, w *Write, op *spec.Operation, kind string) {
 	// values of r, the step, ETag and read after it are those of e
 	e := b.entity(r)
 	st := &scenario.Step{ID: b.id(e.ID + "." + kind), Call: callOf(op), Expect: expect}
+	b.stepOwn = r
 	b.params(st, op, w.Path, w.Query, w.Header, r, r.Node, nil)
+	b.stepOwn = nil
 	if p := ifMatch(op); p != nil && b.etag[e] != "" {
 		if st.Header == nil {
 			st.Header = map[string]any{}

@@ -407,6 +407,16 @@ contain breaking changes, which are listed here.
     request's schema: a generated value that fits in `fields` of the
     node, with the old value and the reason as comment; `null` (left out)
     for a field the request does not require when none can be made.
+  - `apitest-gen tree -fix`: a seed record whose update or action
+    (`onSeed`) sends the key of the stage of a record the test creates
+    gets the source in `fields` of its node (`{homeDockId: homeDock.id}`,
+    from the record of that node below it); before, the error had no fix.
+    In `fields`, `<node>.field` of a node below reads the record under the
+    record itself.
+  - `apitest-gen tree -fix` names the node above in a path or query value
+    that reads a node beside it of the same records
+    (`code=allPlanets.code` → `code=planets.code` below `planets`), also
+    in the writes of the node; a default of `-fix`, no problem of the check.
   - `apitest-gen tree`: in `fields`, a value and the record's own field
     (`dockCount: .dockCount`) are sent as they are, never taken for the
     key of another record; `null` leaves the field out of the body.
@@ -417,6 +427,16 @@ contain breaking changes, which are listed here.
 
 ### Fixed
 
+- `apitest-gen tree`: the read of a record the test creates, by its own
+  key, was noted as "is a key of the stage" (no fix) although the step
+  sends the key of its create; such a path value takes the placeholder
+  now. Several fields of one record that hold the value (its code and its
+  name) no longer count as records of different kinds.
+- `apitest-gen tree -fix`: the source in `fields` (and a value that fits
+  the schema) went to the node of the record that stands for it, which may
+  have no write: the check then refused it. It goes to the node whose
+  write sends the body now, and a node below another read of the same
+  record counts as source.
 - `apitest-gen tree`: a body value that matched the keys of several
   records the test creates (the dock 1 of two planets) was sent as the key
   of the stage without a note. It is an error now; the nearest record in

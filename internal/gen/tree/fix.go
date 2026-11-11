@@ -96,7 +96,7 @@ func Repair(s *spec.Spec, t *Tree) (*Tree, []string, error) {
 	// the defaults of -fix that solve no problem: the name an update
 	// changes (each found again on the file the one before left)
 	for range maxFixes {
-		fixes := changeDefaults(s, t)
+		fixes := append(sideRefs(s, t), changeDefaults(s, t)...)
 		if len(fixes) == 0 {
 			break
 		}

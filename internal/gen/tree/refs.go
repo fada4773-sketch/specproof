@@ -682,6 +682,61 @@ func checkPathKeys(s *spec.Spec, m *model.Model, t *Tree, created map[*model.Res
 	return out, fixes
 }
 
+// sideRefs finds path and query values of a node (and of its writes) that
+// read a node beside it although a node above reads the same records:
+// below planets, code=allPlanets.code takes the first planet of the other
+// node, not the one the node hangs below. The
+// fix names the node above (a default of -fix: no problem of the check).
+func sideRefs(s *spec.Spec, t *Tree) []Fix {
+	m := modelOf(s)
+	scope := t.names()
+	var out []Fix
+	t.Walk(func(n *Node) {
+		if n.Gone || !n.Enabled() || n.value == nil {
+			return
+		}
+		vals := []map[string]any{n.Path, n.Query}
+		if !n.IsRequire {
+			for _, kind := range n.Kinds() {
+				if w := n.Write[kind]; w != nil && !w.Gone {
+					vals = append(vals, w.Path, w.Query)
+				}
+			}
+		}
+		done := map[string]bool{}
+		for _, vm := range vals {
+			for _, k := range sortedKeys(vm) {
+				from, ok := vm[k].(string)
+				ref, isRef := ParseRef(from, scope)
+				if !ok || !isRef || ref.Node == "" || done[from] {
+					continue
+				}
+				x := t.Node(ref.Node)
+				if x == nil || x == n || x.IsRequire || n.Ancestor(x.Name) != nil {
+					continue
+				}
+				rx := nodeResource(s, m, x)
+				if rx == nil || rx.Field(ref.Field) == "" {
+					continue
+				}
+				for a := n.Parent; a != nil; a = a.Parent {
+					if a.IsRequire || !usable(s, t, a) || nodeResource(s, m, a) != rx {
+						continue
+					}
+					to := a.Name + "." + ref.Field
+					done[from] = true
+					target := n.value
+					out = append(out, Fix{Line: n.Line,
+						Change: fmt.Sprintf("%s: %s → %s (the %s %s hangs below, not the first of %s beside it; the default of -fix)", n.Name, from, to, lowerFirst(rx.Name), n.Name, x.Name),
+						apply:  func(*Tree) bool { return replaceRef(target, from, to) }})
+					break
+				}
+			}
+		}
+	})
+	return out
+}
+
 // foldEntry is the entry of a map whose key matches name, ignoring case.
 func foldEntry(m map[string]any, name string) (string, any, bool) {
 	for k, v := range m {
@@ -800,6 +855,25 @@ func (b *builder) keyGap(step string, r *Record, what, field string, v any, kr k
 		entry = b.entryOf(e)
 	}
 	to := b.resourceOf(kr.rec.Node)
+	if w := b.writer(r); entry == nil && to != nil && field != "" && w != nil {
+		// a record the test does not create (seed) whose update or action
+		// sends the key: the source goes into the fields of the node whose
+		// write sends it
+		f := b.fieldSource(w, field, v, to, kr.field)
+		b.noteAt(LevelError, step, fmt.Sprintf("%s = %s is a key of the stage", what, text(v)), msg+strings.ReplaceAll(f.change(), "\n  ", "; "))
+		k := "fields|" + w.Node.Name + "|" + strings.ToLower(field)
+		switch {
+		case f.apply == nil:
+			b.noFix(f.why)
+		case !b.keyGaps[k]:
+			if b.keyGaps == nil {
+				b.keyGaps = map[string]bool{}
+			}
+			b.keyGaps[k] = true
+			b.out.Fixes = append(b.out.Fixes, f)
+		}
+		return
+	}
 	if entry == nil || to == nil || field == "" {
 		b.noteAt(LevelError, step, fmt.Sprintf("%s = %s is a key of the stage", what, text(v)), msg+"; give the source in order ("+field+": <node>."+kr.field+")")
 		switch {
@@ -828,6 +902,131 @@ func (b *builder) keyGap(step string, r *Record, what, field string, v any, kr k
 	}
 	b.keyGaps[k] = true
 	b.out.Fixes = append(b.out.Fixes, f)
+}
+
+// writer is the record whose node has the writes that send r's bodies: r
+// itself, else its entity (a view of the record); nil without a node of the
+// file. fields of that node give the values of those bodies.
+func (b *builder) writer(r *Record) *Record {
+	if r == nil {
+		return nil
+	}
+	for _, c := range []*Record{r, b.entity(r)} {
+		if len(c.Node.Write) > 0 && b.t.Node(c.Node.Name) == c.Node {
+			return c
+		}
+	}
+	return nil
+}
+
+// fieldSource is the change for a body field of a record without a create
+// in order (seed: its update or action sends the field) that holds the key
+// of the stage of a record the test creates: the source in the fields of
+// its node, from a node below or above that reads that record, else from a
+// node added below (then fetch again); a value whose name is no reference
+// is kept as it is; without any read the records become seed.
+func (b *builder) fieldSource(r *Record, field string, v any, to *model.Resource, key string) Fix {
+	n := r.Node
+	k := to.Field(key)
+	if k == "" {
+		k = key
+	}
+	src := recordField(r.Value, field, v)
+	need := refNeed{field: src, to: to, key: k}
+	why := fmt.Sprintf("the %s it names, which the test creates (-fix)", lowerFirst(to.Name))
+	if s := refSource(b.s, b.m, b.t, n, need, src); s != "" {
+		return Fix{Line: n.Line, Change: fmt.Sprintf("%s: add fields: {%s: %s}", n.Name, field, s), apply: setNodeField(n.Name, field, s, why)}
+	}
+	// a node below another read of the same record (the ships of a dock
+	// read their pilot, the ship of a planet is the same record): the
+	// build takes the record under that read
+	for _, c := range b.d.Records {
+		if c.Node == n || b.entity(c) != b.entity(r) {
+			continue
+		}
+		if s := refSource(b.s, b.m, b.t, c.Node, need, src); s != "" && b.t.Node(strings.SplitN(s, ".", 2)[0]).Ancestor(c.Node.Name) != nil {
+			return Fix{Line: n.Line, Change: fmt.Sprintf("%s: add fields: {%s: %s} (%s reads it below %s, another read of the same record)", n.Name, field, s, strings.SplitN(s, ".", 2)[0], c.Node.Name),
+				apply: setNodeField(n.Name, field, s, why)}
+		}
+	}
+	if src == field && !looksLikeRef(field, to, k) {
+		return Fix{Line: n.Line, Change: fmt.Sprintf("%s: add fields: {%s: .%s} (%s holds no key of %s by its name: it is sent as it is)", n.Name, field, field, field, lowerFirst(to.Name)),
+			apply: setNodeField(n.Name, field, "."+field, fmt.Sprintf("the value of the record, no %s (-fix)", lowerFirst(to.Name)))}
+	}
+	group := n.Name + "|" + to.Name + "|" + src
+	if added := b.added[group]; added != "" {
+		s := added + "." + k
+		return Fix{Line: n.Line, fetch: []string{n.Name},
+			Change: fmt.Sprintf("%s: add fields: {%s: %s} (%s: the node the fix before adds); then fetch again with -node %s", n.Name, field, s, added, n.Name),
+			apply:  setNodeField(n.Name, field, s, why)}
+	}
+	if c, desc := sourceNode(b.s, b.t, n, need, nil); c != nil {
+		s := c.Name + "." + k
+		if b.added == nil {
+			b.added = map[string]string{}
+		}
+		b.added[group] = c.Name
+		return Fix{Line: n.Line, adds: c.Name, under: n.Name, fetch: []string{n.Name},
+			Change: fmt.Sprintf("add below %s the node %s: %s, and %s: add fields: {%s: %s}; then fetch again with -node %s", n.Name, c.Name, desc, n.Name, field, s, n.Name),
+			apply: func(t *Tree) bool {
+				return addChildNode(t, n.Name, c) && setNodeField(n.Name, field, s, why)(t)
+			}}
+	}
+	what := lowerFirst(to.Name)
+	if cs := creators(b.s, b.m, b.t, to); len(cs) > 0 {
+		return seedFix(n.Line, cs, what, n.Name)
+	}
+	return Fix{Line: n.Line, Change: fmt.Sprintf("%s: add fields: {%s: <node>.%s} with a node that reads the %s", n.Name, field, k, what),
+		why: fmt.Sprintf("no read of %s records below %s, and the tree creates none to set off", what, n.Name)}
+}
+
+// recordField is the field of a record that holds v for a body field: the
+// body field itself, else the field deeper or elsewhere with that value
+// whose name ends like it (DefaultGroupId for GroupId), else the first with
+// the value; the body field when none holds it.
+func recordField(rec any, field string, v any) string {
+	if got, ok := Field(rec, field); ok && text(got) == text(v) {
+		return field
+	}
+	var paths []string
+	var walk func(x any, at string, depth int)
+	walk = func(x any, at string, depth int) {
+		m, ok := x.(map[string]any)
+		if !ok || depth > 4 {
+			return
+		}
+		for _, k := range sortedKeys(m) {
+			p := k
+			if at != "" {
+				p = at + "." + k
+			}
+			switch c := m[k].(type) {
+			case map[string]any:
+				walk(c, p, depth+1)
+			case []any:
+			default:
+				if c != nil && text(c) == text(v) {
+					paths = append(paths, p)
+				}
+			}
+		}
+	}
+	walk(rec, "", 0)
+	last := strings.ToLower(field[strings.LastIndex(field, ".")+1:])
+	for _, p := range paths {
+		if strings.EqualFold(p[strings.LastIndex(p, ".")+1:], last) {
+			return p
+		}
+	}
+	for _, p := range paths {
+		if strings.HasSuffix(strings.ToLower(p), last) {
+			return p
+		}
+	}
+	if len(paths) > 0 {
+		return paths[0]
+	}
+	return field
 }
 
 // keySource is the change of tree.yaml that gives a body field of the

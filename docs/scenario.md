@@ -857,8 +857,17 @@ the node the first adds. `-fix` goes down a ladder until one change fits:
 4. when no read of the records is possible: their create gets
    `off: true` (seed).
 
-A value that matches the keys of several records takes the one nearest in
-the tree (the dock of the ship's planet); for records of different
+A record without a line in `order` (seed, its update or action runs with
+`onSeed`) gets the source in `fields` of the node whose write sends the
+body (also when another node of the same records comes first) instead; a
+node below another read of the same record gives it too (`fields:
+{homeDockId: homeDock.id}`: the record of `homeDock` below each ship), by
+the same ladder. A path value of a step that reads or writes a record the
+test creates, and that is that record's own key of the stage, takes the
+placeholder of its create; no error. Several fields of one record that
+hold the value count once: the field the name says. A value that matches
+the keys of several records takes the one nearest in the tree (the dock
+of the ship's planet); for records of different
 resources it is an error without fix: give the source in `order` or the
 value in `fields`. When a node `-fix` added leaves the node above without
 any record (every ship names a dock of another planet, which the read
@@ -916,6 +925,11 @@ Without `-base-url`, `-fix` makes the changes and builds again from the
 records fetched before when no node was added, else it asks to fetch again.
 A fix that does not fit the file any more after the fixes before it is
 left for the next round instead of stopping the others.
+
+Besides the problems, `-fix` names the node above in a path or query value
+that reads a node beside it of the same records (below `planets`,
+`code=allPlanets.code` → `code=planets.code`: the first planet of the
+other node is not the one the node hangs below), also in its writes.
 
 Besides the problems, `-fix` gives each update (PUT, also by another key)
 that has neither `change` nor `body` the change of its name:

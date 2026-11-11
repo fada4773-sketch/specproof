@@ -117,6 +117,22 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/Ship'}
         "404": {description: no such ship}
+    put:
+      operationId: updateShip
+      tags: [Ship]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ShipWrite'}
+      responses:
+        "200":
+          description: updated
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Ship'}
+        "404": {description: no such ship}
+        "422": {description: no such dock}
 components:
   schemas:
     Planet:
@@ -252,6 +268,26 @@ func (p *nestedPort) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		body["id"] = p.next
 		list[code] = append(list[code], body)
 		answer(http.StatusCreated, body)
+	case len(parts) == 4 && r.Method == http.MethodPut && kind == "ships":
+		id, _ := strconv.Atoi(parts[3])
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			answer(http.StatusBadRequest, map[string]any{"error": err.Error()})
+			return
+		}
+		dock, _ := body["homeDockId"].(float64)
+		if !p.has(p.docks[code], int(dock)) {
+			answer(http.StatusUnprocessableEntity, map[string]any{"error": "no such dock"})
+			return
+		}
+		for _, rec := range list[code] {
+			if rec["id"] == id {
+				rec["name"], rec["homeDockId"] = body["name"], int(dock)
+				answer(http.StatusOK, rec)
+				return
+			}
+		}
+		answer(http.StatusNotFound, map[string]any{"error": "not found"})
 	case len(parts) == 4 && r.Method == http.MethodGet:
 		id, _ := strconv.Atoi(parts[3])
 		for _, rec := range list[code] {
@@ -515,6 +551,18 @@ func TestClosestOfSeveralKeys(t *testing.T) {
 	if b.sameKindOf(append(list, keyRef{rec: other, field: "id"})) {
 		t.Error("a dock and a ship are not")
 	}
+	// two fields of one record hold the value (its code and its label):
+	// one record, the field the name says
+	both := []keyRef{{rec: near, field: "Label"}, {rec: near, field: "DockCode"}}
+	if !b.oneRecord(both) || b.oneRecord(list) {
+		t.Error("one record: the fields of the dock, not two docks")
+	}
+	if got := byName(both, []string{"dockCode"}); got.field != "DockCode" {
+		t.Errorf("the field the name says: %s", got.field)
+	}
+	if got := byName(both, []string{"code"}); got.field != "DockCode" {
+		t.Errorf("a name the field ends in: %s", got.field)
+	}
 }
 
 // TestFixPlainValue: dockCount holds 2, which is also the id of a dock the
@@ -579,6 +627,166 @@ func TestLooksLikeRef(t *testing.T) {
 	} {
 		if got := looksLikeRef(field, dock, "id"); got != want {
 			t.Errorf("%s: %v, want %v", field, got, want)
+		}
+	}
+}
+
+// seedShipsTree: the ships are seed (the API holds them), each reads its
+// home dock below it, which the test creates anew; the ships are updated.
+const seedShipsTree = `order:
+  - homeDock
+tree:
+  planets:
+    call: GET /planets
+    pick: [mars]
+    key: [/code]
+    write: {create: none}
+    each:
+      ships:
+        call: GET /planets/{code}/ships
+        path: {code: .code}
+        pick: all
+        key: [/id]
+        write:
+          create: none
+          update:
+            call: PUT /planets/{code}/ships/{shipId}
+            path: {code: planets.code, shipId: .id}
+            onSeed: true
+        each:
+          homeDock:
+            call: GET /planets/{code}/docks/{dockId}
+            path: {code: planets.code, dockId: .homeDockId}
+            key: [/id]
+            write:
+              create: POST /planets/{code}/docks code=planets.code
+`
+
+// TestFixSeedRecordSendsCreatedKey: a ship of the seed names its home dock,
+// which the test creates anew. The read of the dock takes the key of its
+// create (no error), and the update of the ship (onSeed), which has no line
+// in order, gets the source in fields: -fix writes {homeDockId: homeDock.id}
+// at the ships; built again the update sends the dock the test created,
+// and the test runs on an instance that holds only the ships.
+func TestFixSeedRecordSendsCreatedKey(t *testing.T) {
+	s, path := loadNested(t)
+	hs := httptest.NewServer(newNestedPort(true))
+	t.Cleanup(hs.Close)
+	base := hs.URL + "/api"
+	_, first := buildFrom(t, s, seedShipsTree, base)
+	for _, n := range first.Errors() {
+		if strings.HasSuffix(n.Step, ".read") {
+			t.Errorf("the read of the dock the test created takes its new key: %+v", n)
+		}
+	}
+	if len(first.Fixes) == 0 {
+		t.Fatalf("the update gets a fix: %+v", first.Errors())
+	}
+	tr, built := fixUntilClean(t, s, seedShipsTree, base, 4)
+	b, _ := tr.Bytes()
+	if v := tr.Node("ships").Fields["homeDockId"]; v != "homeDock.id" {
+		t.Errorf("fields of the ships: %v\n%s", v, b)
+	}
+	if errs := built.Errors(); len(errs) > 0 {
+		t.Errorf("no error left: %+v\n%s", errs, b)
+	}
+	updates := 0
+	for _, st := range built.Scenario.Steps {
+		if st.Call == "PUT /planets/{code}/ships/{shipId}" {
+			updates++
+			if !strings.HasPrefix(text(st.Body.(map[string]any)["homeDockId"]), "{{homeDock") {
+				t.Errorf("%s sends the dock the test created: %v", st.ID, st.Body)
+			}
+		}
+	}
+	if updates == 0 {
+		t.Error("a ship of the seed is updated (onSeed)")
+	}
+	text, err := built.Scenario.Encode(" test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	scenarioPath := filepath.Join(t.TempDir(), "tree-test_gen.yaml")
+	if err := os.WriteFile(scenarioPath, text, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	port := newNestedPort(true)
+	port.docks = map[string][]map[string]any{}
+	var out strings.Builder
+	res, err := apitest.RunScenarioStandalone(context.Background(), apitest.ScenarioConfig{
+		Config:   apitest.Config{SpecPath: path, Handler: port},
+		Scenario: scenarioPath,
+	}, apitest.StandaloneOptions{Out: &out})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Failed {
+		t.Errorf("the scenario failed on an instance with the ships:\n%s\n%s", out.String(), text)
+	}
+}
+
+// TestFixSideRef: below planets, the docks read the planet code of the
+// node beside it (allPlanets, its first planet), not of the planet they
+// hang below. -fix names the node above, a default that is no problem of
+// the check.
+func TestFixSideRef(t *testing.T) {
+	s, _ := loadNested(t)
+	file := `tree:
+  allPlanets:
+    call: GET /planets
+    pick: 1
+    key: [/code]
+  planets:
+    call: GET /planets
+    pick: [mars]
+    key: [/code]
+    each:
+      docks:
+        call: GET /planets/{code}/docks
+        path: {code: allPlanets.code}
+        pick: all
+        key: [/id]
+        write:
+          create: POST /planets/{code}/docks code=allPlanets.code
+`
+	tr := parse(t, file)
+	if problems := Check(s, tr); len(problems) > 0 {
+		t.Fatalf("no problem of the check: %v", problems)
+	}
+	fixed, done, err := Repair(s, tr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := fixed.Bytes()
+	if len(done) != 1 || strings.Contains(string(b), "allPlanets.code") || fixed.Node("docks").Path["code"] != "planets.code" {
+		t.Errorf("the planet above: %v\n%s", done, b)
+	}
+}
+
+// TestFixSeedUpdateOfOtherRead: the ships are listed twice; the first node
+// (shipList) stands for the records, the second (ships) has the update
+// and the home dock below it. The source goes into the fields of ships,
+// whose write sends the body, and the build takes the dock under ships.
+func TestFixSeedUpdateOfOtherRead(t *testing.T) {
+	s, _ := loadNested(t)
+	hs := httptest.NewServer(newNestedPort(true))
+	t.Cleanup(hs.Close)
+	file := strings.Replace(seedShipsTree, "    each:\n      ships:\n",
+		"    each:\n      shipList:\n        call: GET /planets/{code}/ships\n        path: {code: .code}\n        pick: all\n        key: [/id]\n      ships:\n", 1)
+	if !strings.Contains(file, "shipList:") {
+		t.Fatal("the tree of the test changed")
+	}
+	tr, built := fixUntilClean(t, s, file, hs.URL+"/api", 4)
+	b, _ := tr.Bytes()
+	if v := tr.Node("ships").Fields["homeDockId"]; v != "homeDock.id" {
+		t.Errorf("fields of the ships, the node with the write: %v\n%s", v, b)
+	}
+	if errs := built.Errors(); len(errs) > 0 {
+		t.Errorf("no error left: %+v\n%s", errs, b)
+	}
+	for _, st := range built.Scenario.Steps {
+		if st.Call == "PUT /planets/{code}/ships/{shipId}" && !strings.HasPrefix(text(st.Body.(map[string]any)["homeDockId"]), "{{homeDock") {
+			t.Errorf("%s sends the dock the test created: %v", st.ID, st.Body)
 		}
 	}
 }
