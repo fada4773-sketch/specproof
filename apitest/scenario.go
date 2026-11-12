@@ -62,6 +62,12 @@ type ScenarioConfig struct {
 	// Unique makes the body values the scenario marks as unique new for
 	// this run, so the scenario works on an instance that is not empty.
 	Unique bool
+	// Tolerate are results of a check that do not fail a step:
+	// StatusSchemaViolation, StatusDataMismatch, StatusExampleMismatch. The
+	// step ends TOLERATED, its problems and differences stay in the report
+	// and in StepExchange, it saves its values and the steps after it run.
+	// The tolerate list of the scenario file adds to it.
+	Tolerate []Status
 	// Update writes the golden snapshot instead of comparing with it: every
 	// step must still answer as the scenario expects. A reading step is sent
 	// twice; the fields that change by themselves are volatile.
@@ -103,6 +109,9 @@ type StepExchange struct {
 	Outcome  Status
 	Message  string
 	Problems []string
+	// Tolerated is the result a TOLERATED step would have had
+	// (ScenarioConfig.Tolerate), "" for other steps.
+	Tolerated Status
 	// Diffs are the values of the answer that differ: from the golden
 	// snapshot (EXAMPLE_MISMATCH) or from the body of the step Equals
 	// names (DATA_MISMATCH).
@@ -600,8 +609,45 @@ func (s *scenarioRunner) runStep(st *scenario.Step, groupSkip string) {
 }
 
 // check sends one step and checks its answer: status, schema, saved
-// values, the golden snapshot and the checks of the step.
+// values, the golden snapshot and the checks of the step. A check whose
+// result the scenario tolerates does not end the step: it ends TOLERATED
+// (or with the later failure), with every problem and difference.
 func (s *scenarioRunner) check(ctx context.Context, st *scenario.Step) *outcome {
+	o := s.checkStep(ctx, st)
+	if len(o.soft) == 0 {
+		return o
+	}
+	o.diffs = append(o.softDiffs, o.diffs...)
+	if o.status == StatusPassed {
+		o.status, o.message = StatusTolerated, "tolerated: "+strings.Join(o.soft, "; ")
+		return o
+	}
+	o.message += "; tolerated before: " + strings.Join(o.soft, "; ")
+	return o
+}
+
+// tolerates reports whether the scenario tolerates a result
+// (ScenarioConfig.Tolerate or the tolerate list of the scenario file).
+func (s *scenarioRunner) tolerates(st Status) bool {
+	return slices.Contains(s.scfg.Tolerate, st) || s.sc != nil && slices.Contains(s.sc.Tolerate, string(st))
+}
+
+// soften turns the failed check of o into a note when the scenario
+// tolerates its result: the step goes on. It reports whether it did.
+func (s *scenarioRunner) soften(o *outcome) bool {
+	if !s.tolerates(o.status) {
+		return false
+	}
+	if o.tolerated == "" {
+		o.tolerated = o.status
+	}
+	o.soft = append(o.soft, string(o.status)+": "+o.message)
+	o.softDiffs = append(o.softDiffs, o.diffs...)
+	o.status, o.message, o.diffs = StatusPassed, "", nil
+	return true
+}
+
+func (s *scenarioRunner) checkStep(ctx context.Context, st *scenario.Step) *outcome {
 	r := s.runner
 	c := s.caseOf[st]
 	o := &outcome{c: c, expected: strconv.Itoa(st.Expect)}
@@ -673,7 +719,9 @@ func (s *scenarioRunner) check(ctx context.Context, st *scenario.Step) *outcome 
 			o.status, o.problems = StatusSchemaViolation, problems
 			o.expected += ", schema of the spec"
 			o.message = fmt.Sprintf("response violates the schema (%s, first: %s)", plural(len(problems), "error", "errors"), problems[0])
-			return o
+			if !s.soften(o) {
+				return o
+			}
 		}
 	}
 	if missing := s.save(st, resp, o.decoded); len(missing) > 0 {
@@ -684,10 +732,10 @@ func (s *scenarioRunner) check(ctx context.Context, st *scenario.Step) *outcome 
 	switch {
 	case s.scfg.Update:
 		s.record(ctx, st, c, p, resp, o.decoded)
-	case s.golden != nil && !s.compareGolden(st, c, o):
+	case s.golden != nil && !s.compareGolden(st, c, o) && !s.soften(o):
 		return o
 	}
-	if !s.checks(st, c, o) {
+	if !s.checks(st, c, o) && !s.soften(o) {
 		return o
 	}
 	if hook := r.cfg.Hooks.AfterResponse; hook != nil {
@@ -713,7 +761,7 @@ func (s *scenarioRunner) observe(st *scenario.Step, o *outcome) {
 	hdr, _ := scenario.Fill(anyOrNil(st.Header), s.vars)
 	ex := StepExchange{
 		ID: st.ID, OperationID: o.c.Op.ID, Method: o.c.Op.Method,
-		Passed: o.status == StatusPassed, Outcome: o.status, Message: o.message, Duration: o.duration,
+		Passed: o.status == StatusPassed, Outcome: o.status, Message: o.message, Duration: o.duration, Tolerated: o.tolerated,
 		Sent: o.sent != nil,
 	}
 	if o.resp != nil {

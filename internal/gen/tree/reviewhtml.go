@@ -110,7 +110,7 @@ details.step>summary{cursor:pointer;padding:10px 0}
 table{border-collapse:collapse;width:100%;margin:4px 0 12px}
 th,td{text-align:left;padding:4px 6px;border-bottom:1px solid var(--line);vertical-align:top}
 th{color:var(--muted);font-weight:600;font-size:12px}
-tr.row{cursor:pointer}tr.row:hover{background:var(--soft)}tr.row.bad td.st{color:var(--bad);font-weight:600}tr.row td.st{color:var(--ok)}
+tr.row{cursor:pointer}tr.row:hover{background:var(--soft)}tr.row.bad td.st{color:var(--bad);font-weight:600}tr.row td.st{color:var(--ok)}tr.row.tol td.st{color:var(--warn)}
 td.n,td.ms{color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}td.req{word-break:break-all}
 td.res{color:var(--muted);max-width:520px}
 tr.body td{background:var(--soft);padding:8px}
@@ -138,7 +138,7 @@ table.vals{width:auto;min-width:50%}table.vals td{font-family:ui-monospace,monos
 #mismatches{border:1px solid var(--bad);border-radius:8px;margin:12px 0;padding:4px 12px 8px}
 #mismatches>details>summary{cursor:pointer;padding:8px 0;font-weight:600}
 details.mm{margin:2px 0 6px 12px;border-left:2px solid var(--line);padding-left:8px}details.mm>summary{cursor:pointer;padding:3px 0;word-break:break-all}
-details.mm>div{margin:4px 0 8px}.msg{color:var(--bad);margin:4px 0}
+details.mm>div{margin:4px 0 8px}.msg{color:var(--bad);margin:4px 0}.tolt{color:var(--warn)}
 table.diffs{width:auto;min-width:60%}table.diffs td{font-family:ui-monospace,monospace;font-size:12px;word-break:break-all;white-space:pre-wrap}
 ul.probs{margin:4px 0;padding-left:20px;font:12px/1.5 ui-monospace,monospace}
 .jbox{border:1px solid var(--line);border-radius:6px;background:var(--code);min-width:0;margin:0 0 6px}
@@ -250,14 +250,14 @@ function cell(tr,cls,t){const td=document.createElement('td');td.className=cls;t
 function status(e){
   if(e.noAnswer)return (e.status?e.status+', answer broke off':'no answer')+' ✗';
   if(e.notSent)return 'not sent'+(e.failed?' ✗':'');
-  if(!e.status)return e.expect?'expect '+e.expect:'';let s=e.status+(e.failed?' ✗':' ✓');if(e.expect&&e.expect!==e.status)s+=' (expected '+e.expect+')';return s}
+  if(!e.status)return e.expect?'expect '+e.expect:'';let s=e.status+(e.failed?' ✗':e.tolerated?' tolerated':' ✓');if(e.expect&&e.expect!==e.status)s+=' (expected '+e.expect+')';return s}
 document.querySelectorAll('.tl').forEach(div=>{
   const list=data.timelines[div.dataset.step]||[];
   const t=document.createElement('table');
   t.innerHTML='<thead><tr><th>#</th><th>Step</th><th class="op">Operation</th><th>Request</th><th>Status</th><th class="ms">ms</th><th class="res">Result</th></tr></thead>';
   const tb=document.createElement('tbody');t.appendChild(tb);
   list.forEach((e,i)=>{
-    const tr=document.createElement('tr');tr.className='row'+(e.failed?' bad':'')+(e.noAnswer?' lost':'')+(e.notSent?' unsent':'')+((e.notes||[]).some(n=>n.level==='error')?' err':'');
+    const tr=document.createElement('tr');tr.className='row'+(e.failed?' bad':'')+(e.tolerated?' tol':'')+(e.noAnswer?' lost':'')+(e.notSent?' unsent':'')+((e.notes||[]).some(n=>n.level==='error')?' err':'');
     tr.dataset.text=((e.step||'')+' '+(e.op||'')+' '+(e.method||'')+' '+(e.target||'')+' '+(e.result||'')+' '+status(e)).toLowerCase();
     cell(tr,'n',i+1);cell(tr,'',e.step||'');cell(tr,'op',e.op||'–');cell(tr,'req',((e.method||'')+' '+(e.target||'')).trim());
     cell(tr,'st',status(e));cell(tr,'ms',e.ms||'');resCell(tr,e);
@@ -355,6 +355,7 @@ function filter(){const s=q.value.trim().toLowerCase();
 // timeline: a data mismatch (the answer lacks what a step sent), a schema
 // violation, a difference from the golden snapshot; each with its
 // differences and the raw JSON of what was sent and answered
+// a step tolerate lets pass carries the result it would have had
 const KINDS=[['DATA_MISMATCH','Data mismatch: the answer does not hold what a step sent'],
   ['SCHEMA_VIOLATION','Schema violation: the answer does not fit the schema of the spec'],
   ['EXAMPLE_MISMATCH','Example mismatch: the answer differs from the golden snapshot']];
@@ -370,6 +371,7 @@ function mismatch(f){
   head.appendChild(el('span','n',f.step+' #'+(f.i+1)+' '));head.appendChild(el('b',null,e.step||''));
   if(e.op)head.appendChild(el('span','opid',' '+e.op));
   head.appendChild(document.createTextNode('  '+((e.method||'')+' '+(e.target||'')).trim()+'  → '+status(e)));
+  if(e.tolerated)head.appendChild(el('span','tolt',' (tolerate in tree.yaml: not a failure)'));
   const d=fold(head,'mm',d=>{
     const body=el('div');d.appendChild(body);
     if(e.result)body.appendChild(el('div','msg',e.result));

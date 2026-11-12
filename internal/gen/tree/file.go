@@ -41,6 +41,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/fada4773-sketch/specproof/internal/gen/yamldoc"
+	"github.com/fada4773-sketch/specproof/internal/scenario"
 )
 
 // Write kinds, in the order they are written.
@@ -166,6 +167,10 @@ type Tree struct {
 	// guesses nothing.
 	Order    []OrderEntry
 	HasOrder bool
+	// Tolerate are results of a check (SCHEMA_VIOLATION, DATA_MISMATCH,
+	// EXAMPLE_MISMATCH) that do not fail a step of the test; the review
+	// still lists them. The test file takes them over.
+	Tolerate []string
 
 	// legacy are the nodes of an "unplaced" section of an earlier version.
 	legacy []*Node
@@ -399,8 +404,23 @@ func fromDoc(doc *yamldoc.Doc) (*Tree, error) {
 			for _, c := range v.Content {
 				t.Ignore = append(t.Ignore, strings.TrimSpace(c.Value))
 			}
+		case "tolerate":
+			if v.Kind != yaml.SequenceNode {
+				p.errf(v, "tolerate must be a list of results (%s)", strings.Join(scenario.Tolerable, ", "))
+				continue
+			}
+			for _, c := range v.Content {
+				x := strings.ToUpper(strings.TrimSpace(c.Value))
+				if !slices.Contains(scenario.Tolerable, x) {
+					p.errf(c, "tolerate: %q: one of %s", c.Value, strings.Join(scenario.Tolerable, ", "))
+					continue
+				}
+				if !slices.Contains(t.Tolerate, x) {
+					t.Tolerate = append(t.Tolerate, x)
+				}
+			}
 		default:
-			p.errf(k, "unknown key %q (known: order, scope, where, prefer, params, seed, budget, tree, ignore)", k.Value)
+			p.errf(k, "unknown key %q (known: order, scope, where, prefer, params, seed, budget, tree, ignore, tolerate)", k.Value)
 		}
 	}
 	p.uniqueNames(t)

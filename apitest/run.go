@@ -115,8 +115,12 @@ type outcome struct {
 	precondition bool
 	deviation    *deviations.Entry
 	expired      bool
-	// tolerated is the failing status of a TOLERATED error case.
+	// tolerated is the failing status of a TOLERATED case.
 	tolerated Status
+	// soft are the failed checks a scenario tolerates ("SCHEMA_VIOLATION:
+	// …"), softDiffs their differences.
+	soft      []string
+	softDiffs []compare.Diff
 }
 
 // exchange is an additional request made for a case, e.g. the GET check.
@@ -665,7 +669,7 @@ func (r *runner) applyDeviation(o *outcome) {
 		return
 	}
 	switch o.status {
-	case StatusPassed, StatusSkipped, StatusDeviation:
+	case StatusPassed, StatusSkipped, StatusDeviation, StatusTolerated:
 		return
 	}
 	var pointers []string

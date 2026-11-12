@@ -44,10 +44,13 @@ type Entry struct {
 	// (DATA_MISMATCH, SCHEMA_VIOLATION, …); Problems its schema violations,
 	// Diffs the values that differ, Equals the step whose body the answer
 	// must hold. The page lists them together (button "Mismatches").
-	Outcome  string      `json:"outcome,omitempty"`
-	Problems []string    `json:"problems,omitempty"`
-	Diffs    []EntryDiff `json:"diffs,omitempty"`
-	Equals   string      `json:"equals,omitempty"`
+	Outcome string `json:"outcome,omitempty"`
+	// Tolerated marks a step whose Outcome tolerate in tree.yaml lets
+	// pass: listed with the mismatches, not failed.
+	Tolerated bool        `json:"tolerated,omitempty"`
+	Problems  []string    `json:"problems,omitempty"`
+	Diffs     []EntryDiff `json:"diffs,omitempty"`
+	Equals    string      `json:"equals,omitempty"`
 	// Notes are the decisions and gaps of a step of the test with their
 	// level (error, warn, info); Result holds them too, as text.
 	Notes []EntryNote `json:"notes,omitempty"`

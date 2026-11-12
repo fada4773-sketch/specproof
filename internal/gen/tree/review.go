@@ -624,10 +624,18 @@ func RunSection(res *apitest.Result, baseURL string, unique bool) (string, strin
 	}
 	b.WriteString(".\n")
 	var bad []apitest.CaseResult
+	var tolerated []string
 	for _, c := range res.Cases {
-		if c.Status != apitest.StatusPassed && c.Status != apitest.StatusSkipped {
+		switch c.Status {
+		case apitest.StatusPassed, apitest.StatusSkipped:
+		case apitest.StatusTolerated:
+			tolerated = append(tolerated, fmt.Sprintf("%s (%s)", c.Name, c.Tolerated))
+		default:
 			bad = append(bad, c)
 		}
+	}
+	if len(tolerated) > 0 {
+		fmt.Fprintf(&b, "\nTolerated (%d, tolerate in tree.yaml; the timeline lists them under Mismatches): %s.\n", len(tolerated), strings.Join(tolerated, ", "))
 	}
 	if len(bad) > 0 {
 		// in the order they ran; the timeline below has status and message

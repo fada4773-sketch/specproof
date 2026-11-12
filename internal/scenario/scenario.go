@@ -31,6 +31,24 @@ type Scenario struct {
 	// Golden are the answers of the last run with Update when the file
 	// holds them (the golden section and an answer per step), else nil.
 	Golden *Snapshot
+	// Tolerate are the results of a check (SCHEMA_VIOLATION, DATA_MISMATCH,
+	// EXAMPLE_MISMATCH) that do not fail a step: it ends TOLERATED with
+	// what differs, saves its values and the steps after it run.
+	Tolerate []string
+}
+
+// Tolerable are the results Scenario.Tolerate may name.
+var Tolerable = []string{"SCHEMA_VIOLATION", "DATA_MISMATCH", "EXAMPLE_MISMATCH"}
+
+// CheckTolerate reports an entry of a tolerate list that is no result
+// Tolerable names.
+func CheckTolerate(list []string) error {
+	for _, x := range list {
+		if !slices.Contains(Tolerable, x) {
+			return fmt.Errorf("tolerate: %q: one of %s", x, strings.Join(Tolerable, ", "))
+		}
+	}
+	return nil
 }
 
 // Record is one record the scenario creates.
@@ -137,11 +155,23 @@ func Parse(b []byte) (*Scenario, error) {
 		return nil, fmt.Errorf("a scenario is a mapping with the key \"steps\"")
 	}
 	for k := range top {
-		if !slices.Contains([]string{"order", "records", "golden", "steps"}, k) {
-			return nil, fmt.Errorf("unknown key %q (known: order, records, golden, steps)", k)
+		if !slices.Contains([]string{"order", "records", "tolerate", "golden", "steps"}, k) {
+			return nil, fmt.Errorf("unknown key %q (known: order, records, tolerate, golden, steps)", k)
 		}
 	}
 	sc := &Scenario{}
+	if v, ok := top["tolerate"]; ok && v != nil {
+		list, ok := v.([]any)
+		if !ok {
+			return nil, fmt.Errorf("tolerate: a list of results (%s)", strings.Join(Tolerable, ", "))
+		}
+		for _, x := range list {
+			sc.Tolerate = append(sc.Tolerate, Text(x))
+		}
+		if err := CheckTolerate(sc.Tolerate); err != nil {
+			return nil, err
+		}
+	}
 	if o, ok := top["order"].([]any); ok {
 		for _, x := range o {
 			sc.Order = append(sc.Order, Text(x))
@@ -420,6 +450,11 @@ func (sc *Scenario) Encode(head string) ([]byte, error) {
 			recs.Content = append(recs.Content, str(r.Name), v)
 		}
 		root.Content = append(root.Content, str("records"), recs)
+	}
+	if len(sc.Tolerate) > 0 {
+		t := node(sc.Tolerate)
+		t.Style = yaml.FlowStyle
+		root.Content = append(root.Content, str("tolerate"), t)
 	}
 	if sc.Golden != nil {
 		root.Content = append(root.Content, str("golden"), goldenMeta(sc.Golden))

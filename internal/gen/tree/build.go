@@ -204,7 +204,7 @@ func Build(s *spec.Spec, t *Tree, d *Data) (*Built, error) {
 		// without records) come with the problems: the next round needs them
 		return nil, &FindingError{Problems: b.problems, Fixes: append(b.fixes, b.out.Fixes...)}
 	}
-	sc := &scenario.Scenario{Steps: b.steps}
+	sc := &scenario.Scenario{Steps: b.steps, Tolerate: slices.Clone(b.t.Tolerate)}
 	for _, r := range order {
 		if !slices.Contains(sc.Order, r.Node.Name) {
 			sc.Order = append(sc.Order, r.Node.Name)

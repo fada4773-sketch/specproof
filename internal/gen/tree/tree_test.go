@@ -139,6 +139,8 @@ func TestParseProblems(t *testing.T) {
 		"tree: {'a b': GET /a}":                                          "letters, digits",
 		"tree: {a: {call: GET /a, where: [1]}}":                          "mapping of fields",
 		"ignore: x":                                                      "list of operations",
+		"tolerate: x":                                                    "list of results",
+		"tolerate: [FAILED]":                                             "one of SCHEMA_VIOLATION, DATA_MISMATCH, EXAMPLE_MISMATCH",
 	} {
 		_, err := Parse([]byte(text))
 		if err == nil || !strings.Contains(err.Error(), want) {
@@ -1895,5 +1897,40 @@ tree:
 	}
 	if p := d.Records[2].Parent; p != d.Records[1] {
 		t.Errorf("the parent of ships1 is the dock of docks, got %+v", p)
+	}
+}
+
+func TestBuildTakesTolerate(t *testing.T) {
+	s := loadStarport(t)
+	tr := parse(t, `
+tolerate: [schema_violation, DATA_MISMATCH, DATA_MISMATCH]
+order:
+  - docks
+tree:
+  docks:
+    call: GET /planets/{code}/docks
+    path: {code: mars}
+    write:
+      create: POST /planets/{code}/docks code=mars
+`)
+	if want := []string{"SCHEMA_VIOLATION", "DATA_MISMATCH"}; !slices.Equal(tr.Tolerate, want) {
+		t.Fatalf("Tolerate %v, want %v", tr.Tolerate, want)
+	}
+	d := &Data{Records: []*Record{{ID: "docks1", Node: tr.Node("docks"), Request: "GET /x",
+		Value: map[string]any{"id": 5, "name": "North", "capacity": 4}}}}
+	b, err := Build(s, tr, d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(b.Scenario.Tolerate, tr.Tolerate) {
+		t.Fatalf("the test takes tolerate over: %v", b.Scenario.Tolerate)
+	}
+	out, err := b.Scenario.Encode("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := scenario.Parse(out)
+	if err != nil || !slices.Equal(back.Tolerate, tr.Tolerate) {
+		t.Fatalf("tolerate in the test file: %v %v\n%s", err, back, out)
 	}
 }

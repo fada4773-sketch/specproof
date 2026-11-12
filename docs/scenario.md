@@ -269,6 +269,7 @@ params:          # values no record of the tree gives: set them (a value of the 
   season:        # getHarvest; not set yet: its node is left out
 seed: 1          # random picks repeat with the same seed
 budget: 2000     # a fetch sends at most this many requests
+tolerate: [SCHEMA_VIOLATION, DATA_MISMATCH]  # listed in the review, but no failure (below)
 tree:
   planets:
     call: GET /planets                       # listPlanets
@@ -403,6 +404,24 @@ first).
 ```yaml
 prefer:
   Garden.name: [mygarden]   # gardens pick: 3 → mygarden and 2 more
+```
+
+**Tolerate.** `tolerate` at the top lists results of a check that do not
+fail a step of the test: `SCHEMA_VIOLATION`, `DATA_MISMATCH` and
+`EXAMPLE_MISMATCH` (the answer differs from the kept one). A step with such a
+result ends `TOLERATED`: the run passes, the step still saves its values,
+so the steps after it that need them run instead of being skipped, and
+with `-update` the answers are written. What differs stays visible: the
+report lists the step with its problems and differences, the review
+lists it in a line "Tolerated" of its own and in the HTML under
+"Mismatches", marked as tolerated. A tolerated step gives no example for
+the spec. `tree` writes the list into the test file (`tolerate:` on top),
+so `apitest.RunScenario` honors it too; `tree run -file` also takes it
+straight from `tree.yaml`, so adding a result needs no new `tree`;
+removing one does.
+
+```yaml
+tolerate: [SCHEMA_VIOLATION, DATA_MISMATCH]
 ```
 
 `where` and `prefer` combine: the where filters, the prefer orders what
@@ -1229,8 +1248,9 @@ func TestTree(t *testing.T) {
 | `Golden` | a golden snapshot file of its own; empty takes the answers the scenario file holds, without them status, schema and the checks of the steps only |
 | `Errors` | the error steps (status 400 and above) that run, and their order: statuses (`"401"`) or classes (`"4xx"`). Steps no entry matches are left out; consecutive error steps run in the order of the list, at the place the scenario gives them |
 | `Unique` | as `-unique` |
+| `Tolerate` | results of a check that do not fail a step (`StatusSchemaViolation`, `StatusDataMismatch`, `StatusExampleMismatch`): it ends `TOLERATED` with its problems and differences, saves its values, and the steps after it run; the `tolerate` list of the scenario file adds to it (see Tolerate under The tree file) |
 | `Update` | write the answers instead of comparing: into `Golden` when set, else into the scenario file |
-| `OnStep` | called after each step, in the order they ran, with what was sent and received, how it ended (`Outcome`, `Message`), the schema violations (`Problems`), the values that differ (`Diffs`) and the step an `equals` check compared with (`Equals`). Also for a step without answer (`Answered` false; `Sent` true when the request went out: connection failed or closed, timeout, crash) and for one that was skipped or not buildable (`Sent` false; `Target` is then the path of the operation) |
+| `OnStep` | called after each step, in the order they ran, with what was sent and received, how it ended (`Outcome`, `Message`), the schema violations (`Problems`), the values that differ (`Diffs`), the result a tolerated step would have had (`Tolerated`) and the step an `equals` check compared with (`Equals`). Also for a step without answer (`Answered` false; `Sent` true when the request went out: connection failed or closed, timeout, crash) and for one that was skipped or not buildable (`Sent` false; `Target` is then the path of the operation) |
 
 `apitest.RunScenarioStandalone` runs the same outside of `go test`; the
 command line uses it.

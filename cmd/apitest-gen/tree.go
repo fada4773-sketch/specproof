@@ -1032,6 +1032,15 @@ func treeRun(o *treeOptions, out io.Writer) (int, error) {
 	if o.baseURL == "" && o.settings == "" {
 		return 2, errors.New("-base-url is required: the empty instance the scenario runs against")
 	}
+	// tolerate of tree.yaml works without building the test again; the
+	// tolerate list of the test file adds to it
+	if o.file != "" {
+		if t, err := tree.Load(o.file); err == nil {
+			for _, x := range t.Tolerate {
+				cfg.Tolerate = append(cfg.Tolerate, apitest.Status(x))
+			}
+		}
+	}
 	// every step for the review, and for the examples of -update
 	var exchanges []apitest.StepExchange
 	cfg.OnStep = func(ex apitest.StepExchange) { exchanges = append(exchanges, ex) }
@@ -1072,6 +1081,11 @@ func treeRun(o *treeOptions, out io.Writer) (int, error) {
 		if !ex.Passed {
 			e.Result = red.String(fmt.Sprintf("%s: %s", ex.Outcome, ex.Message))
 			e.Outcome = string(ex.Outcome)
+		}
+		if ex.Outcome == apitest.StatusTolerated {
+			// tolerate: not a failure, but the page lists it with the
+			// mismatches, under the result it would have had
+			e.Failed, e.Tolerated, e.Outcome = false, true, string(ex.Tolerated)
 		}
 		for _, p := range ex.Problems {
 			e.Problems = append(e.Problems, red.String(p))

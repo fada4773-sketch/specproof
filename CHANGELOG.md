@@ -8,6 +8,11 @@ contain breaking changes, which are listed here.
 
 ### Features
 
+- `tolerate` in `tree.yaml` (and in the test file, `ScenarioConfig.Tolerate`):
+  `SCHEMA_VIOLATION`, `DATA_MISMATCH` and `EXAMPLE_MISMATCH` no longer fail a
+  step; it ends `TOLERATED`, saves its values, so the steps after it run
+  instead of being skipped, and stays listed with its problems and
+  differences in the report and under "Mismatches" in the review.
 - Scenario mode, next to the examples mode of `apitest.Run`
   ([docs/scenario.md](docs/scenario.md)):
   - `apitest.RunScenario(t, apitest.ScenarioConfig{…})` runs a scenario:
