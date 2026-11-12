@@ -8,6 +8,18 @@ contain breaking changes, which are listed here.
 
 ### Features
 
+- `ScenarioConfig.Errors` (`tree run -errors`) generates error steps from
+  the successful steps of the scenario, with the values of the run: `409`
+  (a POST sends its body again), `404` (an unknown key in the path), `401`
+  (without and with a manipulated token), `403` (forbidden token,
+  `x-apitest-forbidden`) and the new entry `invalid` (a required body field
+  left out, a field of the wrong type, a field and a parameter that break
+  their schema). They run after the steps before the first DELETE and
+  before the DELETEs. `ScenarioConfig.InvalidStatus` (`-invalid-status`)
+  lists the statuses the `invalid` steps accept, default every 4xx.
+  `StepExchange.Generated` marks them; an `Errors` entry no step matches is
+  reported as a warning.
+
 - `records: all` at an update, patch or action in `tree.yaml`: the write
   runs on every record the test creates (`ships1.update`, `ships2.update`,
   …), not only on the first.

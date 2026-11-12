@@ -706,6 +706,8 @@ func TestTree(t *testing.T) {
 	apitest.RunScenario(t, apitest.ScenarioConfig{
 		Config:   apitest.Config{SpecPath: "../../api/openapi.yaml", Handler: router, Token: apitest.StaticToken(token)}, // or BaseURL
 		Scenario: "tree-test_gen.yaml", // the steps and the answers of -update
+		// optional: error steps generated from the successful steps (409, 404, 401, invalid input)
+		Errors: []string{"409", "404", "401", "invalid"},
 	})
 }
 ```
@@ -718,7 +720,7 @@ apitest-gen regression pre  -spec api/openapi.yaml -sample regression-sample.yam
 apitest-gen regression post -spec api/openapi.yaml -base-url https://dev.example.com/api -token-env DEV_TOKEN -out out
 ```
 
-`ScenarioConfig` holds the whole `Config` of `Run`. See [docs/scenario.md](docs/scenario.md) for the files, the formats, every flag and a pipeline.
+`ScenarioConfig` holds the whole `Config` of `Run`. `Errors` generates the error steps when the test runs, so the test file stays small: after the steps before the first DELETE come conflicts, unknown keys, requests without or with a manipulated token and invalid input (`InvalidStatus` says which statuses invalid input may get, default every 4xx), then the DELETEs. See [docs/scenario.md](docs/scenario.md) for the files, the formats, every flag and a pipeline.
 
 ## Example project: Swagger Petstore
 

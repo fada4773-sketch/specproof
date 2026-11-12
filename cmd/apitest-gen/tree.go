@@ -297,6 +297,7 @@ type treeOptions struct {
 	deps                             bool
 	scenario, golden, report, junit  string
 	settings, errors, run, skip      string
+	invalidStatus                    string
 	update, noExamples, remote, uniq bool
 	dryRun, fix                      bool
 	fixRounds                        int
@@ -373,7 +374,8 @@ func treeFlags(name string, out io.Writer) (*flag.FlagSet, *treeOptions) {
 		fs.StringVar(&o.settings, "settings", "", "optional settings file (spec, baseURL, health, tokens, headers, report)")
 		fs.StringVar(&o.report, "report", "", "Markdown report (HTML and JSON next to it)")
 		fs.StringVar(&o.junit, "junit", "", "write the results as JUnit XML too, for the test tab of CI")
-		fs.StringVar(&o.errors, "errors", "", `error steps to run, in this order: statuses or classes, e.g. "401,404"; default all`)
+		fs.StringVar(&o.errors, "errors", "", `error steps to run: statuses, classes or "invalid", e.g. "409,404,401,invalid"; also generates them from the successful steps (see ScenarioConfig.Errors); default the error steps of the test file`)
+		fs.StringVar(&o.invalidStatus, "invalid-status", "", `statuses the "invalid" steps accept, e.g. "400,422,500"; default every 4xx`)
 		fs.StringVar(&o.run, "run", "", `run only these steps, like "go test -run": "Dock/" or "Dock/docks1.read"`)
 		fs.StringVar(&o.skip, "skip", "", `leave these steps out, like "go test -skip"`)
 		fs.BoolVar(&o.uniq, "unique", false, "make the unique values of the scenario new for this run (an instance that is not empty)")
@@ -1027,6 +1029,11 @@ func treeRun(o *treeOptions, out io.Writer) (int, error) {
 	if o.errors != "" {
 		for _, e := range strings.Split(o.errors, ",") {
 			cfg.Errors = append(cfg.Errors, strings.TrimSpace(e))
+		}
+	}
+	if o.invalidStatus != "" {
+		for _, e := range strings.Split(o.invalidStatus, ",") {
+			cfg.InvalidStatus = append(cfg.InvalidStatus, strings.TrimSpace(e))
 		}
 	}
 	if o.baseURL == "" && o.settings == "" {

@@ -37,6 +37,7 @@ const (
 	NotFound          // generated: an unknown key in the path, expects 404
 	Conflict          // generated: a POST sent a second time, expects 409
 	ServerError       // named request example matched to a 5xx response
+	Invalid           // generated (scenario): a parameter or body that violates the schema, expects 4xx
 )
 
 // IsAuth reports whether k is one of the authentication kinds.
@@ -44,11 +45,11 @@ func (k Kind) IsAuth() bool { return k == Unauthorized || k == InvalidToken || k
 
 // Generated reports whether apitest builds cases of kind k itself instead
 // of taking them from named examples of the spec.
-func (k Kind) Generated() bool { return k.IsAuth() || k == NotFound || k == Conflict }
+func (k Kind) Generated() bool { return k.IsAuth() || k == NotFound || k == Conflict || k == Invalid }
 
 // String names the kind for reports.
 func (k Kind) String() string {
-	return [...]string{"regular", "negative", "unauthorized", "invalid-token", "forbidden", "not-found", "conflict", "server-error"}[k]
+	return [...]string{"regular", "negative", "unauthorized", "invalid-token", "forbidden", "not-found", "conflict", "server-error", "invalid-input"}[k]
 }
 
 // ErrorCase reports whether c tests an error answer Config.TolerateErrorCases

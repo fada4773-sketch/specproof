@@ -53,12 +53,31 @@ type ScenarioConfig struct {
 	// the steps only. With Update and Golden empty the answers are written
 	// into the scenario file.
 	Golden string
-	// Errors selects the error steps (status 400 and above) that run and
-	// orders them: a status ("401", "404") or a class ("4xx", "5xx"). Error
-	// steps that match no entry are left out; consecutive error steps run
-	// in the order of the list, at the place the scenario gives them, so
-	// the records they need still exist. Empty runs every step as written.
+	// Errors selects the error steps (status 400 and above) that run: a
+	// status ("401", "404"), a class ("4xx", "5xx") or "invalid"
+	// (ErrorsInvalid). Empty runs every step as written.
+	//
+	// Error steps of the scenario that match no entry are left out;
+	// consecutive ones run in the order of the list, at the place the
+	// scenario gives them, so the records they need still exist.
+	//
+	// RunScenario also generates error steps from the successful steps of
+	// the scenario, one set per operation. The steps before the first
+	// DELETE run first, then the generated steps in this order: "409" (a
+	// POST that documents 409 sends its body again), "404" (an unknown key
+	// in the last path parameter), "401" (without token, with a manipulated
+	// token), "403" (Config.ForbiddenToken, for operations with
+	// x-apitest-forbidden), "invalid" (a required body field left out, a
+	// field of the wrong type, a field and a parameter that break their
+	// schema). The DELETEs and the steps after them run last. A generated
+	// step needs the response documented in the spec; an operation, status
+	// and token the scenario already has a step for gets none. With Update
+	// nothing is generated.
 	Errors []string
+	// InvalidStatus are the statuses the "invalid" steps accept: statuses
+	// ("400", "422", "500") or classes ("4xx"). Empty accepts every 4xx.
+	// Any other answer fails the step.
+	InvalidStatus []string
 	// Unique makes the body values the scenario marks as unique new for
 	// this run, so the scenario works on an instance that is not empty.
 	Unique bool
@@ -119,6 +138,9 @@ type StepExchange struct {
 	// Equals is the step whose body the answer must hold (check equals),
 	// "" without.
 	Equals string
+	// Generated reports a step RunScenario built itself
+	// (ScenarioConfig.Errors); the scenario file does not hold it.
+	Generated bool
 }
 
 // StepDiff is a value of an answer that differs from the expected one, at
@@ -153,6 +175,7 @@ type scenarioRunner struct {
 	runID    string
 	needed   map[*scenario.Step]bool
 	selected map[*scenario.Step]bool
+	gen      map[*scenario.Step]*generated // steps built by generateErrors
 }
 
 func runScenario(t tester, cfg ScenarioConfig) *Result {
@@ -202,6 +225,7 @@ func runScenario(t tester, cfg ScenarioConfig) *Result {
 		caseOf: map[*scenario.Step]*cases.Case{}, vars: map[string]any{}, savedBy: map[string]string{},
 		sent: map[string]any{}, done: map[string]*outcome{}, unique: map[string]string{},
 		needed: map[*scenario.Step]bool{}, selected: map[*scenario.Step]bool{},
+		gen: map[*scenario.Step]*generated{},
 	}
 	s.runID = newRunID()
 	if err := s.prepare(); err != nil {
@@ -237,7 +261,12 @@ func (c *ScenarioConfig) resolve() error {
 	}
 	for _, e := range c.Errors {
 		if !errorEntry.MatchString(e) {
-			errs = append(errs, fmt.Errorf("ScenarioConfig.Errors: %q is no status (\"404\") or class (\"4xx\", \"5xx\")", e))
+			errs = append(errs, fmt.Errorf("ScenarioConfig.Errors: %q is no status (\"404\"), class (\"4xx\", \"5xx\") or %q", e, ErrorsInvalid))
+		}
+	}
+	for _, e := range c.InvalidStatus {
+		if !statusEntry.MatchString(e) {
+			errs = append(errs, fmt.Errorf("ScenarioConfig.InvalidStatus: %q is no status (\"400\") or class (\"4xx\")", e))
 		}
 	}
 	if c.Settings != "" {
@@ -251,7 +280,10 @@ func (c *ScenarioConfig) resolve() error {
 	return errors.Join(errs...)
 }
 
-var errorEntry = regexp.MustCompile(`^[45](\d\d|[xX][xX])$`)
+var (
+	statusEntry = regexp.MustCompile(`^[1-5](\d\d|[xX][xX])$`)
+	errorEntry  = regexp.MustCompile(`^([45](\d\d|[xX][xX])|(?i:invalid))$`)
+)
 
 func (c *ScenarioConfig) merge(st *scenario.Settings) []error {
 	var errs []error
@@ -354,7 +386,8 @@ func (s *scenarioRunner) prepare() error {
 	if len(errs) > 0 {
 		return errors.New(strings.Join(errs, "\n"))
 	}
-	s.steps = s.arrange(sc.Steps)
+	s.steps = s.generateErrors(s.arrange(sc.Steps))
+	s.unusedErrors()
 	s.choose(opt)
 	for _, st := range s.steps {
 		if s.needed[st] {
@@ -650,7 +683,7 @@ func (s *scenarioRunner) soften(o *outcome) bool {
 func (s *scenarioRunner) checkStep(ctx context.Context, st *scenario.Step) *outcome {
 	r := s.runner
 	c := s.caseOf[st]
-	o := &outcome{c: c, expected: strconv.Itoa(st.Expect)}
+	o := &outcome{c: c, expected: s.expectText(st)}
 	switch {
 	case r.aborted != "":
 		o.status, o.message = StatusSkipped, "run aborted: "+r.aborted
@@ -697,12 +730,12 @@ func (s *scenarioRunner) checkStep(ctx context.Context, st *scenario.Step) *outc
 	o.status = StatusPassed
 	o.decoded = decodeJSON(resp)
 
-	if resp.Status != st.Expect {
+	if !s.statusFits(st, resp.Status) {
 		o.status = StatusFailed
 		if documented(c.Op.Op.Responses, resp.Status) {
-			o.message = fmt.Sprintf("status code %d, expected %d", resp.Status, st.Expect)
+			o.message = fmt.Sprintf("status code %d, expected %s", resp.Status, s.expectText(st))
 		} else {
-			o.message = fmt.Sprintf("status code %d is not documented in the spec, expected %d", resp.Status, st.Expect)
+			o.message = fmt.Sprintf("status code %d is not documented in the spec, expected %s", resp.Status, s.expectText(st))
 		}
 		if hint := authHint(c.Kind, r.cfg.TamperToken != nil, resp.Status); hint != "" {
 			o.message += "; " + hint
@@ -710,10 +743,17 @@ func (s *scenarioRunner) checkStep(ctx context.Context, st *scenario.Step) *outc
 		r.checkTokenExpiry(o)
 		return o
 	}
-	if c.Expect.Response == nil {
-		r.warn(fmt.Sprintf("%s: the spec documents no response %d for %s; only the status is checked", st.ID, st.Expect, c.Op.ID))
+	want := c.Expect.Response
+	if resp.Status != st.Expect {
+		// a generated step that accepts several statuses
+		_, want = cases.ResponseFor(c.Op, resp.Status)
+	}
+	if want == nil {
+		if s.gen[st] == nil {
+			r.warn(fmt.Sprintf("%s: the spec documents no response %d for %s; only the status is checked", st.ID, st.Expect, c.Op.ID))
+		}
 	} else {
-		problems, decoded, _ := compare.Response(r.validator, c.Expect.Response, resp.Header, resp.Body)
+		problems, decoded, _ := compare.Response(r.validator, want, resp.Header, resp.Body)
 		o.decoded = decoded
 		if len(problems) > 0 {
 			o.status, o.problems = StatusSchemaViolation, problems
@@ -732,6 +772,8 @@ func (s *scenarioRunner) checkStep(ctx context.Context, st *scenario.Step) *outc
 	switch {
 	case s.scfg.Update:
 		s.record(ctx, st, c, p, resp, o.decoded)
+	case s.gen[st] != nil:
+		// generated: not in the golden snapshot
 	case s.golden != nil && !s.compareGolden(st, c, o) && !s.soften(o):
 		return o
 	}
@@ -779,6 +821,7 @@ func (s *scenarioRunner) observe(st *scenario.Step, o *outcome) {
 		ex.Diffs = append(ex.Diffs, StepDiff{Pointer: d.Pointer, Expected: d.Expected, Actual: d.Actual, Note: d.Note})
 	}
 	ex.Equals = st.Equals
+	ex.Generated = s.gen[st] != nil
 	ex.Path, _ = s.originals(path).(map[string]any)
 	ex.Query, _ = s.originals(query).(map[string]any)
 	ex.Header, _ = hdr.(map[string]any)

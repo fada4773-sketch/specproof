@@ -1,0 +1,90 @@
+openapi: 3.0.3
+info:
+  title: Moons
+  version: 1.0.0
+security:
+  - bearer: []
+paths:
+  /moons:
+    get:
+      operationId: listMoons
+      tags: [Moon]
+      responses:
+        "200":
+          description: the moons
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/Moon'}
+        "401": {$ref: '#/components/responses/Error'}
+    post:
+      operationId: createMoon
+      tags: [Moon]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/MoonWrite'}
+      responses:
+        "201":
+          description: created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Moon'}
+        "400": {$ref: '#/components/responses/Error'}
+        "401": {$ref: '#/components/responses/Error'}
+        "409": {$ref: '#/components/responses/Error'}
+  /moons/{moonId}:
+    parameters:
+      - name: moonId
+        in: path
+        required: true
+        schema: {type: integer}
+    get:
+      operationId: getMoon
+      tags: [Moon]
+      responses:
+        "200":
+          description: the moon
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Moon'}
+        "400": {$ref: '#/components/responses/Error'}
+        "401": {$ref: '#/components/responses/Error'}
+        "404": {$ref: '#/components/responses/Error'}
+    delete:
+      operationId: deleteMoon
+      tags: [Moon]
+      responses:
+        "204": {description: deleted}
+        "400": {$ref: '#/components/responses/Error'}
+        "401": {$ref: '#/components/responses/Error'}
+        "404": {$ref: '#/components/responses/Error'}
+components:
+  securitySchemes:
+    bearer: {type: http, scheme: bearer}
+  responses:
+    Error:
+      description: error
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error: {type: string}
+  schemas:
+    MoonWrite:
+      type: object
+      required: [name, radius]
+      properties:
+        name: {type: string, maxLength: 20}
+        radius: {type: integer, minimum: 1}
+        kind: {type: string, enum: [rock, ice]}
+    Moon:
+      allOf:
+        - $ref: '#/components/schemas/MoonWrite'
+        - type: object
+          required: [id]
+          properties:
+            id: {type: integer}

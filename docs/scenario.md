@@ -1206,7 +1206,8 @@ test again (`tree`) keeps the answers of the steps it still has. Exit code
 | `-scenario` | another test file |
 | `-golden` | a golden snapshot file of its own instead of the answers in the test |
 | `-settings` | an optional settings file (below) |
-| `-errors 401,404` | run only these error steps, in this order (see `ScenarioConfig.Errors`) |
+| `-errors 409,404,401,invalid` | run only these error steps and generate them from the successful steps (see [Generated error steps](#generated-error-steps)) |
+| `-invalid-status 400,422,500` | the statuses the `invalid` steps accept; default every 4xx |
 | `-run`, `-skip` | select steps like `go test -run`: `Ship/`, `Ship/ship1.read`; the steps they need run too |
 | `-unique` | make the values at `unique` new for this run, for an instance that is not empty |
 | `-report`, `-junit` | Markdown report (HTML and JSON next to it); JUnit XML |
@@ -1261,7 +1262,8 @@ func TestTree(t *testing.T) {
 | `Settings` | the optional settings file |
 | `Scenario` | the scenario (the test file) |
 | `Golden` | a golden snapshot file of its own; empty takes the answers the scenario file holds, without them status, schema and the checks of the steps only |
-| `Errors` | the error steps (status 400 and above) that run, and their order: statuses (`"401"`) or classes (`"4xx"`). Steps no entry matches are left out; consecutive error steps run in the order of the list, at the place the scenario gives them |
+| `Errors` | the error steps (status 400 and above) that run: statuses (`"401"`), classes (`"4xx"`) or `"invalid"`. Error steps of the scenario no entry matches are left out; consecutive ones run in the order of the list, at the place the scenario gives them. RunScenario also generates error steps from the successful steps, see [Generated error steps](#generated-error-steps) |
+| `InvalidStatus` | the statuses the `invalid` steps accept: statuses (`"400"`, `"422"`, `"500"`) or classes (`"4xx"`); empty accepts every 4xx |
 | `Unique` | as `-unique` |
 | `Tolerate` | results of a check that do not fail a step (`StatusSchemaViolation`, `StatusDataMismatch`, `StatusExampleMismatch`): it ends `TOLERATED` with its problems and differences, saves its values, and the steps after it run; the `tolerate` list of the scenario file adds to it (see Tolerate under The tree file) |
 | `Update` | write the answers instead of comparing: into `Golden` when set, else into the scenario file |
@@ -1269,6 +1271,48 @@ func TestTree(t *testing.T) {
 
 `apitest.RunScenarioStandalone` runs the same outside of `go test`; the
 command line uses it.
+
+### Generated error steps
+
+`Errors` (`-errors`) does not only select the error steps of the scenario
+file: RunScenario builds error steps itself, from the first successful step
+of every operation the scenario calls, with the values of this run. The
+file stays as it is. The run has four parts:
+
+1. the clean state: the steps of the scenario before its first DELETE;
+2. the generated error steps, in this order:
+
+   | Entry | Steps | When |
+   |---|---|---|
+   | `409` | `<step>.conflict`: the POST sends the body of the step again | the POST documents 409 and has a body |
+   | `404` | `<step>.notFound`: the last path parameter gets a key no record has (`x-apitest-not-found` at the parameter sets it) | the operation documents 404 |
+   | `401` | `<step>.unauthorized` without token, `<step>.invalidToken` with a manipulated token | the operation needs a token and documents 401 (only 403: the manipulated token expects 403) |
+   | `403` | `<step>.forbidden` with `Config.ForbiddenToken` | the operation documents 403 and has `x-apitest-forbidden: true`; a forbidden token is set |
+   | `invalid` | `<step>.invalidMissing` (a required body field left out), `<step>.invalidType` (a body field of the wrong type), `<step>.invalidValue` (a body field that breaks its enum, format, pattern, length or range), `<step>.invalidParam` (a path or query parameter that does) | always; each step changes one value |
+
+3. the DELETEs and the steps after them (the reads after a delete).
+
+A class (`4xx`) selects every generated step of its statuses. An operation,
+status and token the scenario already has a step for gets no generated one.
+Generated steps check status and schema only; they are not part of the
+golden snapshot, and `Update` (`-update`) generates none.
+
+The answer to invalid input is a matter of the API: 400, 422, or 500 when
+the input is not validated. `InvalidStatus` (`-invalid-status`) lists the
+statuses that pass; empty accepts every 4xx, so a 500 fails the step:
+
+```go
+cfg := apitest.ScenarioConfig{
+	Config:        apitest.Config{SpecPath: "openapi.yaml", Handler: srv, Token: apitest.StaticToken(tok)},
+	Scenario:      "tree-test_gen.yaml",
+	Errors:        []string{"409", "404", "401", "invalid"},
+	InvalidStatus: []string{"400", "422"},
+}
+```
+
+An entry no step matches (`"500"` without such a step in the file) is
+reported as a warning. A 409 or 404 that does not come fails the step,
+unless `Config.TolerateErrorCases` is set.
 
 ## Regression check
 
@@ -1459,7 +1503,9 @@ apitest-gen regression diff -pre <snapshot> -post <snapshot> [-out dir] [-sample
 - It rebuilds what the API can create. Records that only a background job,
   an import or another service makes are seed: put them into the test
   instance, or switch their nodes off.
-- Error steps besides 401 and the read after a delete (409, 412, 422) are
+- `apitest-gen tree` writes no error steps besides 401 and the read after a
+  delete into the test file; the others are generated when the test runs
+  (`Errors`, see [Generated error steps](#generated-error-steps)). 412 is
   not generated.
 - A read that is no list but answers with an object holding one list of
   objects is read as a list; set `items` to correct it.
