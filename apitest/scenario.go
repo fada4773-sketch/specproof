@@ -1253,8 +1253,16 @@ func (s *scenarioRunner) checks(st *scenario.Step, c *cases.Case, o *outcome) bo
 	}
 	if ct := st.Contains; ct != nil {
 		list := listIn(o.decoded)
+		if ct.List != "" {
+			v, _ := bind.Pointer(o.decoded, ct.List)
+			list, _ = v.([]any)
+		}
 		if list == nil {
-			o.status, o.message = StatusDataMismatch, "check.contains: the answer holds no list"
+			where := "the answer"
+			if ct.List != "" {
+				where += " at " + ct.List
+			}
+			o.status, o.message = StatusDataMismatch, "check.contains: "+where+" holds no list"
 			return false
 		}
 		var missing []string

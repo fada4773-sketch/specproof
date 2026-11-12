@@ -183,7 +183,8 @@ KEYS OF A NODE
                   when it names one value. A value (size: 3) or the
                   record's own field (dockCount: .dockCount) is sent as
                   it is, no reference; null leaves the field out
-  items           JSON pointer of the list in the answer (/content)
+  items           JSON pointer of the list in the answer (/content; the
+                  list inside the first element: /0/ships)
   page            {param: page, size: {pageSize: 50}, max: 3}; also start,
                   step, next (pointer of a cursor), in: body
   each            the child nodes

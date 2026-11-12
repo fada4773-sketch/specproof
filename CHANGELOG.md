@@ -566,6 +566,14 @@ contain breaking changes, which are listed here.
 - `apitest-gen tree -fix`: the node it adds to read a record by a field
   read it by any key of the resource (`GET /pilots/{id}` with a code); it
   now takes a read by the key the field holds, else a list with `where`.
+- `apitest-gen tree`: a node whose `items` reach into an element of the
+  answer (`items: /0/ships`: the ships of the first dock of an overview)
+  had its list step check the outer list, which holds no ship, so the
+  created records were reported missing. The list check names the list
+  now (`check: {contains: {list: /0/ships, key: /id, …}}`, also usable by
+  hand in a scenario). Such a node no longer gives its create to the
+  nodes of the request's resource (the overview itself), nor takes
+  theirs.
 
 ## v0.2.0
 

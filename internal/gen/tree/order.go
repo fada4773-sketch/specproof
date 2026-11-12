@@ -3,6 +3,7 @@ package tree
 import (
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -223,7 +224,7 @@ func createOwner(s *spec.Spec, m *model.Model, t *Tree, n *Node) *Node {
 		return n
 	}
 	op := lookupOp(s, n.Call)
-	if op == nil {
+	if op == nil || n.ItemsInElement() {
 		return nil
 	}
 	res := resourceOf(m, op)
@@ -232,7 +233,7 @@ func createOwner(s *spec.Spec, m *model.Model, t *Tree, n *Node) *Node {
 	}
 	var found *Node
 	t.Walk(func(o *Node) {
-		if found != nil || o == n || o.IsRequire || o.Gone {
+		if found != nil || o == n || o.IsRequire || o.Gone || o.ItemsInElement() {
 			return
 		}
 		oop := lookupOp(s, o.Call)
@@ -255,6 +256,22 @@ func createOwner(s *spec.Spec, m *model.Model, t *Tree, n *Node) *Node {
 		}
 	})
 	return found
+}
+
+// ItemsInElement reports whether the node's items reach into an element
+// of the answer (/0/ships: the ships of the first dock of an overview): its records
+// are not of the resource of its request, so it neither gives its create
+// to the nodes of that resource nor takes theirs.
+func (n *Node) ItemsInElement() bool {
+	if !n.HasItems {
+		return false
+	}
+	for _, seg := range strings.Split(strings.TrimPrefix(n.Items, "/"), "/") {
+		if _, err := strconv.Atoi(seg); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // ownSource is the field of n's records that names the record a path

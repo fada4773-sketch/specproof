@@ -1039,7 +1039,7 @@ func (b *builder) creatable(n *Node) bool {
 		if found || o.IsRequire {
 			return
 		}
-		if w, _ := b.writeOf(o, WriteCreate); w != nil && (o == n || res != nil && b.resourceOf(o) == res) {
+		if w, _ := b.writeOf(o, WriteCreate); w != nil && (o == n || res != nil && b.resourceOf(o) == res && !o.ItemsInElement() && !n.ItemsInElement()) {
 			found = true
 		}
 	})
@@ -2895,6 +2895,10 @@ func (b *builder) listStep(r *Record, op *spec.Operation) {
 	}
 	if len(values) > 0 && !strings.Contains(PointerField(key), ".") {
 		st.Contains = &scenario.Contains{Key: key, Values: values}
+		if n.HasItems && n.Items != "" && n.Items != "/" {
+			// the list where the fetch found the records (/0/ships)
+			st.Contains.List = n.Items
+		}
 	}
 	switch {
 	case seeded > 0:

@@ -414,7 +414,7 @@ name. A prefer no fetched record holds is noted.
 | `call` | `METHOD /path` or the operationId; a node only reads: GET, or POST with `read: true` |
 | `path`, `query`, `header` | parameter values |
 | `body`, `read` | the body of a POST that only reads (`read: true`) |
-| `items` | JSON pointer of the list in the answer (`/content`; `""` for the answer itself); by default the schema decides: an array, or a page with one list of objects |
+| `items` | JSON pointer of the list in the answer (`/content`; `""` for the answer itself; `/0/ships` for the list inside the first element); by default the schema decides: an array, or a page with one list of objects. A node whose `items` reach into an element has its own `write`: it does not share the create of the request's other nodes |
 | `page` | `param` (page number or offset), `size: {name: n}`, `max` pages (default 1), `start`, `step`, `next` (JSON pointer of a cursor in the answer), `in: body` (with `param` a JSON pointer into the body) |
 | `pick` | a number (at random, seeded), `{first: n}`, `all`, or a list of keys (by the first key) |
 | `min` | in `require`: the answer must list at least this many elements (that hold its `where`) |
@@ -1134,7 +1134,7 @@ steps:
 | `expect` | the status the answer must have |
 | `check.equals` | the answer holds what that step sent (fields the answer's schema does not declare and writeOnly ones left out) |
 | `check.ignore` | JSON pointers into that body (`*` for any element) `equals` leaves out: copies of other records the answer derives (`/Seeds/*/Person`) |
-| `check.contains` | a list answer (the answer, or its one list field) holds elements whose `key` has these values |
+| `check.contains` | a list answer holds elements whose `key` has these values; the list is the answer, or its one list field, or the one `list` names (a JSON pointer: `list: /0/ships`) |
 | `unique` | JSON pointers into the body whose values `-unique` makes new for each run |
 | `answer` | the answer of the last run with `-update` (`request`, `status`, `headers`, `body`, `volatile`, `lists`, `problems`), written by it; `golden: {spec, specVersion, created, reread}` on top of the file says where they come from |
 

@@ -92,6 +92,32 @@ steps:
 	}
 }
 
+// TestContainsList: check.contains names the list inside the answer
+// (the ships of the first dock); it is read and written back.
+func TestContainsList(t *testing.T) {
+	sc, err := Parse([]byte(`
+steps:
+  - id: dock.overview
+    call: GET /docks/overview
+    expect: 200
+    check: {contains: {list: /0/ships, key: /id, values: [7]}}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ct := sc.Step("dock.overview").Contains; ct == nil || ct.List != "/0/ships" || ct.Key != "/id" {
+		t.Fatalf("parsed: %+v", ct)
+	}
+	b, err := sc.Encode(" head")
+	if err != nil || !strings.Contains(string(b), "contains: {list: /0/ships, key: /id, values: [7]}") {
+		t.Fatalf("encode: %v\n%s", err, b)
+	}
+	st, err := ParseStep(sc.Step("dock.overview").Map())
+	if err != nil || st.Contains == nil || st.Contains.List != "/0/ships" {
+		t.Errorf("Map/ParseStep: %v %+v", err, st)
+	}
+}
+
 func TestParseScenarioErrors(t *testing.T) {
 	tests := []struct{ text, want string }{
 		{"- a", "mapping with the key"},
@@ -112,6 +138,7 @@ func TestParseScenarioErrors(t *testing.T) {
 		{"steps: [{id: a, call: x, expect: 200, check: {nope: 1}}]", `check: unknown key "nope"`},
 		{"steps: [{id: a, call: x, expect: 200, check: {contains: 1}}]", "check.contains must be"},
 		{"steps: [{id: a, call: x, expect: 200, check: {contains: {key: id, values: [1]}}}]", "check.contains needs key"},
+		{"steps: [{id: a, call: x, expect: 200, check: {contains: {list: ships, key: /id, values: [1]}}}]", "check.contains.list"},
 		{"steps: [{id: a, call: x, expect: 200, check: {ignore: [/a]}}]", "next to equals"},
 		{"steps: [{id: a, call: x, expect: 200, check: {equals: b, ignore: [a]}}]", "is no JSON pointer"},
 		{"steps: [{id: a, call: x, expect: 200, unique: 1}]", `"unique" must be a list`},

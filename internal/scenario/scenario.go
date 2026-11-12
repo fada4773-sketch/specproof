@@ -92,6 +92,9 @@ type Step struct {
 
 // Contains is the check of a list answer.
 type Contains struct {
+	// List is the JSON pointer of the list in the answer (/0/ships); ""
+	// for the answer itself or its one field that is a list.
+	List   string
 	Key    string
 	Values []any
 }
@@ -306,6 +309,12 @@ func ParseStep(m map[string]any) (*Step, error) {
 			if !strings.HasPrefix(st.Contains.Key, "/") || len(vals) == 0 {
 				return nil, where("check.contains needs key (a JSON pointer into an element, e.g. /id) and values")
 			}
+			if l, ok := ccm["list"]; ok && l != nil {
+				st.Contains.List = Text(l)
+				if !strings.HasPrefix(st.Contains.List, "/") {
+					return nil, where("check.contains.list: %q is no JSON pointer to the list in the answer (/0/ships)", st.Contains.List)
+				}
+			}
 		}
 	}
 	if raw, ok := m["unique"]; ok && raw != nil {
@@ -434,7 +443,11 @@ func (st *Step) node() *yaml.Node {
 	if st.Equals != "" || st.Contains != nil {
 		var contains *yaml.Node
 		if st.Contains != nil {
-			contains = mapping("key", st.Contains.Key, "values", st.Contains.Values)
+			var list any
+			if st.Contains.List != "" {
+				list = st.Contains.List
+			}
+			contains = mapping("list", list, "key", st.Contains.Key, "values", st.Contains.Values)
 			contains.Style = yaml.FlowStyle
 		}
 		eq := any(nil)
@@ -574,7 +587,11 @@ func (st *Step) Map() map[string]any {
 			c["ignore"] = l
 		}
 		if st.Contains != nil {
-			c["contains"] = map[string]any{"key": st.Contains.Key, "values": st.Contains.Values}
+			ct := map[string]any{"key": st.Contains.Key, "values": st.Contains.Values}
+			if st.Contains.List != "" {
+				ct["list"] = st.Contains.List
+			}
+			c["contains"] = ct
 		}
 		m["check"] = c
 	}
