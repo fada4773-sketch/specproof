@@ -1288,7 +1288,7 @@ file stays as it is. The run has four parts:
    | `404` | `<step>.notFound`: the last path parameter gets a key no record has (`x-apitest-not-found` at the parameter sets it) | the operation documents 404 |
    | `401` | `<step>.unauthorized` without token, `<step>.invalidToken` with a manipulated token | the operation needs a token and documents 401 (only 403: the manipulated token expects 403) |
    | `403` | `<step>.forbidden` with `Config.ForbiddenToken` | the operation documents 403 and has `x-apitest-forbidden: true`; a forbidden token is set |
-   | `invalid` | `<step>.invalidMissing` (a required body field left out), `<step>.invalidType` (a body field of the wrong type), `<step>.invalidValue` (a body field that breaks its enum, format, pattern, length or range), `<step>.invalidParam` (a path or query parameter that does) | always; each step changes one value |
+   | `invalid` | a POST: `<step>.invalidNull` (every field of the body null, its own and the required ones, so no check that comes first, such as a duplicate, answers instead); other operations: `<step>.invalidMissing` (a required body field left out), `<step>.invalidType` (a body field of the wrong type), `<step>.invalidValue` (a body field that breaks its enum, format, pattern, length or range); every operation: `<step>.invalidParam` (a path or query parameter that does) | always |
 
 3. the DELETEs and the steps after them (the reads after a delete).
 
@@ -1311,8 +1311,9 @@ cfg := apitest.ScenarioConfig{
 ```
 
 An entry no step matches (`"500"` without such a step in the file) is
-reported as a warning. A 409 or 404 that does not come fails the step,
-unless `Config.TolerateErrorCases` is set.
+reported as a warning. A 409, 404 or `invalid` step that gets another
+answer fails, unless `Config.TolerateErrorCases` is set: then it ends
+`TOLERATED` and the report shows what came instead.
 
 ## Regression check
 

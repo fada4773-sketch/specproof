@@ -14,6 +14,19 @@
 
 </details>
 
+## 🧭 Scope
+
+Cases per expected status: what the run tested and how it ended.
+
+| Expected | Kinds | Cases | ✅ | ❌ | 🟡 🟠 | ⏭ | Passed |
+|---|---|---:|---:|---:|---:|---:|---|
+| 🟢 `200` | regular | 1 | 0 | 1 | 0 | 0 | ░░░░░░░░░░░░ |
+| 🟢 `201` | regular | 3 | 1 | 2 | 0 | 0 | ████░░░░░░░░ |
+| 🟠 `404` | not-found | 2 | 1 | 0 | 1 | 0 | ██████░░░░░░ |
+| 🟠 `409` | conflict | 1 | 0 | 0 | 1 | 0 | ░░░░░░░░░░░░ |
+| `–` | regular | 5 | 0 | 2 | 1 | 2 | ░░░░░░░░░░░░ |
+| **Total** | | **12** | **2** | **5** | **3** | **2** | ██░░░░░░░░░░ |
+
 ## 📈 Dashboard
 
 ```mermaid

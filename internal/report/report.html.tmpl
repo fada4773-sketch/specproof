@@ -41,7 +41,8 @@ nav{display:flex;gap:2px;margin-left:auto;overflow-x:auto;scrollbar-width:none}
 nav::-webkit-scrollbar{display:none}
 nav a{color:var(--muted);padding:6px 10px;border-radius:8px;font-weight:500;text-decoration:none;white-space:nowrap}
 nav a:hover{background:var(--soft);color:var(--text)}
-.iconbtn{border:1px solid var(--line);background:var(--card);color:var(--text);border-radius:8px;padding:5px 10px;cursor:pointer}
+.iconbtn{border:1px solid var(--line);background:var(--card);color:var(--text);border-radius:8px;padding:5px 10px;cursor:pointer;font:inherit;font-size:12.5px;white-space:nowrap}
+.iconbtn:hover{background:var(--soft)}
 
 /* hero */
 .hero{display:flex;align-items:center;justify-content:space-between;gap:24px;margin:26px 0 18px}
@@ -61,8 +62,18 @@ nav a:hover{background:var(--soft);color:var(--text)}
 .card h3 small{color:var(--muted);font-weight:500;font-size:12.5px}
 .cardhead{display:flex;align-items:baseline;justify-content:space-between;gap:12px;padding:14px 18px;border-bottom:1px solid var(--line)}
 section{margin-top:30px}
-section>h2{font-size:18px;margin:0 0 12px;display:flex;align-items:baseline;gap:10px}
-section>h2 small{color:var(--muted);font-weight:500;font-size:13px}
+section:first-of-type{margin-top:0}
+details.sec>summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:10px;margin:0 0 12px;border-radius:8px;user-select:none}
+details.sec>summary::-webkit-details-marker{display:none}
+details.sec>summary::before{content:"";width:8px;height:8px;flex:none;border-right:2px solid var(--muted);border-bottom:2px solid var(--muted);transform:rotate(-45deg);transition:transform .15s;margin:0 4px 0 2px}
+details.sec[open]>summary::before{transform:rotate(45deg)}
+details.sec:not([open])>summary{margin-bottom:0}
+details.sec>summary:hover h2{color:var(--accent)}
+details.sec>summary:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+details.sec>summary h2{font-size:18px;margin:0;display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+details.sec>summary h2 small{color:var(--muted);font-weight:500;font-size:13px}
+details.sec>summary .count{margin-left:auto;color:var(--muted);font-size:12.5px;white-space:nowrap}
+.toolbtns{display:flex;gap:6px}
 .kpis{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:12px}
 .three{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;margin-top:16px}
 .three>.card{display:flex;flex-direction:column}
@@ -147,6 +158,12 @@ table.fixed{table-layout:fixed}
 .errsum{display:flex;gap:18px;flex-wrap:wrap;padding:14px 18px 0;font-size:13px}
 .errsum b{font-size:18px;margin-right:4px}
 
+/* scope */
+.scopecode{display:inline-block;min-width:58px;padding:2px 8px;border-radius:6px;font-weight:700;text-align:center;background:var(--soft)}
+.scopecode.c2xx,.scopecode.c3xx,.scopecode.c4xx,.scopecode.c5xx{color:#fff}
+.kinds .tag{margin:0 4px 2px 0}
+tfoot td{font-weight:700;border-top:2px solid var(--line);border-bottom:0;background:var(--head)}
+
 /* cases */
 .toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:12px 16px;border-bottom:1px solid var(--line)}
 .toolbar input{flex:1 1 260px;padding:7px 12px;border:1px solid var(--line);border-radius:9px;background:var(--bg);color:var(--text);font:inherit}
@@ -180,6 +197,7 @@ footer{margin-top:40px;color:var(--muted);font-size:12.5px;text-align:center}
 <header class="top"><div class="wrap">
   <div class="brand">🧪 apitest <span>report</span></div>
   <nav>
+    <a href="#scope">Scope</a>
     <a href="#dashboard">Dashboard</a>
     <a href="#tags">Tags</a>
     {{if .Slowest}}<a href="#slowest">Slowest</a>{{end}}
@@ -189,7 +207,11 @@ footer{margin-top:40px;color:var(--muted);font-size:12.5px;text-align:center}
     {{if .R.Deviations}}<a href="#deviations">Deviations</a>{{end}}
     {{if or .R.Findings .R.Warnings}}<a href="#hints">Hints</a>{{end}}
   </nav>
-  <button class="iconbtn" type="button" id="theme" title="Light / dark">◐</button>
+  <div class="toolbtns">
+    <button class="iconbtn" type="button" id="openall" title="Expand every section">Expand all</button>
+    <button class="iconbtn" type="button" id="closeall" title="Collapse every section">Collapse all</button>
+    <button class="iconbtn" type="button" id="theme" title="Light / dark">◐</button>
+  </div>
 </div></header>
 
 <main class="wrap">
@@ -210,7 +232,35 @@ footer{margin-top:40px;color:var(--muted);font-size:12.5px;text-align:center}
   {{if .R.Aborted}}<div class="alert"><b>Run aborted:</b> {{.R.Aborted}}</div>{{end}}
   {{if .R.NotSelected}}<div class="alert warn">{{.R.NotSelected}} more cases were not selected by <code>go test -run</code>.</div>{{end}}
 
-  <div id="dashboard">
+  {{if .Scope}}
+  <section id="scope">
+    <details class="sec" open><summary><h2>Scope <small>cases per expected status and how they ended</small></h2></summary>
+    <div class="card scroll">
+      <table class="fixed" style="min-width:860px">
+        <colgroup><col style="width:120px"><col style="width:26%"><col style="width:70px"><col><col style="width:60px"><col style="width:60px"><col style="width:76px"><col style="width:70px"><col style="width:70px"></colgroup>
+        <thead><tr><th>Expected</th><th>Kinds</th><th class="r">Cases</th><th>Result</th><th class="r">✓</th><th class="r">✕</th><th class="r">tol./dev.</th><th class="r">not run</th><th class="r">Passed</th></tr></thead>
+        <tbody>
+        {{range .Scope}}<tr>
+          <td><span class="scopecode mono {{.Class}}">{{.Expected}}</span></td>
+          <td class="kinds">{{range .Kinds}}<span class="tag">{{.}}</span>{{end}}</td>
+          <td class="r num"><b>{{.Total}}</b></td>
+          <td><div class="stackbar">{{range .Parts}}<span class="s-{{status .Status}}" style="width: {{.Pct}}%" title="{{.Status}}: {{.Count}}"></span>{{end}}</div></td>
+          <td class="r num" style="color:var(--pass)">{{.Passed}}</td>
+          <td class="r num" {{if .Bad}}style="color:var(--fail);font-weight:700"{{end}}>{{.Bad}}</td>
+          <td class="r num">{{.Other}}</td>
+          <td class="r num muted">{{.NotRun}}</td>
+          <td class="r num">{{.Pct}} %</td>
+        </tr>{{end}}
+        </tbody>
+        <tfoot><tr><td>Total</td><td></td><td class="r num">{{.S.Total}}</td><td></td><td class="r num" style="color:var(--pass)">{{index .S.Counts "PASSED"}}</td><td class="r num">{{.S.Bad}}</td><td class="r num">{{.Other}}</td><td class="r num">{{.NotRun}}</td><td></td></tr></tfoot>
+      </table>
+    </div>
+    </details>
+  </section>
+  {{end}}
+
+  <section id="dashboard">
+    <details class="sec" open><summary><h2>Dashboard <small>{{.S.Total}} cases · {{.S.Executed}} answered</small></h2></summary>
     <div class="kpis">
       <div class="card kpi"><div class="l">Cases</div><div class="v num">{{.S.Total}}</div><div class="s ell">{{.Run}} run · {{.S.Executed}} answered</div></div>
       <div class="card kpi pass"><div class="l">Do not fail</div><div class="v num">{{.PassRate}}</div><div class="s ell">{{.S.Good}} of {{.Run}} run</div></div>
@@ -255,10 +305,11 @@ footer{margin-top:40px;color:var(--muted);font-size:12.5px;text-align:center}
         </div>{{else}}<div class="empty-state">No answers.</div>{{end}}
       </div>
     </div>
-  </div>
+    </details>
+  </section>
 
   <section id="tags">
-    <h2>Tags <small>{{len .Groups}} tags</small></h2>
+    <details class="sec" open><summary><h2>Tags <small>{{len .Groups}} tags</small></h2></summary>
     <div class="card scroll">
       <table class="fixed" style="min-width:820px">
         <colgroup><col style="width:22%"><col style="width:70px"><col><col style="width:60px"><col style="width:60px"><col style="width:70px"><col style="width:70px"><col style="width:90px"><col style="width:90px"></colgroup>
@@ -278,11 +329,12 @@ footer{margin-top:40px;color:var(--muted);font-size:12.5px;text-align:center}
         </tbody>
       </table>
     </div>
+    </details>
   </section>
 
   {{if .Slowest}}
   <section id="slowest">
-    <h2>Slowest requests <small>top {{len .Slowest}}</small></h2>
+    <details class="sec" open><summary><h2>Slowest requests <small>top {{len .Slowest}}</small></h2></summary>
     <div class="card scroll">
       <table class="fixed" style="min-width:820px">
         <colgroup><col style="width:44px"><col style="width:46%"><col style="width:150px"><col style="width:64px"><col><col style="width:84px"></colgroup>
@@ -299,12 +351,13 @@ footer{margin-top:40px;color:var(--muted);font-size:12.5px;text-align:center}
         </tbody>
       </table>
     </div>
+    </details>
   </section>
   {{end}}
 
   {{if .S.Errors.Cases}}
   <section id="errorcases">
-    <h2>Error cases <small>expected error answers (404, 409, 5xx) and what came instead</small></h2>
+    <details class="sec" open><summary><h2>Error cases <small>expected error answers (404, 409, invalid input, 5xx) and what came instead</small></h2></summary>
     <div class="stack-v" style="margin-top:0">
       <div class="card">
         <div class="errsum">
@@ -336,14 +389,17 @@ footer{margin-top:40px;color:var(--muted);font-size:12.5px;text-align:center}
         </table>
       </div>
     </div>
+    </details>
   </section>
   {{end}}
 
   <section id="cases">
-    <h2>Cases <small>{{.S.Total}} cases · click a row for details</small></h2>
+    <details class="sec" open><summary><h2>Cases <small>{{.S.Total}} cases · click a row for details</small></h2></summary>
     <div class="card">
       <div class="toolbar">
         <input id="q" type="search" placeholder="Search case, path, status, message …" aria-label="search">
+        <button class="iconbtn" type="button" id="rowsopen" title="Show the details of every shown case">Open rows</button>
+        <button class="iconbtn" type="button" id="rowsclose" title="Hide every case detail">Close rows</button>
         {{range .Filters}}<button class="chip s-{{status .Status}}" type="button" aria-pressed="true" data-status="{{.Status}}"><span class="dot"></span>{{words .Status}} {{.Count}}</button>{{end}}
       </div>
       <div class="scroll">
@@ -384,10 +440,11 @@ footer{margin-top:40px;color:var(--muted);font-size:12.5px;text-align:center}
       </div>
       <div class="empty-state" id="none" hidden>No case matches the filter.</div>
     </div>
+    </details>
   </section>
 
   <section id="coverage">
-    <h2>Coverage</h2>
+    <details class="sec" open><summary><h2>Coverage</h2></summary>
     <div class="card pad">
       <div class="codes" style="padding:0;grid-template-columns:1fr">
         <div class="r" style="grid-template-columns:150px 1fr 80px"><span>Operations</span><div class="track thick"><span class="c2xx" style="width: {{.CovPct}}%"></span></div><span class="num">{{.R.Coverage.OperationsCovered}} / {{.R.Coverage.Operations}}</span></div>
@@ -399,21 +456,23 @@ footer{margin-top:40px;color:var(--muted);font-size:12.5px;text-align:center}
       <thead><tr><th>Uncovered operation</th><th>Reason</th></tr></thead>
       <tbody>{{range .R.Coverage.Uncovered}}<tr><td class="mono ell" title="{{.Operation}}">{{.Operation}}</td><td class="muted" style="overflow-wrap:anywhere">{{.Reason}}</td></tr>{{end}}</tbody>
     </table></div>{{end}}
+    </details>
   </section>
 
   {{if .R.Deviations}}
   <section id="deviations">
-    <h2>Deviations <small class="mono">{{.R.DeviationsFile}}</small></h2>
+    <details class="sec" open><summary><h2>Deviations <small class="mono">{{.R.DeviationsFile}}</small></h2></summary>
     <div class="card scroll"><table style="min-width:900px">
       <thead><tr><th class="r">#</th><th>Case</th><th>Deviation</th><th>Reason</th><th>Ticket</th><th>Valid until</th><th class="r">Used</th><th>State</th></tr></thead>
       <tbody>{{range .R.Deviations}}<tr><td class="r num">{{.Index}}</td><td class="mono">{{.Case}}</td><td>{{.Rule}}</td><td>{{.Reason}}</td><td>{{.Ticket}}</td><td class="num">{{.Expires}}</td><td class="r num">{{.Uses}}</td><td>{{devstate .}}</td></tr>{{end}}</tbody>
     </table></div>
+    </details>
   </section>
   {{end}}
 
   {{if or .R.Findings .R.Warnings}}
   <section id="hints">
-    <h2>Hints</h2>
+    <details class="sec" open><summary><h2>Hints</h2></summary>
     <div class="stack-v" style="margin-top:0">
       {{if .R.Warnings}}<div class="card"><div class="cardhead"><h3>Warnings <small>{{len .R.Warnings}}</small></h3></div><ul class="plain">{{range .R.Warnings}}<li>{{.}}</li>{{end}}</ul></div>{{end}}
       {{if .R.Findings}}<div class="card scroll"><table class="fixed" style="min-width:640px">
@@ -422,6 +481,7 @@ footer{margin-top:40px;color:var(--muted);font-size:12.5px;text-align:center}
         <tbody>{{range .R.Findings}}<tr><td class="mono ell" title="{{.Where}}">{{.Where}}</td><td style="overflow-wrap:anywhere">{{.Message}}</td></tr>{{end}}</tbody>
       </table></div>{{end}}
     </div>
+    </details>
   </section>
   {{end}}
 
@@ -438,6 +498,24 @@ footer{margin-top:40px;color:var(--muted);font-size:12.5px;text-align:center}
     var next=dark?"light":"dark";root.setAttribute("data-theme",next);
     try{localStorage.setItem("apitest-theme",next)}catch(e){}
   });
+  // sections: collapsible, the collapsed ones are remembered per viewer
+  var secs=document.querySelectorAll("details.sec"),KEY="apitest-closed";
+  function closedIds(){try{return JSON.parse(localStorage.getItem(KEY)||"[]")}catch(e){return[]}}
+  function remember(){
+    var ids=[];secs.forEach(function(d){if(!d.open)ids.push(d.parentNode.id)});
+    try{localStorage.setItem(KEY,JSON.stringify(ids))}catch(e){}
+  }
+  var closed=closedIds();
+  secs.forEach(function(d){
+    if(closed.indexOf(d.parentNode.id)>=0)d.open=false;
+    d.addEventListener("toggle",remember);
+  });
+  function all(open){secs.forEach(function(d){d.open=open});remember()}
+  document.getElementById("openall").addEventListener("click",function(){all(true)});
+  document.getElementById("closeall").addEventListener("click",function(){all(false)});
+  function reveal(id){var s=document.getElementById(id),d=s&&s.querySelector("details.sec");if(d&&!d.open){d.open=true;remember()}}
+  document.querySelectorAll("nav a").forEach(function(a){a.addEventListener("click",function(){reveal(a.getAttribute("href").slice(1))})});
+  if(location.hash)reveal(location.hash.slice(1));
   function toggle(row){
     var d=document.getElementById("d"+row.getAttribute("data-id"));if(!d)return;
     d.hidden=!d.hidden;row.classList.toggle("open",!d.hidden);
@@ -460,6 +538,15 @@ footer{margin-top:40px;color:var(--muted);font-size:12.5px;text-align:center}
     none.hidden=shown>0;
   }
   q.addEventListener("input",apply);
+  function rows(open){
+    document.querySelectorAll("tr.case[data-id]").forEach(function(row){
+      if(row.hidden)return;
+      var d=document.getElementById("d"+row.getAttribute("data-id"));if(!d)return;
+      d.hidden=!open;row.classList.toggle("open",open);
+    });
+  }
+  document.getElementById("rowsopen").addEventListener("click",function(){rows(true)});
+  document.getElementById("rowsclose").addEventListener("click",function(){rows(false)});
   chips.forEach(function(c){c.addEventListener("click",function(){c.setAttribute("aria-pressed",c.getAttribute("aria-pressed")==="true"?"false":"true");apply()})});
   document.querySelectorAll("button.copy").forEach(function(b){
     b.addEventListener("click",function(e){

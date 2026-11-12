@@ -1,7 +1,9 @@
 package apitest
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"slices"
 	"strconv"
@@ -29,6 +31,11 @@ steps:
     expect: 200
   - id: moon.list
     call: GET /moons
+    expect: 200
+  - id: moon1.update
+    call: updateMoon
+    path: {moonId: '{{moon1.id}}'}
+    body: {name: Luna, radius: 1738, kind: ice}
     expect: 200
   - id: moon1.delete
     call: DELETE /moons/{moonId}
@@ -85,15 +92,11 @@ func moonAPI(f moonFaults) http.Handler {
 		}
 		return n, true
 	}
-	mux := http.NewServeMux()
-	mux.HandleFunc("POST /moons", func(w http.ResponseWriter, r *http.Request) {
-		if !authorized(w, r) {
-			return
-		}
+	valid := func(w http.ResponseWriter, r *http.Request) (map[string]any, bool) {
 		var in map[string]any
 		if json.NewDecoder(r.Body).Decode(&in) != nil {
 			bad(w, "invalid json")
-			return
+			return nil, false
 		}
 		name, ok := in["name"].(string)
 		radius, rok := in["radius"].(float64)
@@ -101,19 +104,48 @@ func moonAPI(f moonFaults) http.Handler {
 		switch {
 		case !ok || name == "" || len(name) > 20:
 			bad(w, "name is required, at most 20 characters")
-			return
 		case !rok || radius < 1:
 			bad(w, "radius is required, at least 1")
-			return
 		case in["kind"] != nil && (!kok || kind != "rock" && kind != "ice"):
 			bad(w, "kind is rock or ice")
+		default:
+			return in, true
+		}
+		return nil, false
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("PUT /moons/{moonId}", func(w http.ResponseWriter, r *http.Request) {
+		if !authorized(w, r) {
 			return
 		}
 		mu.Lock()
 		defer mu.Unlock()
+		n, ok := id(w, r)
+		if !ok {
+			return
+		}
+		in, ok := valid(w, r)
+		if !ok {
+			return
+		}
+		in["id"] = n
+		moons[n] = in
+		reply(w, http.StatusOK, in)
+	})
+	mux.HandleFunc("POST /moons", func(w http.ResponseWriter, r *http.Request) {
+		if !authorized(w, r) {
+			return
+		}
+		in, ok := valid(w, r)
+		if !ok {
+			return
+		}
+		name := in["name"]
+		mu.Lock()
+		defer mu.Unlock()
 		for _, m := range moons {
 			if m["name"] == name && !f.duplicates {
-				reply(w, http.StatusConflict, map[string]any{"error": "moon " + name + " exists"})
+				reply(w, http.StatusConflict, map[string]any{"error": fmt.Sprintf("moon %v exists", name)})
 				return
 			}
 		}
@@ -183,16 +215,20 @@ func TestScenarioGeneratedErrors(t *testing.T) {
 	}
 	want := []string{
 		// the clean state: the steps before the first DELETE
-		"Moon/moon1.create", "Moon/moon1.read", "Moon/moon.list",
+		"Moon/moon1.create", "Moon/moon1.read", "Moon/moon.list", "Moon/moon1.update",
 		// 409, 404 (getMoon has its 404 step in the file), 401, invalid
 		"Moon/moon1.create.conflict",
-		"Moon/moon1.delete.notFound",
+		"Moon/moon1.update.notFound", "Moon/moon1.delete.notFound",
 		"Moon/moon1.create.unauthorized", "Moon/moon1.create.invalidToken",
 		"Moon/moon1.read.unauthorized", "Moon/moon1.read.invalidToken",
 		"Moon/moon.list.unauthorized", "Moon/moon.list.invalidToken",
+		"Moon/moon1.update.unauthorized", "Moon/moon1.update.invalidToken",
 		"Moon/moon1.delete.unauthorized", "Moon/moon1.delete.invalidToken",
-		"Moon/moon1.create.invalidMissing", "Moon/moon1.create.invalidType", "Moon/moon1.create.invalidValue",
-		"Moon/moon1.read.invalidParam", "Moon/moon1.delete.invalidParam",
+		// a POST: every field null; a PUT: one value per step
+		"Moon/moon1.create.invalidNull",
+		"Moon/moon1.read.invalidParam",
+		"Moon/moon1.update.invalidMissing", "Moon/moon1.update.invalidType", "Moon/moon1.update.invalidValue", "Moon/moon1.update.invalidParam",
+		"Moon/moon1.delete.invalidParam",
 		// the DELETEs and the steps after them
 		"Moon/moon1.delete", "Moon/moon1.read.afterDelete",
 	}
@@ -202,12 +238,12 @@ func TestScenarioGeneratedErrors(t *testing.T) {
 
 	// without Errors the scenario runs as written
 	res, _ = runScenarioFake(t, moonsConfig(t, moonFaults{}))
-	if got := caseNames(res); len(got) != 5 {
-		t.Errorf("without Errors want the 5 steps of the file, got %v", got)
+	if got := caseNames(res); len(got) != 6 {
+		t.Errorf("without Errors want the 6 steps of the file, got %v", got)
 	}
 	// Errors selects the phases
 	res, _ = runScenarioFake(t, moonsConfig(t, moonFaults{}, "409"))
-	if got := caseNames(res); len(got) != 5 || got[3] != "Moon/moon1.create.conflict" {
+	if got := caseNames(res); len(got) != 6 || got[4] != "Moon/moon1.create.conflict" {
 		t.Errorf("Errors 409: want the clean steps, the conflict and the delete, got %v", got)
 	}
 }
@@ -222,11 +258,13 @@ func TestScenarioGeneratedErrorsFaults(t *testing.T) {
 	}{
 		{"duplicates", moonFaults{duplicates: true}, []string{"Moon/moon1.create.conflict"}},
 		{"crash", moonFaults{crash: true}, []string{
-			"Moon/moon1.create.invalidMissing", "Moon/moon1.create.invalidType", "Moon/moon1.create.invalidValue",
-			"Moon/moon1.read.invalidParam", "Moon/moon1.delete.invalidParam",
+			"Moon/moon1.create.invalidNull", "Moon/moon1.read.invalidParam",
+			"Moon/moon1.update.invalidMissing", "Moon/moon1.update.invalidType", "Moon/moon1.update.invalidValue", "Moon/moon1.update.invalidParam",
+			"Moon/moon1.delete.invalidParam",
 		}},
 		{"noAuth", moonFaults{noAuth: true}, []string{
-			"Moon/moon1.create.unauthorized", "Moon/moon1.read.unauthorized", "Moon/moon.list.unauthorized", "Moon/moon1.delete.unauthorized",
+			"Moon/moon1.create.unauthorized", "Moon/moon1.read.unauthorized", "Moon/moon.list.unauthorized",
+			"Moon/moon1.update.unauthorized", "Moon/moon1.delete.unauthorized",
 			// the delete without token deleted the moon
 			"Moon/moon1.delete",
 		}},
@@ -254,8 +292,21 @@ func TestScenarioInvalidStatus(t *testing.T) {
 		t.Fatalf("InvalidStatus with 500 must accept the 500:\n%s", ft.output())
 	}
 	got := statusOf(res)
-	if got["Moon/moon1.create.invalidType"] != StatusPassed {
-		t.Errorf("invalidType: %v", got)
+	if got["Moon/moon1.create.invalidNull"] != StatusPassed {
+		t.Errorf("invalidNull: %v", got)
+	}
+
+	// TolerateErrorCases: a 500 the statuses do not accept is TOLERATED
+	cfg = moonsConfig(t, moonFaults{crash: true}, "invalid")
+	cfg.TolerateErrorCases = true
+	res, ft = runScenarioFake(t, cfg)
+	if res.Failed {
+		t.Fatalf("TolerateErrorCases must tolerate the invalid steps:\n%s", ft.output())
+	}
+	for _, c := range res.Cases {
+		if strings.Contains(c.Name, ".invalid") && (c.Status != StatusTolerated || c.Tolerated != StatusFailed) {
+			t.Errorf("%s: %s (%s), want TOLERATED (FAILED)", c.Name, c.Status, c.Tolerated)
+		}
 	}
 
 	cfg = moonsConfig(t, moonFaults{crash: true}, "invalid")
@@ -283,7 +334,7 @@ func TestScenarioErrorsNotInUpdate(t *testing.T) {
 	if res.Failed {
 		t.Fatalf("update failed:\n%s", ft.output())
 	}
-	if got := caseNames(res); len(got) != 5 {
+	if got := caseNames(res); len(got) != 6 {
 		t.Errorf("Update must not generate steps, got %v", got)
 	}
 }
@@ -323,5 +374,35 @@ func TestScenarioInvalidValues(t *testing.T) {
 	}
 	if _, ok := wrongType(&openapi3.Schema{}); ok {
 		t.Error("wrongType without type must find none")
+	}
+}
+
+// Every step sends the valid token, except the 401 steps: unauthorized
+// none, invalidToken the first half of it.
+func TestScenarioGeneratedErrorsTokens(t *testing.T) {
+	cfg := moonsConfig(t, moonFaults{}, "409", "404", "401", "invalid")
+	var mu sync.Mutex
+	sent := map[string]string{}
+	cfg.Hooks.BeforeRequest = func(_ context.Context, c *Case, req *http.Request) error {
+		mu.Lock()
+		defer mu.Unlock()
+		sent[c.Name] = req.Header.Get("Authorization")
+		return nil
+	}
+	res, ft := runScenarioFake(t, cfg)
+	if res.Failed {
+		t.Fatalf("run failed:\n%s", ft.output())
+	}
+	for _, c := range res.Cases {
+		want := "Bearer moon-token"
+		switch {
+		case strings.HasSuffix(c.Name, ".unauthorized"):
+			want = ""
+		case strings.HasSuffix(c.Name, ".invalidToken"):
+			want = "Bearer moon-"
+		}
+		if got := sent[c.Name]; got != want {
+			t.Errorf("%s sent Authorization %q, want %q", c.Name, got, want)
+		}
 	}
 }

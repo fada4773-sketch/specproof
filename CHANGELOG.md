@@ -8,17 +8,24 @@ contain breaking changes, which are listed here.
 
 ### Features
 
+- Reports: a scope section in the Markdown and HTML report counts the cases
+  per expected status (201, 401, 404, `4xx` …) with their kinds and how
+  they ended. The HTML report has every section collapsible, *Expand all* /
+  *Collapse all* in the top bar (the collapsed sections are remembered in
+  the browser), and *Open rows* / *Close rows* for the case details.
+
 - `ScenarioConfig.Errors` (`tree run -errors`) generates error steps from
   the successful steps of the scenario, with the values of the run: `409`
   (a POST sends its body again), `404` (an unknown key in the path), `401`
   (without and with a manipulated token), `403` (forbidden token,
   `x-apitest-forbidden`) and the new entry `invalid` (a required body field
   left out, a field of the wrong type, a field and a parameter that break
-  their schema). They run after the steps before the first DELETE and
+  their schema; a POST sends every body field null). They run after the steps before the first DELETE and
   before the DELETEs. `ScenarioConfig.InvalidStatus` (`-invalid-status`)
   lists the statuses the `invalid` steps accept, default every 4xx.
   `StepExchange.Generated` marks them; an `Errors` entry no step matches is
-  reported as a warning.
+  reported as a warning. `Config.TolerateErrorCases` tolerates the 404,
+  409 and `invalid` steps.
 
 - `records: all` at an update, patch or action in `tree.yaml`: the write
   runs on every record the test creates (`ships1.update`, `ships2.update`,

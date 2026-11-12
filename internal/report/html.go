@@ -68,6 +68,8 @@ type view struct {
 	Started  string
 	Duration string
 	Run      int // cases that ran (not skipped, not buildable)
+	Other    int // deviation, tolerated
+	NotRun   int // skipped, not buildable
 	PassRate string
 	Coverage string
 	CovPct   int
@@ -79,6 +81,7 @@ type view struct {
 	Codes    []barView
 	Slowest  []slowView
 	Matrix   []matrixRow
+	Scope    []scopeView
 	Cases    []caseView
 	Filters  []slice // statuses present, for the filter chips
 }
@@ -115,6 +118,15 @@ type barView struct {
 	Class string
 }
 
+// scopeView is one expected status of the scope: its figures and the
+// share of its cases per result status.
+type scopeView struct {
+	ScopeRow
+	Class string // c2xx … c5xx, "" without status
+	Parts []slice
+	Pct   int // share of passed cases
+}
+
 type matrixRow struct {
 	Expected string
 	Cells    []matrixCell
@@ -143,7 +155,9 @@ func newView(r *Report) *view {
 	if r.SpecVersion != "" {
 		v.Title += " " + r.SpecVersion
 	}
-	v.Run = st.Total - st.Counts[Skipped] - st.Counts[NotBuildable]
+	v.NotRun = st.Counts[Skipped] + st.Counts[NotBuildable]
+	v.Run = st.Total - v.NotRun
+	v.Other = st.Counts[Deviation] + st.Counts[Tolerated]
 	v.PassRate = percent(st.Good, v.Run)
 	v.Coverage = percent(r.Coverage.OperationsCovered, r.Coverage.Operations)
 	v.CovPct = share(r.Coverage.OperationsCovered, r.Coverage.Operations)
@@ -214,6 +228,18 @@ func newView(r *Report) *view {
 			row.Cells = append(row.Cells, cell)
 		}
 		v.Matrix = append(v.Matrix, row)
+	}
+	for _, s := range st.Scope {
+		sv := scopeView{ScopeRow: s, Pct: share(s.Passed, s.Total)}
+		if s.Expected[0] >= '1' && s.Expected[0] <= '5' {
+			sv.Class = "c" + s.Expected[:1] + "xx"
+		}
+		for _, x := range StatusOrder {
+			if n := s.Counts[x]; n > 0 {
+				sv.Parts = append(sv.Parts, slice{x, n, pct(n, s.Total)})
+			}
+		}
+		v.Scope = append(v.Scope, sv)
 	}
 	for i, c := range r.Cases {
 		cv := caseView{Case: c, ID: i + 1, Excerpt: excerpt(c), BarPct: pct(int(c.Duration), int(st.Max)), Received: "–"}

@@ -114,8 +114,9 @@ type Config struct {
 	ErrorCases bool
 	// TolerateErrorCases reports error cases that get another answer than
 	// documented as TOLERATED instead of failing the test: the generated
-	// not-found and conflict cases, and named examples that expect 404, 409
-	// or 5xx. Other 4xx examples (400, 422 …) still fail. The report
+	// not-found and conflict cases, the "invalid" steps of RunScenario
+	// (ScenarioConfig.Errors), and named examples that expect 404, 409 or
+	// 5xx. Other 4xx examples (400, 422 …) still fail. The report
 	// analyses every error case: what was expected, what came instead.
 	TolerateErrorCases bool
 

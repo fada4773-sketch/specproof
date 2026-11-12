@@ -53,11 +53,12 @@ func (k Kind) String() string {
 }
 
 // ErrorCase reports whether c tests an error answer Config.TolerateErrorCases
-// covers: a generated 404 or 409, a named example that expects 404 or 409,
-// or one that expects 5xx.
+// covers: a generated 404 or 409, a generated step with invalid input
+// (scenario), a named example that expects 404 or 409, or one that expects
+// 5xx.
 func (c *Case) ErrorCase() bool {
 	switch c.Kind {
-	case NotFound, Conflict, ServerError:
+	case NotFound, Conflict, ServerError, Invalid:
 		return true
 	case Negative:
 		return c.Expect.Status == http.StatusNotFound || c.Expect.Status == http.StatusConflict

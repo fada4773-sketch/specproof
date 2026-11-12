@@ -5,6 +5,7 @@ import (
 	"slices"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -24,6 +25,32 @@ type Stats struct {
 	Codes                             []CodeCount // by code
 	Histogram                         []Bucket
 	Errors                            ErrorStats
+	// Scope counts the cases per expected status: how many tests expect
+	// 201, 401, 404 …, and how they ended.
+	Scope []ScopeRow
+}
+
+// ScopeRow are the cases that expect one status ("201", "4xx",
+// "400 | 422"; "–" without expectation).
+type ScopeRow struct {
+	Expected string
+	Kinds    []string       // kinds of the cases ("regular", "not-found", …), in order of appearance
+	Total    int            // cases
+	Counts   map[string]int // cases per result status
+	Passed   int
+	Bad      int // fail the test
+	Other    int // deviation, tolerated
+	NotRun   int // skipped, not buildable
+}
+
+// expectedStatus is the status part of the expectation of a case: "201"
+// of "201, schema of the spec"; "–" without.
+func expectedStatus(c Case) string {
+	exp, _, _ := strings.Cut(c.Expected, ", ")
+	if exp = strings.TrimSpace(exp); exp == "" {
+		return "–"
+	}
+	return exp
 }
 
 // GroupStats are the figures of one tag.
@@ -84,7 +111,17 @@ func Compute(r *Report) Stats {
 		st.Histogram[i].Label = b.label
 	}
 	st.Errors.Matrix = map[string]map[string]int{}
+	scope := map[string]*ScopeRow{}
+	var scopeOrder []string
 	for _, c := range r.Cases {
+		exp := expectedStatus(c)
+		sr := scope[exp]
+		if sr == nil {
+			sr = &ScopeRow{Expected: exp, Counts: map[string]int{}}
+			scope[exp] = sr
+			scopeOrder = append(scopeOrder, exp)
+		}
+		sr.add(c)
 		st.Counts[c.Status]++
 		switch {
 		case IsError(c.Status):
@@ -143,17 +180,40 @@ func Compute(r *Report) Stats {
 	st.Slowest = answered[:min(10, len(answered))]
 	sortCodes(st.Errors.Expected)
 	sortCodes(st.Errors.Actual)
+	sortCodes(scopeOrder)
+	for _, exp := range scopeOrder {
+		st.Scope = append(st.Scope, *scope[exp])
+	}
 	return st
+}
+
+func (s *ScopeRow) add(c Case) {
+	s.Total++
+	s.Counts[c.Status]++
+	kind := c.Kind
+	if kind == "" {
+		kind = "regular"
+	}
+	if !slices.Contains(s.Kinds, kind) {
+		s.Kinds = append(s.Kinds, kind)
+	}
+	switch {
+	case c.Status == Passed:
+		s.Passed++
+	case IsError(c.Status):
+		s.Bad++
+	case c.Status == Deviation || c.Status == Tolerated:
+		s.Other++
+	default:
+		s.NotRun++
+	}
 }
 
 func (e *ErrorStats) add(c Case) {
 	e.Cases = append(e.Cases, c)
-	exp, act := c.Expected, "–"
-	if exp == "" {
+	exp, act := expectedStatus(c), "–"
+	if exp == "–" {
 		exp = "?"
-	}
-	if n := len(exp); n > 3 {
-		exp = exp[:3] // "404, Schema" → "404"
 	}
 	if c.Code != 0 {
 		act = strconv.Itoa(c.Code)

@@ -3,6 +3,7 @@ package report
 import (
 	"bytes"
 	"flag"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -144,6 +145,7 @@ func TestRenderHTML(t *testing.T) {
 	page := string(a)
 	for _, want := range []string{
 		"<title>apitest · Bookstore 1.0</title>", `<div class="badge bad">✕ Failed</div>`,
+		`id="scope"`, `<span class="scopecode mono c4xx">409</span>`, `<details class="sec" open>`, `id="closeall"`, `id="rowsopen"`,
 		`id="dashboard"`, `aria-label="cases by status"`, "Slowest requests", "1.30 s", "Response times", "Status codes",
 		`id="errorcases"`, `<b class="num">3</b>error cases`, "Book/deleteBook/not-found", "would be FAILED",
 		`data-status="TOLERATED"`, "duplicate key &lt;script&gt;", "Reproduce", "API-1", "media type not supported",
@@ -173,6 +175,13 @@ func TestStats(t *testing.T) {
 	e := st.Errors
 	if len(e.Cases) != 3 || e.AsDocumented != 1 || e.Other != 2 || strings.Join(e.Expected, ",") != "404,409" || strings.Join(e.Actual, ",") != "204,404,500" || e.Matrix["404"]["204"] != 1 {
 		t.Errorf("errors: %+v", e)
+	}
+	var scope []string
+	for _, s := range st.Scope {
+		scope = append(scope, fmt.Sprintf("%s:%d/%d/%d/%d/%d", s.Expected, s.Total, s.Passed, s.Bad, s.Other, s.NotRun))
+	}
+	if got := strings.Join(scope, " "); got != "200:1/0/1/0/0 201:3/1/2/0/0 404:2/1/0/1/0 409:1/0/0/1/0 –:5/0/2/1/2" {
+		t.Errorf("scope: %s", got)
 	}
 	if len(st.Groups) != 2 || st.Groups[1].Name != "Book" || st.Groups[1].Total != 7 {
 		t.Errorf("groups: %+v", st.Groups)

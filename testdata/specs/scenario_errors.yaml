@@ -53,6 +53,23 @@ paths:
         "400": {$ref: '#/components/responses/Error'}
         "401": {$ref: '#/components/responses/Error'}
         "404": {$ref: '#/components/responses/Error'}
+    put:
+      operationId: updateMoon
+      tags: [Moon]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/MoonWrite'}
+      responses:
+        "200":
+          description: updated
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Moon'}
+        "400": {$ref: '#/components/responses/Error'}
+        "401": {$ref: '#/components/responses/Error'}
+        "404": {$ref: '#/components/responses/Error'}
     delete:
       operationId: deleteMoon
       tags: [Moon]

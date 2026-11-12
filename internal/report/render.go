@@ -69,6 +69,7 @@ func Render(r *Report) []byte {
 		})
 	}
 
+	renderScope(&b, st)
 	renderDashboard(&b, r, st)
 	if len(st.Errors.Cases) > 0 {
 		renderErrorCases(&b, r, st.Errors)
@@ -159,6 +160,31 @@ func Render(r *Report) []byte {
 		})
 	}
 	return []byte(b.String())
+}
+
+// renderScope writes how many cases expect each status and how they ended.
+func renderScope(b *strings.Builder, st Stats) {
+	if len(st.Scope) == 0 {
+		return
+	}
+	w := func(format string, args ...any) { fmt.Fprintf(b, format, args...) }
+	w("## 🧭 Scope\n\n")
+	w("Cases per expected status: what the run tested and how it ended.\n\n")
+	w("| Expected | Kinds | Cases | ✅ | ❌ | 🟡 🟠 | ⏭ | Passed |\n|---|---|---:|---:|---:|---:|---:|---|\n")
+	for _, s := range st.Scope {
+		w("| %s | %s | %d | %d | %d | %d | %d | %s |\n", strings.TrimSpace(scopeIcon(s.Expected)+" "+code(s.Expected)), inline(strings.Join(s.Kinds, ", ")),
+			s.Total, s.Passed, s.Bad, s.Other, s.NotRun, bar(s.Passed, s.Total, 12))
+	}
+	w("| **Total** | | **%d** | **%d** | **%d** | **%d** | **%d** | %s |\n\n", st.Total, st.Counts[Passed], st.Bad,
+		st.Counts[Deviation]+st.Counts[Tolerated], st.Counts[Skipped]+st.Counts[NotBuildable], bar(st.Counts[Passed], st.Total, 12))
+}
+
+// scopeIcon colors an expected status like codeIcon; "" for "–".
+func scopeIcon(exp string) string {
+	if exp == "" || exp[0] < '1' || exp[0] > '5' {
+		return ""
+	}
+	return codeIcon(int(exp[0]-'0') * 100)
 }
 
 // renderDashboard writes the figures of the run: statuses as a chart, the

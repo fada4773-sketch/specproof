@@ -283,9 +283,13 @@ func (s *scenarioRunner) authSteps(t *scenario.Step, op *spec.Operation, exists 
 	return out
 }
 
-// invalidSteps sends input the schema forbids: a required body field left
-// out, a body field of the wrong type, a body field and a parameter that
-// break a rule of their schema. Each step changes one value.
+// invalidSteps sends input the schema forbids. A POST sends one body with
+// every field null (its own fields and the required ones): changing one
+// field would still meet checks that come first (a duplicate answers 409).
+// Other operations send a required body field left out, a body field of
+// the wrong type and a body field that breaks a rule of its schema, one
+// value per step. Every operation also sends a parameter that breaks its
+// schema.
 func (s *scenarioRunner) invalidSteps(t *scenario.Step, op *spec.Operation) []*scenario.Step {
 	expect := http.StatusBadRequest
 	if op.Op.Responses.Value("400") == nil && op.Op.Responses.Value("422") != nil {
@@ -300,7 +304,18 @@ func (s *scenarioRunner) invalidSteps(t *scenario.Step, op *spec.Operation) []*s
 	body, _ := t.Body.(map[string]any)
 	mt, _ := cases.RequestMedia(op)
 	sch := requestSchema(s.caseOf[t])
-	if body != nil && sch != nil && cases.IsJSONMedia(mt) {
+	if body != nil && sch != nil && cases.IsJSONMedia(mt) && op.Method == http.MethodPost {
+		st := add("invalidNull", "every field of the body null")
+		nulls := map[string]any{}
+		for k := range body {
+			nulls[k] = nil
+		}
+		for _, k := range requiredFields(sch) {
+			nulls[k] = nil
+		}
+		st.Body = nulls
+		out = append(out, st)
+	} else if body != nil && sch != nil && cases.IsJSONMedia(mt) {
 		if name := firstRequired(sch, body); name != "" {
 			st := add("invalidMissing", "leaves out the required field "+name)
 			delete(st.Body.(map[string]any), name)
@@ -372,6 +387,16 @@ func (s *scenarioRunner) invalidSteps(t *scenario.Step, op *spec.Operation) []*s
 
 // firstRequired is the first required field of the schema the body holds.
 func firstRequired(sch *openapi3.Schema, body map[string]any) string {
+	for _, name := range requiredFields(sch) {
+		if _, ok := body[name]; ok {
+			return name
+		}
+	}
+	return ""
+}
+
+// requiredFields are the required fields of a schema, also those of allOf.
+func requiredFields(sch *openapi3.Schema) []string {
 	var req []string
 	var collect func(x *openapi3.Schema, depth int)
 	collect = func(x *openapi3.Schema, depth int) {
@@ -384,12 +409,7 @@ func firstRequired(sch *openapi3.Schema, body map[string]any) string {
 		}
 	}
 	collect(sch, 0)
-	for _, name := range req {
-		if _, ok := body[name]; ok {
-			return name
-		}
-	}
-	return ""
+	return req
 }
 
 // violates reports whether a value breaks a schema.
