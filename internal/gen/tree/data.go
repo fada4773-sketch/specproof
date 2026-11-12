@@ -2,6 +2,8 @@ package tree
 
 import (
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/fada4773-sketch/specproof/internal/scenario"
 )
@@ -52,7 +54,21 @@ func LoadData(path string, t *Tree) (d *Data, stale []string, err error) {
 			byPath[n.PathName()] = n
 		}
 	})
-	byID := map[string]*Record{}
+	// an older fetch named the records of a node whose name ends in a
+	// digit without a separator: dock2's third record was dock23, like the
+	// 23rd of dock. A parent is the record of that id at the node above.
+	byID := map[string][]*Record{}
+	parentOf := func(id string, n *Node) *Record {
+		for _, r := range byID[id] {
+			if r.Node == n {
+				return r
+			}
+		}
+		if rs := byID[id]; len(rs) > 0 {
+			return rs[0]
+		}
+		return nil
+	}
 	list, _ := top["records"].([]any)
 	for _, raw := range list {
 		m, ok := raw.(map[string]any)
@@ -66,7 +82,7 @@ func LoadData(path string, t *Tree) (d *Data, stale []string, err error) {
 		}
 		r := &Record{ID: scenario.Text(m["id"]), Node: node, Value: m["value"], Request: scenario.Text(m["request"])}
 		if p := scenario.Text(m["parent"]); p != "" {
-			r.Parent = byID[p]
+			r.Parent = parentOf(p, node.Parent)
 		}
 		if node.Parent != nil && (r.Parent == nil || r.Parent.Node != node.Parent) {
 			stale = append(stale, r.ID)
@@ -75,8 +91,11 @@ func LoadData(path string, t *Tree) (d *Data, stale []string, err error) {
 		if s, ok := m["saved"].(map[string]any); ok {
 			r.Saved = s
 		}
-		byID[r.ID] = r
+		byID[r.ID] = append(byID[r.ID], r)
 		d.Records = append(d.Records, r)
+	}
+	for _, r := range d.Records {
+		r.ID = renamedID(r.ID, r.Node.Name)
 	}
 	if notes, ok := top["notes"].([]any); ok {
 		for _, n := range notes {
@@ -84,4 +103,18 @@ func LoadData(path string, t *Tree) (d *Data, stale []string, err error) {
 		}
 	}
 	return d, stale, nil
+}
+
+// renamedID is the id a record of the older form has now (dock23 of the
+// node dock2: dock2_3); other ids stay.
+func renamedID(id, node string) string {
+	n, ok := strings.CutPrefix(id, node)
+	if !ok || n == "" || strings.Trim(n, "0123456789") != "" {
+		return id
+	}
+	i, err := strconv.Atoi(n)
+	if err != nil {
+		return id
+	}
+	return recordID(node, i)
 }

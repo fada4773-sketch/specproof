@@ -516,10 +516,20 @@ func (f *fetcher) node(ctx context.Context, n *Node, parent *Record) error {
 	return nil
 }
 
+// recordID names the i-th record of a node: ships1, and dock2_3 for a node
+// whose name ends in a digit, so that its third record (dock2_3) is not the
+// 23rd of dock (dock23).
+func recordID(node string, i int) string {
+	if node != "" && node[len(node)-1] >= '0' && node[len(node)-1] <= '9' {
+		return fmt.Sprintf("%s_%d", node, i)
+	}
+	return fmt.Sprintf("%s%d", node, i)
+}
+
 // take keeps a candidate as a record of n and fetches the nodes below it.
 func (f *fetcher) take(ctx context.Context, n *Node, c cand, parent *Record, tc *TraceCandidate) (*Record, error) {
 	f.count[n]++
-	rec := &Record{ID: fmt.Sprintf("%s%d", n.Name, f.count[n]), Node: n, Parent: parent, Value: c.value, Request: c.target}
+	rec := &Record{ID: recordID(n.Name, f.count[n]), Node: n, Parent: parent, Value: c.value, Request: c.target}
 	tc.Record = rec.ID
 	up := f.attach
 	f.attach = &tc.Each

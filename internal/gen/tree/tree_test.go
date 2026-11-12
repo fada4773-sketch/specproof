@@ -1833,3 +1833,67 @@ components:
 		t.Errorf("moons: %d records, want Io only", len(got))
 	}
 }
+
+// TestRecordIDs: the records of a node whose name ends in a digit are named
+// with a separator, so docks2's third record is not the 23rd of docks; a
+// data file of the older form is read with the parents at the right node
+// and the ids of the new form.
+func TestRecordIDs(t *testing.T) {
+	if got := []string{recordID("docks", 23), recordID("docks2", 3), recordID("docks2", 23)}; !slices.Equal(got, []string{"docks23", "docks2_3", "docks2_23"}) {
+		t.Errorf("ids: %v", got)
+	}
+	tr := parse(t, `
+tree:
+  planets:
+    call: GET /planets
+    key: [/code]
+    each:
+      docks:
+        call: GET /planets/{code}/docks
+        path: {code: .code}
+        key: [/id]
+        each:
+          ships:
+            call: GET /docks/{dockId}/ships
+            path: {dockId: .id}
+            key: [/id]
+  planets2:
+    call: GET /planets
+    key: [/code]
+    each:
+      docks2:
+        call: GET /planets/{code}/docks
+        path: {code: .code}
+        key: [/id]
+        each:
+          ships2:
+            call: GET /docks/{dockId}/ships
+            path: {dockId: .id}
+            key: [/id]
+`)
+	data := `records:
+  - {id: planets1, node: planets, request: GET /planets, value: {code: mars}}
+  - {id: docks23, node: planets/docks, parent: planets1, request: GET /planets/mars/docks, value: {id: 1}}
+  - {id: ships1, node: planets/docks/ships, parent: docks23, request: GET /docks/1/ships, value: {id: 10}}
+  - {id: planets21, node: planets2, request: GET /planets, value: {code: moon}}
+  - {id: docks23, node: planets2/docks2, parent: planets21, request: GET /planets/moon/docks, value: {id: 2}}
+  - {id: ships21, node: planets2/docks2/ships2, parent: docks23, request: GET /docks/2/ships, value: {id: 20}}
+`
+	path := filepath.Join(t.TempDir(), "data.yaml")
+	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d, stale, err := LoadData(path, tr)
+	if err != nil || len(stale) != 0 || len(d.Records) != 6 {
+		t.Fatalf("load: %v, stale %v, %d records", err, stale, len(d.Records))
+	}
+	if got := ids(d.Records); !slices.Equal(got, []string{"planets1", "docks23", "ships1", "planets2_1", "docks2_3", "ships2_1"}) {
+		t.Errorf("ids: %v", got)
+	}
+	if p := d.Records[5].Parent; p != d.Records[4] {
+		t.Errorf("the parent of ships2_1 is the dock of docks2, got %+v", p)
+	}
+	if p := d.Records[2].Parent; p != d.Records[1] {
+		t.Errorf("the parent of ships1 is the dock of docks, got %+v", p)
+	}
+}

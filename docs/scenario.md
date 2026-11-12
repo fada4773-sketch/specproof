@@ -798,6 +798,10 @@ sent. Per node and record above it:
    (at most `candidates`);
 5. run the child nodes for each record taken.
 
+A record is named after its node and its number there: `docks1`, `docks2`.
+When the node's name ends in a digit, an underscore separates the number
+(`docks2_3`, not `docks23`, which is the 23rd record of `docks`).
+
 A path value that is a reference to a list (`dockCode=.docks`) sends one
 request per value; an empty list sends none, and the note says which
 `where` lets only records with values through. A path value whose field

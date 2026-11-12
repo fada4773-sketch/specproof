@@ -477,6 +477,13 @@ contain breaking changes, which are listed here.
   exists. An element without one is reported with the differences to the
   closest element left over, down to the field
   (`/docks/1/berth/level`), instead of the whole element as missing.
+- `apitest-gen tree`: the records of a node whose name ends in a digit
+  got ids that clashed with those of another node (the third record of
+  `docks2` and the 23rd of `docks` were both `docks23`). The scenario then
+  saved both keys under one placeholder, so a record below took the key of
+  the wrong one. Such records are now named with an underscore
+  (`docks2_3`). A data file of the older form is read with each parent at
+  the node above and the new ids; build the scenario again.
 - `apitest-gen tree`: a `check.equals` whose read answers another
   resource than the step it compares with is left out, with a note.
 - `apitest-gen tree -fix`: it stopped after three changes that differed
