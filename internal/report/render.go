@@ -19,29 +19,32 @@ func Render(r *Report) []byte {
 	if r.SpecVersion != "" {
 		title += " " + r.SpecVersion
 	}
-	w("# 🧪 apitest · %s\n\n", inline(title))
-	result := "✅ **Passed**"
+	w("# API test report: %s\n\n", inline(title))
+	result := "**Result: Passed**"
 	if !r.Passed {
-		result = "❌ **Failed**"
+		result = "**Result: Failed**"
 	}
-	parts := []string{result, fmt.Sprintf("%d cases", st.Total)}
+	counts := []string{fmt.Sprintf("%d cases", st.Total)}
 	for _, p := range []struct {
 		n    int
 		text string
 	}{
-		{st.Counts[Passed], "✅ %d passed"}, {st.Bad, "❌ %d failing"}, {st.Counts[Deviation], "🟡 %d deviation(s)"},
-		{st.Counts[Tolerated], "🟠 %d tolerated"}, {st.Counts[Skipped] + st.Counts[NotBuildable], "⏭ %d not run"},
+		{st.Counts[Passed], "%d passed"}, {st.Bad, "%d failed"}, {st.Counts[Deviation], "%d deviation"},
+		{st.Counts[Tolerated], "%d tolerated"}, {st.Counts[Skipped] + st.Counts[NotBuildable], "%d not run"},
 	} {
 		if p.n > 0 {
-			parts = append(parts, fmt.Sprintf(p.text, p.n))
+			text := fmt.Sprintf(p.text, p.n)
+			if p.n > 1 && strings.HasSuffix(text, "deviation") {
+				text += "s"
+			}
+			counts = append(counts, text)
 		}
 	}
-	parts = append(parts, "⏱ "+r.Duration.Round(time.Millisecond).String())
 	cov := r.Coverage
-	parts = append(parts, fmt.Sprintf("📊 %d / %d operations", cov.OperationsCovered, cov.Operations))
-	w("%s\n\n", strings.Join(parts, " · "))
+	w("%s · %s · duration %s · %d of %d operations covered\n\n", result, strings.Join(counts, ", "),
+		r.Duration.Round(time.Millisecond), cov.OperationsCovered, cov.Operations)
 	if r.Aborted != "" {
-		w("> ❗ **Run aborted:** %s\n\n", inline(r.Aborted))
+		w("> **Run aborted:** %s\n\n", inline(r.Aborted))
 	}
 	w("| Spec | Base URL | Started | Duration | Go / apitest | Strict |\n|---|---|---|---|---|---|\n")
 	w("| %s (OpenAPI %s) | %s | %s | %s | %s / %s | %s |\n\n", code(r.SpecFile), inline(r.OpenAPI), code(r.BaseURL),
@@ -61,7 +64,7 @@ func Render(r *Report) []byte {
 	}
 
 	if len(r.Warnings) > 0 {
-		section(fmt.Sprintf("⚠️ Warnings (%d)", len(r.Warnings)), true, func() {
+		section(fmt.Sprintf("Warnings (%d)", len(r.Warnings)), true, func() {
 			for _, warn := range r.Warnings {
 				w("- %s\n", inline(warn))
 			}
@@ -75,10 +78,10 @@ func Render(r *Report) []byte {
 		renderErrorCases(&b, r, st.Errors)
 	}
 
-	section(fmt.Sprintf("📊 Coverage: %d of %d operations (%s)", cov.OperationsCovered, cov.Operations, percent(cov.OperationsCovered, cov.Operations)), false, func() {
-		w("| | Covered | Total | |\n|---|---:|---:|---|\n")
-		w("| Operations with an executed case | %d | %d | %s %s |\n", cov.OperationsCovered, cov.Operations, bar(cov.OperationsCovered, cov.Operations, 20), percent(cov.OperationsCovered, cov.Operations))
-		w("| Named examples executed | %d | %d | %s %s |\n\n", cov.ExamplesCovered, cov.Examples, bar(cov.ExamplesCovered, cov.Examples, 20), percent(cov.ExamplesCovered, cov.Examples))
+	section(fmt.Sprintf("Coverage: %d of %d operations (%s)", cov.OperationsCovered, cov.Operations, percent(cov.OperationsCovered, cov.Operations)), false, func() {
+		w("| | Covered | Total | Share |\n|---|---:|---:|---:|\n")
+		w("| Operations with an executed case | %d | %d | %s |\n", cov.OperationsCovered, cov.Operations, percent(cov.OperationsCovered, cov.Operations))
+		w("| Named examples executed | %d | %d | %s |\n\n", cov.ExamplesCovered, cov.Examples, percent(cov.ExamplesCovered, cov.Examples))
 		if len(cov.Uncovered) > 0 {
 			w("| Uncovered operation | Reason |\n|---|---|\n")
 			for _, u := range cov.Uncovered {
@@ -89,7 +92,7 @@ func Render(r *Report) []byte {
 	})
 
 	if len(r.Findings) > 0 {
-		section(fmt.Sprintf("🔎 Spec findings (%d)", len(r.Findings)), false, func() {
+		section(fmt.Sprintf("Spec findings (%d)", len(r.Findings)), false, func() {
 			w("| Location | Finding |\n|---|---|\n")
 			for _, f := range r.Findings {
 				w("| %s | %s |\n", code(f.Where), inline(f.Message))
@@ -115,24 +118,24 @@ func Render(r *Report) []byte {
 	}
 
 	if len(errs) > 0 {
-		section(fmt.Sprintf("❌ Errors (%d)", len(errs)), true, func() {
+		section(fmt.Sprintf("Failed cases (%d)", len(errs)), true, func() {
 			for _, c := range errs {
-				renderFailure(&b, c, "❌")
+				renderFailure(&b, c)
 			}
 		})
 	}
 	if len(devs) > 0 || len(r.Deviations) > 0 {
-		section(fmt.Sprintf("🟡 Deviations (%d)", len(devs)), true, func() { renderDeviations(&b, r, devs) })
+		section(fmt.Sprintf("Deviations (%d)", len(devs)), true, func() { renderDeviations(&b, r, devs) })
 	}
 	if len(tolerated) > 0 {
-		section(fmt.Sprintf("🟠 Tolerated error cases (%d)", len(tolerated)), false, func() {
+		section(fmt.Sprintf("Tolerated error cases (%d)", len(tolerated)), false, func() {
 			for _, c := range tolerated {
-				renderFailure(&b, c, "🟠")
+				renderFailure(&b, c)
 			}
 		})
 	}
 	if len(notRun) > 0 {
-		section(fmt.Sprintf("⏭ Not run (%d)", len(notRun)), false, func() {
+		section(fmt.Sprintf("Not run (%d)", len(notRun)), false, func() {
 			w("| Case | Status | Reason |\n|---|---|---|\n")
 			for _, c := range notRun {
 				w("| %s | `%s` | %s |\n", code(caseLabel(c)), c.Status, inline(c.Message))
@@ -141,10 +144,10 @@ func Render(r *Report) []byte {
 		})
 	}
 	if len(passed) > 0 {
-		section(fmt.Sprintf("✅ Passed (%d)", len(passed)), false, func() {
+		section(fmt.Sprintf("Passed cases (%d)", len(passed)), false, func() {
 			if r.PassedDetails {
 				for _, c := range passed {
-					renderFailure(&b, c, "✅")
+					renderFailure(&b, c)
 				}
 				return
 			}
@@ -168,23 +171,20 @@ func renderScope(b *strings.Builder, st Stats) {
 		return
 	}
 	w := func(format string, args ...any) { fmt.Fprintf(b, format, args...) }
-	w("## 🧭 Scope\n\n")
+	noAnswer := 0
+	w("## Scope\n\n")
 	w("Cases per expected status: what the run tested and how it ended.\n\n")
-	w("| Expected | Kinds | Cases | ✅ | ❌ | 🟡 🟠 | ⏭ | Passed |\n|---|---|---:|---:|---:|---:|---:|---|\n")
+	w("| Expected | Kinds | Cases | Passed | Failed | Tolerated / deviation | Not run | No answer | Pass rate |\n|---|---|---:|---:|---:|---:|---:|---:|---:|\n")
 	for _, s := range st.Scope {
-		w("| %s | %s | %d | %d | %d | %d | %d | %s |\n", strings.TrimSpace(scopeIcon(s.Expected)+" "+code(s.Expected)), inline(strings.Join(s.Kinds, ", ")),
-			s.Total, s.Passed, s.Bad, s.Other, s.NotRun, bar(s.Passed, s.Total, 12))
+		w("| %s | %s | %d | %d | %d | %d | %d | %d | %s |\n", code(s.Expected), inline(strings.Join(s.Kinds, ", ")),
+			s.Total, s.Passed, s.Bad, s.Other, s.NotRun, s.NoAnswer, percent(s.Passed, s.Total))
+		noAnswer += s.NoAnswer
 	}
-	w("| **Total** | | **%d** | **%d** | **%d** | **%d** | **%d** | %s |\n\n", st.Total, st.Counts[Passed], st.Bad,
-		st.Counts[Deviation]+st.Counts[Tolerated], st.Counts[Skipped]+st.Counts[NotBuildable], bar(st.Counts[Passed], st.Total, 12))
-}
-
-// scopeIcon colors an expected status like codeIcon; "" for "–".
-func scopeIcon(exp string) string {
-	if exp == "" || exp[0] < '1' || exp[0] > '5' {
-		return ""
+	w("| **Total** | | **%d** | **%d** | **%d** | **%d** | **%d** | **%d** | **%s** |\n\n", st.Total, st.Counts[Passed], st.Bad,
+		st.Counts[Deviation]+st.Counts[Tolerated], st.Counts[Skipped]+st.Counts[NotBuildable], noAnswer, percent(st.Counts[Passed], st.Total))
+	if noAnswer > 0 {
+		w("> **%s got no answer.** The connection was closed or reset, which usually means the API crashed on the request, or the request timed out. The affected cases are marked *no answer*.\n\n", requests(noAnswer))
 	}
-	return codeIcon(int(exp[0]-'0') * 100)
 }
 
 // renderDashboard writes the figures of the run: statuses as a chart, the
@@ -192,7 +192,7 @@ func scopeIcon(exp string) string {
 // slowest requests.
 func renderDashboard(b *strings.Builder, r *Report, st Stats) {
 	w := func(format string, args ...any) { fmt.Fprintf(b, format, args...) }
-	w("## 📈 Dashboard\n\n")
+	w("## Key figures\n\n")
 	if st.Total > 0 {
 		w("```mermaid\npie showData title Cases by status\n")
 		for _, s := range StatusOrder {
@@ -215,7 +215,7 @@ func renderDashboard(b *strings.Builder, r *Report, st Stats) {
 	w("\n")
 
 	if len(st.Groups) > 0 {
-		w("### Tags\n\n| Tag | Cases | ✅ | ❌ | 🟡 🟠 | ⏭ | Request time | Passed |\n|---|---:|---:|---:|---:|---:|---:|---|\n")
+		w("### Tags\n\n| Tag | Cases | Passed | Failed | Tolerated / deviation | Not run | Request time | Pass rate |\n|---|---:|---:|---:|---:|---:|---:|---:|\n")
 		for _, g := range st.Groups {
 			bad, other, notRun := 0, g.Counts[Deviation]+g.Counts[Tolerated], g.Counts[Skipped]+g.Counts[NotBuildable]
 			for s, n := range g.Counts {
@@ -223,36 +223,28 @@ func renderDashboard(b *strings.Builder, r *Report, st Stats) {
 					bad += n
 				}
 			}
-			w("| %s | %d | %d | %d | %d | %d | %s | %s |\n", inline(g.Name), g.Total, g.Counts[Passed], bad, other, notRun, ms(g.Duration), bar(g.Counts[Passed], g.Total, 12))
+			w("| %s | %d | %d | %d | %d | %d | %s | %s |\n", inline(g.Name), g.Total, g.Counts[Passed], bad, other, notRun, ms(g.Duration), percent(g.Counts[Passed], g.Total))
 		}
 		w("\n")
 	}
 	if st.Executed == 0 {
 		return
 	}
-	maxBucket := 0
-	for _, h := range st.Histogram {
-		maxBucket = max(maxBucket, h.Count)
-	}
-	w("### Response times\n\n| Range | Requests | |\n|---|---:|---|\n")
+	w("### Response times\n\n| Range | Requests | Share |\n|---|---:|---:|\n")
 	for _, h := range st.Histogram {
 		if h.Count > 0 {
-			w("| %s | %d | %s |\n", h.Label, h.Count, bar(h.Count, maxBucket, 20))
+			w("| %s | %d | %s |\n", h.Label, h.Count, percent(h.Count, st.Executed))
 		}
 	}
 	w("\n")
-	maxCode := 0
+	w("### Status codes\n\n| Code | Answers | Share |\n|---|---:|---:|\n")
 	for _, c := range st.Codes {
-		maxCode = max(maxCode, c.Count)
-	}
-	w("### Status codes\n\n| Code | Answers | |\n|---|---:|---|\n")
-	for _, c := range st.Codes {
-		w("| %s %d | %d | %s |\n", codeIcon(c.Code), c.Code, c.Count, bar(c.Count, maxCode, 20))
+		w("| %d | %d | %s |\n", c.Code, c.Count, percent(c.Count, st.Executed))
 	}
 	w("\n")
-	w("### Slowest requests\n\n| # | Case | Request | Code | Time | |\n|---:|---|---|---:|---:|---|\n")
+	w("### Slowest requests\n\n| # | Case | Request | Code | Time |\n|---:|---|---|---:|---:|\n")
 	for i, c := range st.Slowest {
-		w("| %d | %s | %s | %d | %s | %s |\n", i+1, code(caseLabel(c)), code(c.Method+" "+c.Target), c.Code, ms(c.Duration), bar(int(c.Duration), int(st.Max), 12))
+		w("| %d | %s | %s | %d | %s |\n", i+1, code(caseLabel(c)), code(c.Method+" "+c.Target), c.Code, ms(c.Duration))
 	}
 	w("\n")
 }
@@ -261,13 +253,13 @@ func renderDashboard(b *strings.Builder, r *Report, st Stats) {
 // expected status what came, and every case with its answer.
 func renderErrorCases(b *strings.Builder, r *Report, e ErrorStats) {
 	w := func(format string, args ...any) { fmt.Fprintf(b, format, args...) }
-	w("## 🎯 Error cases\n\n")
+	w("## Error cases\n\n")
 	w("%d error cases: **%d as documented**, **%d other**", len(e.Cases), e.AsDocumented, e.Other)
 	if r.Tolerate {
 		w(" (tolerated with `TolerateErrorCases`, they do not fail the test)")
 	}
-	w(".\n\n")
-	w("| Expected ↓ · received → |")
+	w(". Rows: the expected status; columns: the received one. Cells off the diagonal are in bold.\n\n")
+	w("| Expected \\ received |")
 	for _, a := range e.Actual {
 		w(" %s |", a)
 	}
@@ -282,11 +274,11 @@ func renderErrorCases(b *strings.Builder, r *Report, e ErrorStats) {
 			n := e.Matrix[x][a]
 			switch {
 			case n == 0:
-				w(" · |")
+				w(" – |")
 			case a == x:
-				w(" ✅ %d |", n)
+				w(" %d |", n)
 			default:
-				w(" ⚠️ %d |", n)
+				w(" **%d** |", n)
 			}
 		}
 		w("\n")
@@ -294,15 +286,14 @@ func renderErrorCases(b *strings.Builder, r *Report, e ErrorStats) {
 	w("\n| Case | Kind | Request | Expected | Received | Result | Answer |\n|---|---|---|---:|---:|---|---|\n")
 	for _, c := range e.Cases {
 		got := "–"
-		if c.Code != 0 {
+		switch {
+		case c.Code != 0:
 			got = fmt.Sprint(c.Code)
+		case c.NoAnswer:
+			got = NoAnswerLabel
 		}
-		icon := "✅"
-		if c.Status != Passed {
-			icon = statusIcon(c.Status)
-		}
-		w("| %s | %s | %s | %s | %s | %s %s | %s |\n", code(caseLabel(c)), inline(c.Kind), code(c.Method+" "+c.Target), inline(c.Expected), got,
-			icon, inline(verdict(c)), code(excerpt(c)))
+		w("| %s | %s | %s | %s | %s | %s | %s |\n", code(caseLabel(c)), inline(c.Kind), code(c.Method+" "+c.Target), inline(c.Expected), got,
+			inline(verdict(c)), code(excerpt(c)))
 	}
 	w("\n")
 }
@@ -322,46 +313,8 @@ func excerpt(c Case) string {
 	return text
 }
 
-// bar draws n of total as a bar of width characters.
-func bar(n, total, width int) string {
-	if total <= 0 {
-		return ""
-	}
-	full := (n*width + total/2) / total
-	if n > 0 && full == 0 {
-		full = 1
-	}
-	return strings.Repeat("█", full) + strings.Repeat("░", width-full)
-}
-
-func statusIcon(s string) string {
-	switch {
-	case s == Passed:
-		return "✅"
-	case IsError(s):
-		return "❌"
-	case s == Deviation:
-		return "🟡"
-	case s == Tolerated:
-		return "🟠"
-	}
-	return "⏭"
-}
-
 func statusWord(s string) string {
 	return strings.ToLower(strings.ReplaceAll(s, "_", " "))
-}
-
-func codeIcon(c int) string {
-	switch c / 100 {
-	case 2:
-		return "🟢"
-	case 3:
-		return "🔵"
-	case 4:
-		return "🟠"
-	}
-	return "🔴"
 }
 
 // renderDeviations lists the entries of the deviations file and the cases
@@ -376,13 +329,13 @@ func renderDeviations(b *strings.Builder, r *Report, devs []Case) {
 		w("\n")
 	}
 	for _, c := range devs {
-		renderFailure(b, c, "🟡")
+		renderFailure(b, c)
 	}
 }
 
-func renderFailure(b *strings.Builder, c Case, icon string) {
+func renderFailure(b *strings.Builder, c Case) {
 	w := func(format string, args ...any) { fmt.Fprintf(b, format, args...) }
-	w("### %s %s — %s\n\n", icon, inline(caseLabel(c)), c.Status)
+	w("### %s — %s\n\n", inline(caseLabel(c)), c.Status)
 	w("| | |\n|---|---|\n")
 	if c.Method != "" {
 		w("| Request | %s |\n", code(c.Method+" "+c.Target))
@@ -392,6 +345,9 @@ func renderFailure(b *strings.Builder, c Case, icon string) {
 	}
 	if c.Actual != "" {
 		w("| Actual | %s |\n", inline(c.Actual))
+	}
+	if c.NoAnswer {
+		w("| Answer | none: the connection was closed or reset (the API likely crashed on the request), or the request timed out |\n")
 	}
 	if c.Tolerated != "" {
 		w("| Without tolerance | `%s` |\n", c.Tolerated)
@@ -441,11 +397,11 @@ func renderFailure(b *strings.Builder, c Case, icon string) {
 func deviationState(d DeviationEntry) string {
 	switch {
 	case d.Expired:
-		return "❗ expired"
+		return "expired"
 	case d.Uses == 0:
 		return "unused, can be removed"
 	case d.Soon:
-		return "⚠️ expires soon"
+		return "expires soon"
 	}
 	return "active"
 }
@@ -522,6 +478,14 @@ func percent(a, b int) string {
 		return "–"
 	}
 	return fmt.Sprintf("%d %%", a*100/b)
+}
+
+// requests is "1 request" or "n requests".
+func requests(n int) string {
+	if n == 1 {
+		return "1 request"
+	}
+	return fmt.Sprintf("%d requests", n)
 }
 
 func yesNo(b bool) string {

@@ -6,7 +6,28 @@ contain breaking changes, which are listed here.
 
 ## Unreleased
 
+### Changes
+
+- Reports look plainer: no emojis and no text bars in the Markdown report
+  (shares as percentages, statuses as words, the title "API test report"),
+  sections "Key figures" (was "Dashboard") and "Failed cases" (was
+  "Errors"). The HTML report shows statuses in sentence case with a
+  coloured dot, a softer error matrix, a footer with the run, and prints
+  with every section open.
+
+### Fixes
+
+- `RunScenario` sent no token when the spec declares no security at all:
+  like `Run` it now sends `Config.Token` as a bearer token to every
+  operation (with a warning), so the 401 steps are generated too.
+
 ### Features
+
+- A request that gets no answer (the connection closed or was reset: the
+  API crashed on it; a timeout) is marked *no answer* in the Markdown
+  and HTML report (scope, error case analysis, case), with the likely
+  reason in the message. `TolerateErrorCases` tolerates it for error
+  cases, also the `invalid` steps of `RunScenario`.
 
 - [docs/tree-maintenance.md](docs/tree-maintenance.md): the files of
   `apitest-gen tree`, which command writes the spec, a walkthrough for a

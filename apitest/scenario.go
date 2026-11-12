@@ -344,6 +344,7 @@ func (s *scenarioRunner) prepare() error {
 	}
 	r.spec = sp
 	r.findings = append(r.findings, sp.Findings...)
+	r.assumeBearer(sp)
 	if sp.Doc.Components != nil {
 		r.schemes = sp.Doc.Components.SecuritySchemes
 	}
@@ -722,6 +723,11 @@ func (s *scenarioRunner) checkStep(ctx context.Context, st *scenario.Step) *outc
 	resp, sent, err := s.send(ctx, c, p)
 	o.sent = sent
 	if err != nil {
+		var na *noAnswerError
+		if errors.As(err, &na) {
+			setNoAnswer(o, na.err)
+			return o
+		}
 		o.status, o.message = StatusError, err.Error()
 		return o
 	}
@@ -1183,8 +1189,17 @@ func (s *scenarioRunner) send(ctx context.Context, c *cases.Case, p *exec.Prepar
 	}
 	sent := req.Header.Clone()
 	resp, err := exec.Do(r.client, req, r.cfg.RequestTimeout)
-	return resp, sent, err
+	if err != nil {
+		return nil, sent, &noAnswerError{err}
+	}
+	return resp, sent, nil
 }
+
+// noAnswerError is a request that was sent and got no answer.
+type noAnswerError struct{ err error }
+
+func (e *noAnswerError) Error() string { return e.err.Error() }
+func (e *noAnswerError) Unwrap() error { return e.err }
 
 func (s *scenarioRunner) hookCaseOf(c *cases.Case) *Case {
 	return &Case{Name: c.Name, Group: c.Group, OperationID: c.Op.ID, Method: c.Op.Method, Path: c.Op.Path, Example: c.Example}

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -52,6 +54,7 @@ type moonFaults struct {
 	duplicates bool // a second moon of the same name is created (201 instead of 409)
 	crash      bool // invalid input answers 500 instead of 400
 	noAuth     bool // requests without token are accepted
+	hangup     bool // invalid input closes the connection without an answer (the API crashed)
 }
 
 // moonAPI is the Moon API of scenario_errors.yaml: 400 for invalid input,
@@ -67,6 +70,14 @@ func moonAPI(f moonFaults) http.Handler {
 		_ = json.NewEncoder(w).Encode(v)
 	}
 	bad := func(w http.ResponseWriter, msg string) {
+		if f.hangup {
+			if hj, ok := w.(http.Hijacker); ok {
+				if conn, _, err := hj.Hijack(); err == nil {
+					_ = conn.Close()
+					return
+				}
+			}
+		}
 		if f.crash {
 			reply(w, http.StatusInternalServerError, map[string]any{"error": "internal error"})
 			return
@@ -404,5 +415,99 @@ func TestScenarioGeneratedErrorsTokens(t *testing.T) {
 		if got := sent[c.Name]; got != want {
 			t.Errorf("%s sent Authorization %q, want %q", c.Name, got, want)
 		}
+	}
+}
+
+// A spec without any security: Config.Token goes as a bearer token to
+// every operation, and the 401 steps are generated for the operations
+// that document 401.
+func TestScenarioErrorsSpecWithoutSecurity(t *testing.T) {
+	raw, err := os.ReadFile(moonsSpec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := strings.Replace(string(raw), "security:\n  - bearer: []\n", "", 1)
+	text = strings.Replace(text, "  securitySchemes:\n    bearer: {type: http, scheme: bearer}\n", "", 1)
+	if strings.Contains(text, "bearer") {
+		t.Fatal("the spec still declares security")
+	}
+	specPath := filepath.Join(t.TempDir(), "moons.yaml")
+	if err := os.WriteFile(specPath, []byte(text), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := moonsConfig(t, moonFaults{}, "401")
+	cfg.SpecPath = specPath
+	var mu sync.Mutex
+	sent := map[string]string{}
+	cfg.Hooks.BeforeRequest = func(_ context.Context, c *Case, req *http.Request) error {
+		mu.Lock()
+		defer mu.Unlock()
+		sent[c.Name] = req.Header.Get("Authorization")
+		return nil
+	}
+	res, ft := runScenarioFake(t, cfg)
+	if res.Failed {
+		t.Fatalf("run failed:\n%s", ft.output())
+	}
+	if !strings.Contains(ft.output(), "the spec declares no security") {
+		t.Errorf("want the warning about the assumed bearer token:\n%s", ft.output())
+	}
+	got := statusOf(res)
+	for _, name := range []string{"Moon/moon1.read.unauthorized", "Moon/moon1.read.invalidToken", "Moon/moon1.create.unauthorized"} {
+		if got[name] != StatusPassed {
+			t.Errorf("%s: %q, want PASSED (%v)", name, got[name], got)
+		}
+	}
+	if sent["Moon/moon1.create"] != "Bearer moon-token" || sent["Moon/moon1.read.unauthorized"] != "" {
+		t.Errorf("tokens sent: %v", sent)
+	}
+}
+
+// An API that closes the connection on invalid input (it crashed): the
+// step is ERROR with "no answer", the report marks it, and
+// TolerateErrorCases tolerates it.
+func TestScenarioInvalidNoAnswer(t *testing.T) {
+	cfg := moonsConfig(t, moonFaults{hangup: true}, "invalid")
+	res, ft := runScenarioFake(t, cfg)
+	if !res.Failed {
+		t.Fatalf("a crash must fail the run:\n%s", ft.output())
+	}
+	for _, c := range res.Cases {
+		if !strings.Contains(c.Name, ".invalid") {
+			continue
+		}
+		if c.Status != StatusError || !strings.Contains(c.Message, "no answer: the API closed the connection") {
+			t.Errorf("%s: %s %q, want ERROR with no answer", c.Name, c.Status, c.Message)
+		}
+	}
+
+	cfg = moonsConfig(t, moonFaults{hangup: true}, "invalid")
+	cfg.TolerateErrorCases = true
+	cfg.DisableReports = false
+	cfg.ReportPath = filepath.Join(t.TempDir(), "report.md")
+	res, ft = runScenarioFake(t, cfg)
+	if res.Failed {
+		t.Fatalf("TolerateErrorCases must tolerate the crash:\n%s", ft.output())
+	}
+	for _, c := range res.Cases {
+		if strings.Contains(c.Name, ".invalid") && (c.Status != StatusTolerated || c.Tolerated != StatusError) {
+			t.Errorf("%s: %s (%s), want TOLERATED (ERROR)", c.Name, c.Status, c.Tolerated)
+		}
+	}
+	md, err := os.ReadFile(cfg.ReportPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"| no answer |", "tolerated (ERROR, no answer)", "requests got no answer.**"} {
+		if !strings.Contains(string(md), want) {
+			t.Errorf("report misses %q", want)
+		}
+	}
+	page, err := os.ReadFile(strings.TrimSuffix(cfg.ReportPath, ".md") + ".html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(page), `<span class="crash"`) {
+		t.Error("HTML report does not mark the requests without answer")
 	}
 }

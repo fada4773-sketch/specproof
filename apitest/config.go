@@ -113,7 +113,9 @@ type Config struct {
 	// a request example named like a response example under that status.
 	ErrorCases bool
 	// TolerateErrorCases reports error cases that get another answer than
-	// documented as TOLERATED instead of failing the test: the generated
+	// documented, or no answer at all (the connection closed: the API
+	// crashed on the request), as TOLERATED instead of failing the test:
+	// the generated
 	// not-found and conflict cases, the "invalid" steps of RunScenario
 	// (ScenarioConfig.Errors), and named examples that expect 404, 409 or
 	// 5xx. Other 4xx examples (400, 422 …) still fail. The report

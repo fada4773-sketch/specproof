@@ -244,7 +244,7 @@ With `ErrorCases: true` apitest provokes two errors itself, for every operation 
 | `<Tag>/<op>/not-found` | the operation has a path parameter and documents `404` | the last path parameter gets a key no record has: `999999999` for integers, a UUID, `apitest-not-found` for strings (within `minimum`/`maximum`/`maxLength`), the highest value of a `pattern` (`^\d{3}$` → `999`), or `x-apitest-not-found` of the parameter; all other values as in the regular case, and a required parameter without value (no example, or its producer failed) gets one generated from its schema, so the case is sent anyway | 404, body checked against the schema |
 | `<Tag>/<op>/conflict` | a POST with a body that documents `409` | the body of the regular case twice: the first answer only makes sure the record exists (its DELETE may have run already), the second must be 409; every record the case creates is deleted again with the regular DELETE of the tag | 409, body checked against the schema |
 
-5xx and other errors come from named examples (see above). With `TolerateErrorCases: true` an error case that gets another answer (`204` instead of `404`, `500` instead of `409`) is `TOLERATED` instead of failing the test; this covers the generated cases and named examples that expect 404, 409 or 5xx, while other 4xx examples (400, 422) still fail. The report analyses every error case: a matrix *expected → received* and per case the request, both statuses and the answer.
+5xx and other errors come from named examples (see above). With `TolerateErrorCases: true` an error case that gets another answer (`204` instead of `404`, `500` instead of `409`) or no answer at all (the connection closed: the API crashed on it) is `TOLERATED` instead of failing the test; this covers the generated cases, the `invalid` steps of `RunScenario` and named examples that expect 404, 409 or 5xx, while other 4xx examples (400, 422) still fail. A request without answer is marked *no answer* in both reports, with the likely reason (`EOF`: the API crashed). The report analyses every error case: a matrix *expected → received* and per case the request, both statuses and the answer.
 
 ```go
 apitest.Run(t, apitest.Config{
@@ -549,7 +549,7 @@ apitest.Run(t, apitest.Config{
 | `SpecPath` | OpenAPI file (YAML/JSON). Relative paths are relative to the test package directory. **Required.** |
 | `BaseURL` | Base URL of the running API, including the servers' base path, e.g. `http://127.0.0.1:8080/v1`. |
 | `Handler` | Alternative to `BaseURL`: an `http.Handler` served in-process via `httptest`. Set exactly one. |
-| `Token` | `apitest.StaticToken(t)` or `apitest.TokenFunc(fn)`. Required if the spec uses `securitySchemes`; sent as bearer token everywhere if the spec declares no security. Asked before every request. |
+| `Token` | `apitest.StaticToken(t)` or `apitest.TokenFunc(fn)`. Required if the spec uses `securitySchemes`; sent as bearer token everywhere if the spec declares no security (in `Run` and `RunScenario`). Asked before every request. |
 | `ForbiddenToken` | Valid token with too few rights, for `forbidden` cases. Without it those cases are skipped. |
 | `Tags`, `IncludeOps`, `ExcludeOps` | Select groups (in this order) and operations (`operationId` or `"POST /path"`). Producers of selected cases always run as preconditions. |
 | `MethodOrder`, `DeleteLast` | Order of the regular cases within a group by method; DELETEs of all groups at the very end. |

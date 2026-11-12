@@ -1,6 +1,6 @@
-# 🧪 apitest · Bookstore 1.0
+# API test report: Bookstore 1.0
 
-❌ **Failed** · 12 cases · ✅ 2 passed · ❌ 5 failing · 🟡 1 deviation(s) · 🟠 2 tolerated · ⏭ 2 not run · ⏱ 1.234s · 📊 3 / 4 operations
+**Result: Failed** · 12 cases, 2 passed, 5 failed, 1 deviation, 2 tolerated, 2 not run · duration 1.234s · 3 of 4 operations covered
 
 | Spec | Base URL | Started | Duration | Go / apitest | Strict |
 |---|---|---|---|---|---|
@@ -8,26 +8,26 @@
 
 2 more cases were not selected by `go test -run`.
 
-<details open><summary><b>⚠️ Warnings (1)</b></summary>
+<details open><summary><b>Warnings (1)</b></summary>
 
 - The spec declares a base path.
 
 </details>
 
-## 🧭 Scope
+## Scope
 
 Cases per expected status: what the run tested and how it ended.
 
-| Expected | Kinds | Cases | ✅ | ❌ | 🟡 🟠 | ⏭ | Passed |
-|---|---|---:|---:|---:|---:|---:|---|
-| 🟢 `200` | regular | 1 | 0 | 1 | 0 | 0 | ░░░░░░░░░░░░ |
-| 🟢 `201` | regular | 3 | 1 | 2 | 0 | 0 | ████░░░░░░░░ |
-| 🟠 `404` | not-found | 2 | 1 | 0 | 1 | 0 | ██████░░░░░░ |
-| 🟠 `409` | conflict | 1 | 0 | 0 | 1 | 0 | ░░░░░░░░░░░░ |
-| `–` | regular | 5 | 0 | 2 | 1 | 2 | ░░░░░░░░░░░░ |
-| **Total** | | **12** | **2** | **5** | **3** | **2** | ██░░░░░░░░░░ |
+| Expected | Kinds | Cases | Passed | Failed | Tolerated / deviation | Not run | No answer | Pass rate |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| `200` | regular | 1 | 0 | 1 | 0 | 0 | 0 | 0 % |
+| `201` | regular | 3 | 1 | 2 | 0 | 0 | 0 | 33 % |
+| `404` | not-found | 2 | 1 | 0 | 1 | 0 | 0 | 50 % |
+| `409` | conflict | 1 | 0 | 0 | 1 | 0 | 0 | 0 % |
+| `–` | regular | 5 | 0 | 2 | 1 | 2 | 0 | 0 % |
+| **Total** | | **12** | **2** | **5** | **3** | **2** | **0** | **16 %** |
 
-## 📈 Dashboard
+## Key figures
 
 ```mermaid
 pie showData title Cases by status
@@ -54,65 +54,65 @@ pie showData title Cases by status
 
 ### Tags
 
-| Tag | Cases | ✅ | ❌ | 🟡 🟠 | ⏭ | Request time | Passed |
-|---|---:|---:|---:|---:|---:|---:|---|
-| Author | 5 | 1 | 3 | 1 | 0 | 65 ms | ██░░░░░░░░░░ |
-| Book | 7 | 1 | 2 | 2 | 2 | 1.46 s | ██░░░░░░░░░░ |
+| Tag | Cases | Passed | Failed | Tolerated / deviation | Not run | Request time | Pass rate |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Author | 5 | 1 | 3 | 1 | 0 | 65 ms | 20 % |
+| Book | 7 | 1 | 2 | 2 | 2 | 1.46 s | 14 % |
 
 ### Response times
 
-| Range | Requests | |
-|---|---:|---|
-| < 10 ms | 4 | ████████████████████ |
-| 10–50 ms | 3 | ███████████████░░░░░ |
-| 100–250 ms | 1 | █████░░░░░░░░░░░░░░░ |
-| 1–2.5 s | 1 | █████░░░░░░░░░░░░░░░ |
+| Range | Requests | Share |
+|---|---:|---:|
+| < 10 ms | 4 | 44 % |
+| 10–50 ms | 3 | 33 % |
+| 100–250 ms | 1 | 11 % |
+| 1–2.5 s | 1 | 11 % |
 
 ### Status codes
 
-| Code | Answers | |
-|---|---:|---|
-| 🟢 200 | 3 | ████████████████████ |
-| 🟢 201 | 2 | █████████████░░░░░░░ |
-| 🟢 204 | 1 | ███████░░░░░░░░░░░░░ |
-| 🟠 404 | 2 | █████████████░░░░░░░ |
-| 🔴 500 | 1 | ███████░░░░░░░░░░░░░ |
+| Code | Answers | Share |
+|---|---:|---:|
+| 200 | 3 | 33 % |
+| 201 | 2 | 22 % |
+| 204 | 1 | 11 % |
+| 404 | 2 | 22 % |
+| 500 | 1 | 11 % |
 
 ### Slowest requests
 
-| # | Case | Request | Code | Time | |
-|---:|---|---|---:|---:|---|
-| 1 | `Book/updateBook/default` | `PUT /books/1` | 200 | 1.30 s | ████████████ |
-| 2 | `Book/getBook/default` | `GET /books/1` | 200 | 130 ms | █░░░░░░░░░░░ |
-| 3 | `Author/createAuthor/valid` | `POST /authors` | 201 | 42 ms | █░░░░░░░░░░░ |
-| 4 | `Book/createBook/conflict` | `POST /books` | 500 | 21 ms | █░░░░░░░░░░░ |
-| 5 | `Author/createAuthor/mismatch` | `POST /authors` | 201 | 12 ms | █░░░░░░░░░░░ |
-| 6 | `Author/createAuthor/wrong` | `POST /authors` | 200 | 8 ms | █░░░░░░░░░░░ |
-| 7 | `Book/deleteBook/not-found` | `DELETE /books/999999999` | 204 | 6 ms | █░░░░░░░░░░░ |
-| 8 | `Book/getBook/not-found` | `GET /books/999999999` | 404 | 5 ms | █░░░░░░░░░░░ |
-| 9 | `Author/getAuthor/default` | `GET /authors/1` | 404 | 3 ms | █░░░░░░░░░░░ |
+| # | Case | Request | Code | Time |
+|---:|---|---|---:|---:|
+| 1 | `Book/updateBook/default` | `PUT /books/1` | 200 | 1.30 s |
+| 2 | `Book/getBook/default` | `GET /books/1` | 200 | 130 ms |
+| 3 | `Author/createAuthor/valid` | `POST /authors` | 201 | 42 ms |
+| 4 | `Book/createBook/conflict` | `POST /books` | 500 | 21 ms |
+| 5 | `Author/createAuthor/mismatch` | `POST /authors` | 201 | 12 ms |
+| 6 | `Author/createAuthor/wrong` | `POST /authors` | 200 | 8 ms |
+| 7 | `Book/deleteBook/not-found` | `DELETE /books/999999999` | 204 | 6 ms |
+| 8 | `Book/getBook/not-found` | `GET /books/999999999` | 404 | 5 ms |
+| 9 | `Author/getAuthor/default` | `GET /authors/1` | 404 | 3 ms |
 
-## 🎯 Error cases
+## Error cases
 
-3 error cases: **1 as documented**, **2 other** (tolerated with `TolerateErrorCases`, they do not fail the test).
+3 error cases: **1 as documented**, **2 other** (tolerated with `TolerateErrorCases`, they do not fail the test). Rows: the expected status; columns: the received one. Cells off the diagonal are in bold.
 
-| Expected ↓ · received → | 204 | 404 | 500 |
+| Expected \ received | 204 | 404 | 500 |
 |---|---:|---:|---:|
-| **404** | ⚠️ 1 | ✅ 1 | · |
-| **409** | · | · | ⚠️ 1 |
+| **404** | **1** | 1 | – |
+| **409** | – | – | **1** |
 
 | Case | Kind | Request | Expected | Received | Result | Answer |
 |---|---|---|---:|---:|---|---|
-| `Book/getBook/not-found` | not-found | `GET /books/999999999` | 404 | 404 | ✅ as documented |  |
-| `Book/deleteBook/not-found` | not-found | `DELETE /books/999999999` | 404 | 204 | 🟠 tolerated (FAILED) | `tolerated (FAILED): status code 204, expected 404` |
-| `Book/createBook/conflict` | conflict | `POST /books` | 409 | 500 | 🟠 tolerated (FAILED) | `{ "message": "duplicate key <script>" }` |
+| `Book/getBook/not-found` | not-found | `GET /books/999999999` | 404 | 404 | as documented |  |
+| `Book/deleteBook/not-found` | not-found | `DELETE /books/999999999` | 404 | 204 | tolerated (FAILED) | `tolerated (FAILED): status code 204, expected 404` |
+| `Book/createBook/conflict` | conflict | `POST /books` | 409 | 500 | tolerated (FAILED) | `{ "message": "duplicate key <script>" }` |
 
-<details><summary><b>📊 Coverage: 3 of 4 operations (75 %)</b></summary>
+<details><summary><b>Coverage: 3 of 4 operations (75 %)</b></summary>
 
-| | Covered | Total | |
-|---|---:|---:|---|
-| Operations with an executed case | 3 | 4 | ███████████████░░░░░ 75 % |
-| Named examples executed | 1 | 2 | ██████████░░░░░░░░░░ 50 % |
+| | Covered | Total | Share |
+|---|---:|---:|---:|
+| Operations with an executed case | 3 | 4 | 75 % |
+| Named examples executed | 1 | 2 | 50 % |
 
 | Uncovered operation | Reason |
 |---|---|
@@ -120,7 +120,7 @@ pie showData title Cases by status
 
 </details>
 
-<details><summary><b>🔎 Spec findings (1)</b></summary>
+<details><summary><b>Spec findings (1)</b></summary>
 
 | Location | Finding |
 |---|---|
@@ -128,9 +128,9 @@ pie showData title Cases by status
 
 </details>
 
-<details open><summary><b>❌ Errors (5)</b></summary>
+<details open><summary><b>Failed cases (5)</b></summary>
 
-### ❌ Author/createAuthor/wrong — FAILED
+### Author/createAuthor/wrong — FAILED
 
 | | |
 |---|---|
@@ -164,7 +164,7 @@ curl -X POST "$BASE_URL/authors" -H "Authorization: Bearer $TOKEN" -d '{"name":"
 ```
 </details>
 
-### ❌ Book/getBook/default — SCHEMA_VIOLATION
+### Book/getBook/default — SCHEMA_VIOLATION
 
 | | |
 |---|---|
@@ -179,7 +179,7 @@ response violates the schema
 
 - /price: value must be a number
 
-### ❌ Author/createAuthor/mismatch — EXAMPLE_MISMATCH
+### Author/createAuthor/mismatch — EXAMPLE_MISMATCH
 
 | | |
 |---|---|
@@ -197,7 +197,7 @@ response differs from the example
 | `/name` | `"Ada"` | `"Bob"` |
 | `/x` | `1` | `(missing)` |
 
-### ❌ Book/updateBook/default — DATA_MISMATCH
+### Book/updateBook/default — DATA_MISMATCH
 
 | | |
 |---|---|
@@ -224,7 +224,7 @@ aaaaaaaaaa
 ```
 </details>
 
-### ❌ Author/listAuthors/default — ERROR
+### Author/listAuthors/default — ERROR
 
 | | |
 |---|---|
@@ -234,18 +234,18 @@ timeout after 1s
 
 </details>
 
-<details open><summary><b>🟡 Deviations (1)</b></summary>
+<details open><summary><b>Deviations (1)</b></summary>
 
 Entries of `/specs/deviations.yaml`:
 
 | # | Case | Deviation | Reason | Ticket | Valid until | Used | State |
 |---:|---|---|---|---|---|---:|---|
 | 1 | `Author/getAuthor/default` | 200 → 404 | seed data missing | API-1 | 2026-12-31 | 1 | active |
-| 2 | `Book/*/default` | EXAMPLE_MISMATCH at /title | trimmed |  | 2026-10-05 | 1 | ⚠️ expires soon |
-| 3 | `Shelf/*/default` | 404 → 500 | old |  | 2026-01-01 | 0 | ❗ expired |
+| 2 | `Book/*/default` | EXAMPLE_MISMATCH at /title | trimmed |  | 2026-10-05 | 1 | expires soon |
+| 3 | `Shelf/*/default` | 404 → 500 | old |  | 2026-01-01 | 0 | expired |
 | 4 | `X/y/z` | 400 → 200 | unused |  | 2027-01-01 | 0 | unused, can be removed |
 
-### 🟡 Author/getAuthor/default — DEVIATION
+### Author/getAuthor/default — DEVIATION
 
 | | |
 |---|---|
@@ -256,9 +256,9 @@ allowed by API-1
 
 </details>
 
-<details><summary><b>🟠 Tolerated error cases (2)</b></summary>
+<details><summary><b>Tolerated error cases (2)</b></summary>
 
-### 🟠 Book/deleteBook/not-found — TOLERATED
+### Book/deleteBook/not-found — TOLERATED
 
 | | |
 |---|---|
@@ -270,7 +270,7 @@ allowed by API-1
 
 tolerated (FAILED): status code 204, expected 404
 
-### 🟠 Book/createBook/conflict — TOLERATED
+### Book/createBook/conflict — TOLERATED
 
 | | |
 |---|---|
@@ -293,7 +293,7 @@ tolerated (FAILED): status code 500, expected 409
 
 </details>
 
-<details><summary><b>⏭ Not run (2)</b></summary>
+<details><summary><b>Not run (2)</b></summary>
 
 | Case | Status | Reason |
 |---|---|---|
@@ -302,7 +302,7 @@ tolerated (FAILED): status code 500, expected 409
 
 </details>
 
-<details><summary><b>✅ Passed (2)</b></summary>
+<details><summary><b>Passed cases (2)</b></summary>
 
 | Case | Request | Status | Time |
 |---|---|---|---:|

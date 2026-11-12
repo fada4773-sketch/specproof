@@ -108,6 +108,10 @@ type Case struct {
 	ErrorCase bool
 	// Tolerated is the status a TOLERATED case would have had.
 	Tolerated string
+	// NoAnswer marks a request that was sent and got no answer: the
+	// connection closed (EOF) or was reset, which usually means the API
+	// crashed on it, or a timeout.
+	NoAnswer bool
 	// Code is the HTTP status received, 0 without answer.
 	Code     int
 	Duration time.Duration

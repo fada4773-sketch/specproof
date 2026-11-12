@@ -96,7 +96,7 @@ func TestEmptySectionsOmitted(t *testing.T) {
 	r.Findings = nil
 	r.Deviations = nil
 	out := string(Render(r))
-	for _, section := range []string{"## ❌ Errors", "## 🟡 Deviations", "## ⏭ Not run", "## Spec findings"} {
+	for _, section := range []string{"Failed cases (", "Deviations (", "Not run (", "Spec findings ("} {
 		if strings.Contains(out, section) {
 			t.Errorf("empty section %q must be omitted", section)
 		}
@@ -144,10 +144,10 @@ func TestRenderHTML(t *testing.T) {
 	}
 	page := string(a)
 	for _, want := range []string{
-		"<title>apitest · Bookstore 1.0</title>", `<div class="badge bad">✕ Failed</div>`,
+		"<title>apitest · Bookstore 1.0</title>", `<div class="badge bad">Failed</div>`,
 		`id="scope"`, `<span class="scopecode mono c4xx">409</span>`, `<details class="sec" open>`, `id="closeall"`, `id="rowsopen"`,
 		`id="dashboard"`, `aria-label="cases by status"`, "Slowest requests", "1.30 s", "Response times", "Status codes",
-		`id="errorcases"`, `<b class="num">3</b>error cases`, "Book/deleteBook/not-found", "would be FAILED",
+		`id="errorcases"`, `<b class="num">3</b>error cases`, "Book/deleteBook/not-found", "would be Failed",
 		`data-status="TOLERATED"`, "duplicate key &lt;script&gt;", "Reproduce", "API-1", "media type not supported",
 	} {
 		if !strings.Contains(page, want) {
@@ -186,7 +186,7 @@ func TestStats(t *testing.T) {
 	if len(st.Groups) != 2 || st.Groups[1].Name != "Book" || st.Groups[1].Total != 7 {
 		t.Errorf("groups: %+v", st.Groups)
 	}
-	if ms(0) != "–" || ms(1500*time.Microsecond) != "1 ms" || ms(2*time.Second) != "2.00 s" || bar(1, 4, 8) != "██░░░░░░" {
+	if ms(0) != "–" || ms(1500*time.Microsecond) != "1 ms" || ms(2*time.Second) != "2.00 s" || percent(1, 4) != "25 %" {
 		t.Error("formatting")
 	}
 }

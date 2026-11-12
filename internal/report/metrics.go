@@ -41,7 +41,11 @@ type ScopeRow struct {
 	Bad      int // fail the test
 	Other    int // deviation, tolerated
 	NotRun   int // skipped, not buildable
+	NoAnswer int // sent, no answer (the API crashed, a timeout)
 }
+
+// NoAnswerLabel stands for a request that got no answer.
+const NoAnswerLabel = "no answer"
 
 // expectedStatus is the status part of the expectation of a case: "201"
 // of "201, schema of the spec"; "–" without.
@@ -194,6 +198,9 @@ func (s *ScopeRow) add(c Case) {
 	if kind == "" {
 		kind = "regular"
 	}
+	if c.NoAnswer {
+		s.NoAnswer++
+	}
 	if !slices.Contains(s.Kinds, kind) {
 		s.Kinds = append(s.Kinds, kind)
 	}
@@ -215,8 +222,11 @@ func (e *ErrorStats) add(c Case) {
 	if exp == "–" {
 		exp = "?"
 	}
-	if c.Code != 0 {
+	switch {
+	case c.Code != 0:
 		act = strconv.Itoa(c.Code)
+	case c.NoAnswer:
+		act = NoAnswerLabel
 	}
 	if !slices.Contains(e.Expected, exp) {
 		e.Expected = append(e.Expected, exp)
@@ -271,8 +281,12 @@ func verdict(c Case) string {
 	switch {
 	case c.Status == Passed:
 		return "as documented"
+	case c.Status == Tolerated && c.NoAnswer:
+		return "tolerated (" + c.Tolerated + ", no answer)"
 	case c.Status == Tolerated:
 		return "tolerated (" + c.Tolerated + ")"
+	case c.NoAnswer:
+		return c.Status + ", no answer"
 	case c.Code == 0:
 		return c.Status + ", no answer"
 	}

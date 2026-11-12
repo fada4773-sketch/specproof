@@ -104,6 +104,7 @@ func (r *runner) reportCase(o *outcome) report.Case {
 		Kind:         o.c.Kind.String(),
 		ErrorCase:    o.c.ErrorCase(),
 		Tolerated:    string(o.tolerated),
+		NoAnswer:     o.noAnswer,
 		Code:         o.code,
 		Duration:     o.duration,
 		Message:      o.message,

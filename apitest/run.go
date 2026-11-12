@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -117,6 +119,9 @@ type outcome struct {
 	expired      bool
 	// tolerated is the failing status of a TOLERATED case.
 	tolerated Status
+	// noAnswer is set when the request was sent and no answer came: the
+	// connection closed or was reset (the API crashed), a timeout.
+	noAnswer bool
 	// soft are the failed checks a scenario tolerates ("SCHEMA_VIOLATION:
 	// …"), softDiffs their differences.
 	soft      []string
@@ -194,13 +199,7 @@ func (r *runner) prepare() error {
 	}
 	r.spec = s
 	r.findings = append(r.findings, s.Findings...)
-	if r.cfg.Token != nil {
-		if scheme, ok := s.AssumeBearer(); ok {
-			msg := fmt.Sprintf("the spec declares no security, so Config.Token is sent as a bearer token to every operation (scheme %q); declare securitySchemes and security in the spec to make this explicit", scheme)
-			r.findings = append(r.findings, spec.Finding{Kind: spec.FindingAuth, Where: "security", Message: msg})
-			r.warn(msg)
-		}
-	}
+	r.assumeBearer(s)
 	r.checkScopedParams(s)
 	if s.Doc.Components != nil {
 		r.schemes = s.Doc.Components.SecuritySchemes
@@ -500,7 +499,7 @@ func (r *runner) check(ctx context.Context, c *cases.Case) *outcome {
 	o.sent = req.Header.Clone()
 	resp, err := exec.Do(r.client, req, r.cfg.RequestTimeout)
 	if err != nil {
-		o.status, o.message = StatusError, err.Error()
+		setNoAnswer(o, err)
 		return o
 	}
 	o.resp, o.code, o.duration = resp, resp.Status, resp.Duration
@@ -657,10 +656,42 @@ func (r *runner) tolerate(o *outcome) {
 	if !r.cfg.TolerateErrorCases || !o.c.ErrorCase() {
 		return
 	}
-	switch o.status {
-	case StatusFailed, StatusSchemaViolation, StatusExampleMismatch:
+	switch {
+	case o.status == StatusFailed, o.status == StatusSchemaViolation, o.status == StatusExampleMismatch,
+		o.status == StatusError && o.noAnswer:
 		o.tolerated, o.status = o.status, StatusTolerated
 		o.message = fmt.Sprintf("tolerated (%s): %s", o.tolerated, o.message)
+	}
+}
+
+// assumeBearer sends Config.Token as a bearer token to every operation
+// when the spec declares no security at all, and says so.
+func (r *runner) assumeBearer(s *spec.Spec) {
+	if r.cfg.Token == nil {
+		return
+	}
+	if scheme, ok := s.AssumeBearer(); ok {
+		msg := fmt.Sprintf("the spec declares no security, so Config.Token is sent as a bearer token to every operation (scheme %q); declare securitySchemes and security in the spec to make this explicit", scheme)
+		r.findings = append(r.findings, spec.Finding{Kind: spec.FindingAuth, Where: "security", Message: msg})
+		r.warn(msg)
+	}
+}
+
+// setNoAnswer marks a request that was sent and got no answer, and says
+// what that likely means: a closed or reset connection is usually an API
+// that crashed on the request.
+func setNoAnswer(o *outcome, err error) {
+	o.status, o.noAnswer = StatusError, true
+	msg := err.Error()
+	switch {
+	case errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || strings.Contains(msg, "EOF"):
+		o.message = "no answer: the API closed the connection (EOF); did it crash on this request? " + msg
+	case errors.Is(err, syscall.ECONNRESET) || strings.Contains(msg, "connection reset"):
+		o.message = "no answer: the API reset the connection; did it crash on this request? " + msg
+	case errors.Is(err, syscall.ECONNREFUSED) || strings.Contains(msg, "connection refused"):
+		o.message = "no answer: connection refused; is the API down (did an earlier request crash it)? " + msg
+	default: // a timeout, or another error of the connection
+		o.message = "no answer: " + msg
 	}
 }
 

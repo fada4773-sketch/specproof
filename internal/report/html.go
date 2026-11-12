@@ -17,10 +17,17 @@ import (
 var htmlTemplate string
 
 var page = template.Must(template.New("report").Funcs(template.FuncMap{
-	"ms":       ms,
-	"lower":    strings.ToLower,
-	"status":   statusClass,
-	"words":    statusWord,
+	"ms":     ms,
+	"lower":  strings.ToLower,
+	"status": statusClass,
+	"words":  statusWord,
+	"statustext": func(s string) string {
+		w := statusWord(s)
+		if w == "" {
+			return w
+		}
+		return strings.ToUpper(w[:1]) + w[1:]
+	},
 	"label":    caseLabel,
 	"kind":     kindLabel,
 	"inc":      func(i int) int { return i + 1 },
@@ -70,6 +77,7 @@ type view struct {
 	Run      int // cases that ran (not skipped, not buildable)
 	Other    int // deviation, tolerated
 	NotRun   int // skipped, not buildable
+	NoAnswer int // sent, no answer
 	PassRate string
 	Coverage string
 	CovPct   int
@@ -158,6 +166,9 @@ func newView(r *Report) *view {
 	v.NotRun = st.Counts[Skipped] + st.Counts[NotBuildable]
 	v.Run = st.Total - v.NotRun
 	v.Other = st.Counts[Deviation] + st.Counts[Tolerated]
+	for _, s := range st.Scope {
+		v.NoAnswer += s.NoAnswer
+	}
 	v.PassRate = percent(st.Good, v.Run)
 	v.Coverage = percent(r.Coverage.OperationsCovered, r.Coverage.Operations)
 	v.CovPct = share(r.Coverage.OperationsCovered, r.Coverage.Operations)
@@ -220,7 +231,7 @@ func newView(r *Report) *view {
 			n := st.Errors.Matrix[x][a]
 			cell := matrixCell{Count: n}
 			if n > 0 {
-				cell.Class, cell.Alpha = "bad", 0.25+0.75*float64(n)/float64(maxCell)
+				cell.Class, cell.Alpha = "bad", 0.08+0.17*float64(n)/float64(maxCell)
 				if a == x {
 					cell.Class = "ok"
 				}
@@ -243,8 +254,11 @@ func newView(r *Report) *view {
 	}
 	for i, c := range r.Cases {
 		cv := caseView{Case: c, ID: i + 1, Excerpt: excerpt(c), BarPct: pct(int(c.Duration), int(st.Max)), Received: "–"}
-		if c.Code != 0 {
+		switch {
+		case c.Code != 0:
 			cv.Received = fmt.Sprint(c.Code)
+		case c.NoAnswer:
+			cv.Received = NoAnswerLabel
 		}
 		cv.Details = c.Message != "" || len(c.Diffs) > 0 || len(c.Problems) > 0 || c.Request != nil || c.Response != nil ||
 			c.ResponseHeaders != nil || c.Verify != nil || c.Curl != ""

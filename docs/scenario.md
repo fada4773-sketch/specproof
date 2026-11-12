@@ -1315,8 +1315,18 @@ cfg := apitest.ScenarioConfig{
 
 An entry no step matches (`"500"` without such a step in the file) is
 reported as a warning. A 409, 404 or `invalid` step that gets another
-answer fails, unless `Config.TolerateErrorCases` is set: then it ends
-`TOLERATED` and the report shows what came instead.
+answer, or none (the connection closed or was reset: the API crashed on
+the request, a timeout), fails, unless `Config.TolerateErrorCases` is set:
+then it ends `TOLERATED` and the report shows what came instead. Both
+reports mark a request without answer as *no answer*, in the scope, the
+error case analysis and the case.
+
+The 401 steps need an operation that requires a token. A spec that
+declares no security at all (no `securitySchemes`, no `security`) is read
+as "every operation needs a bearer token" when `Config.Token` is set, as
+in `apitest.Run`: the token is sent everywhere, the 401 steps are
+generated, and a warning says so. Declare the security in the spec to
+make it explicit.
 
 ## Regression check
 

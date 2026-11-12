@@ -35,8 +35,9 @@ code,pre,.mono{font-family:var(--mono);font-size:12.5px}
 /* top bar */
 header.top{background:var(--card);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:10}
 header.top .wrap{display:flex;align-items:center;gap:16px;padding-top:10px;padding-bottom:10px}
-.brand{font-weight:700;white-space:nowrap}
-.brand span{color:var(--muted);font-weight:500}
+.brand{display:flex;align-items:center;gap:10px;font-weight:700;white-space:nowrap;letter-spacing:-.1px}
+.brand .mark{width:22px;height:22px;border-radius:6px;background:var(--accent);display:inline-flex;align-items:center;justify-content:center;color:#fff;font-size:12px;font-weight:800}
+.brand span.sub{color:var(--muted);font-weight:500;padding-left:10px;border-left:1px solid var(--line)}
 nav{display:flex;gap:2px;margin-left:auto;overflow-x:auto;scrollbar-width:none}
 nav::-webkit-scrollbar{display:none}
 nav a{color:var(--muted);padding:6px 10px;border-radius:8px;font-weight:500;text-decoration:none;white-space:nowrap}
@@ -49,7 +50,8 @@ nav a:hover{background:var(--soft);color:var(--text)}
 .hero h1{margin:0 0 6px;font-size:24px;line-height:1.2}
 .meta{display:flex;flex-wrap:wrap;gap:4px 18px;color:var(--muted);font-size:13px}
 .meta b{color:var(--text);font-weight:600}
-.badge{flex:none;display:inline-flex;align-items:center;gap:8px;padding:9px 18px;border-radius:999px;font-weight:700;font-size:15px}
+.badge{flex:none;display:inline-flex;align-items:center;gap:8px;padding:8px 16px;border-radius:8px;font-weight:700;font-size:14px;letter-spacing:.2px;text-transform:uppercase}
+.badge::before{content:"";width:8px;height:8px;border-radius:50%;background:currentColor}
 .badge.ok{background:color-mix(in srgb,var(--pass) 14%,transparent);color:var(--pass)}
 .badge.bad{background:color-mix(in srgb,var(--fail) 14%,transparent);color:var(--fail)}
 .alert{border:1px solid color-mix(in srgb,var(--fail) 40%,transparent);background:color-mix(in srgb,var(--fail) 7%,var(--card));padding:10px 16px;border-radius:var(--r);margin:0 0 16px}
@@ -140,8 +142,8 @@ td.r,th.r{text-align:right}
 td.c,th.c{text-align:center}
 table.fixed{table-layout:fixed}
 .scroll{overflow-x:auto}
-.pill{display:inline-block;padding:2px 9px;border-radius:999px;font-size:11px;font-weight:700;letter-spacing:.2px;white-space:nowrap;color:#fff;background:var(--c)}
-.pill.s-error,.pill.s-deviation{color:#2b1a00}
+.pill{display:inline-flex;align-items:center;gap:6px;padding:2px 9px;border-radius:6px;font-size:11.5px;font-weight:600;white-space:nowrap;color:var(--text);background:color-mix(in srgb,var(--c) 14%,transparent);border:1px solid color-mix(in srgb,var(--c) 45%,transparent)}
+.pill::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--c)}
 .tag{display:inline-block;padding:0 7px;border-radius:6px;background:var(--soft);color:var(--muted);font-size:11px;margin-left:6px;vertical-align:1px;white-space:nowrap}
 .two{display:block;min-width:0}
 .two .sub{display:block;color:var(--muted);font-size:12px}
@@ -152,16 +154,19 @@ table.fixed{table-layout:fixed}
 .matrix{width:auto;min-width:320px}
 .matrix th,.matrix td{text-align:center;min-width:62px;border:1px solid var(--line)}
 .matrix th:first-child,.matrix td:first-child{text-align:left;min-width:110px}
-.cell.ok{background:color-mix(in srgb,var(--pass) calc(var(--a)*100%),transparent);font-weight:700}
-.cell.bad{background:color-mix(in srgb,var(--fail) calc(var(--a)*100%),transparent);font-weight:700}
+.cell.ok{background:color-mix(in srgb,var(--pass) calc(var(--a)*100%),transparent);color:var(--pass);font-weight:700}
+.cell.bad{background:color-mix(in srgb,var(--fail) calc(var(--a)*100%),transparent);color:var(--fail);font-weight:700}
 .cell.empty{color:var(--muted)}
 .errsum{display:flex;gap:18px;flex-wrap:wrap;padding:14px 18px 0;font-size:13px}
 .errsum b{font-size:18px;margin-right:4px}
 
 /* scope */
-.scopecode{display:inline-block;min-width:58px;padding:2px 8px;border-radius:6px;font-weight:700;text-align:center;background:var(--soft)}
-.scopecode.c2xx,.scopecode.c3xx,.scopecode.c4xx,.scopecode.c5xx{color:#fff}
+.scopecode{display:inline-block;min-width:58px;padding:2px 8px;border-radius:6px;font-weight:700;text-align:center;background:var(--soft);--k:var(--muted);color:var(--k);border:1px solid color-mix(in srgb,var(--k) 40%,transparent);background:color-mix(in srgb,var(--k) 10%,transparent)}
+.scopecode.c2xx{--k:var(--c2)}.scopecode.c3xx{--k:var(--c3)}.scopecode.c4xx{--k:var(--c4)}.scopecode.c5xx{--k:var(--c5)}
+.scopecode.c2xx,.scopecode.c3xx,.scopecode.c4xx,.scopecode.c5xx{background:color-mix(in srgb,var(--k) 10%,transparent)!important}
 .kinds .tag{margin:0 4px 2px 0}
+.crash{display:inline-block;padding:1px 7px;border-radius:6px;font-size:11px;font-weight:600;white-space:nowrap;color:var(--fail);border:1px solid color-mix(in srgb,var(--fail) 50%,transparent);background:color-mix(in srgb,var(--fail) 8%,transparent)}
+.crashnote{margin:0 0 12px;padding:8px 12px;border-radius:8px;border:1px solid color-mix(in srgb,var(--fail) 40%,transparent);background:color-mix(in srgb,var(--fail) 8%,var(--card))}
 tfoot td{font-weight:700;border-top:2px solid var(--line);border-bottom:0;background:var(--head)}
 
 /* cases */
@@ -176,7 +181,7 @@ tr.case:hover td{background:var(--soft)}
 tr.case.open .caret{transform:rotate(90deg)}
 tr.detail td{background:var(--soft);padding:16px 20px;white-space:normal}
 tr.detail[hidden],tr.case[hidden]{display:none}
-.timecell{display:flex;align-items:center;gap:8px;justify-content:flex-end}
+.timecell{display:flex;align-items:center;gap:8px;justify-content:flex-end;white-space:nowrap}
 .timecell .track{width:56px;height:6px;flex:none}
 .msg{margin:0 0 12px;font-weight:500;overflow-wrap:anywhere}
 .kv{display:grid;grid-template-columns:max-content 1fr;gap:3px 16px;margin:0 0 12px}
@@ -190,12 +195,23 @@ tr.detail[hidden],tr.case[hidden]{display:none}
 .empty-state{padding:24px;text-align:center;color:var(--muted)}
 ul.plain{margin:0;padding:14px 18px 16px 34px}
 ul.plain li{margin:3px 0}
-footer{margin-top:40px;color:var(--muted);font-size:12.5px;text-align:center}
+footer{margin-top:40px;padding-top:16px;border-top:1px solid var(--line);color:var(--muted);font-size:12px;display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap}
+
+/* print: every section open, no controls */
+@media print{
+  header.top,.toolbar,.copy,#none{display:none!important}
+  body{background:#fff;font-size:12px}
+  .card{box-shadow:none}
+  details.sec>summary::before{display:none}
+  section{break-inside:avoid-page;margin-top:18px}
+  tr.detail[hidden]{display:none}
+  .scroll{overflow:visible}
+}
 </style>
 </head>
 <body>
 <header class="top"><div class="wrap">
-  <div class="brand">🧪 apitest <span>report</span></div>
+  <div class="brand"><span class="mark">a</span>apitest <span class="sub">API test report</span></div>
   <nav>
     <a href="#scope">Scope</a>
     <a href="#dashboard">Dashboard</a>
@@ -210,7 +226,7 @@ footer{margin-top:40px;color:var(--muted);font-size:12.5px;text-align:center}
   <div class="toolbtns">
     <button class="iconbtn" type="button" id="openall" title="Expand every section">Expand all</button>
     <button class="iconbtn" type="button" id="closeall" title="Collapse every section">Collapse all</button>
-    <button class="iconbtn" type="button" id="theme" title="Light / dark">◐</button>
+    <button class="iconbtn" type="button" id="theme" title="Switch between light and dark">Theme</button>
   </div>
 </div></header>
 
@@ -226,7 +242,7 @@ footer{margin-top:40px;color:var(--muted);font-size:12.5px;text-align:center}
         <span>Strict <b>{{if .R.Strict}}yes{{else}}no{{end}}</b></span>
       </div>
     </div>
-    {{if .R.Passed}}<div class="badge ok">✓ Passed</div>{{else}}<div class="badge bad">✕ Failed</div>{{end}}
+    {{if .R.Passed}}<div class="badge ok">Passed</div>{{else}}<div class="badge bad">Failed</div>{{end}}
   </div>
 
   {{if .R.Aborted}}<div class="alert"><b>Run aborted:</b> {{.R.Aborted}}</div>{{end}}
@@ -236,9 +252,9 @@ footer{margin-top:40px;color:var(--muted);font-size:12.5px;text-align:center}
   <section id="scope">
     <details class="sec" open><summary><h2>Scope <small>cases per expected status and how they ended</small></h2></summary>
     <div class="card scroll">
-      <table class="fixed" style="min-width:860px">
-        <colgroup><col style="width:120px"><col style="width:26%"><col style="width:70px"><col><col style="width:60px"><col style="width:60px"><col style="width:76px"><col style="width:70px"><col style="width:70px"></colgroup>
-        <thead><tr><th>Expected</th><th>Kinds</th><th class="r">Cases</th><th>Result</th><th class="r">✓</th><th class="r">✕</th><th class="r">tol./dev.</th><th class="r">not run</th><th class="r">Passed</th></tr></thead>
+      <table class="fixed" style="min-width:980px">
+        <colgroup><col style="width:120px"><col style="width:20%"><col style="width:66px"><col><col style="width:72px"><col style="width:68px"><col style="width:96px"><col style="width:80px"><col style="width:94px"><col style="width:92px"></colgroup>
+        <thead><tr><th>Expected</th><th>Kinds</th><th class="r">Cases</th><th>Result</th><th class="r">Passed</th><th class="r">Failed</th><th class="r">Tol. / dev.</th><th class="r">Not run</th><th class="r" title="sent, no answer: the API crashed or timed out">No answer</th><th class="r">Pass rate</th></tr></thead>
         <tbody>
         {{range .Scope}}<tr>
           <td><span class="scopecode mono {{.Class}}">{{.Expected}}</span></td>
@@ -249,12 +265,14 @@ footer{margin-top:40px;color:var(--muted);font-size:12.5px;text-align:center}
           <td class="r num" {{if .Bad}}style="color:var(--fail);font-weight:700"{{end}}>{{.Bad}}</td>
           <td class="r num">{{.Other}}</td>
           <td class="r num muted">{{.NotRun}}</td>
+          <td class="r num">{{if .NoAnswer}}<span class="crash">{{.NoAnswer}}</span>{{else}}<span class="muted">0</span>{{end}}</td>
           <td class="r num">{{.Pct}} %</td>
         </tr>{{end}}
         </tbody>
-        <tfoot><tr><td>Total</td><td></td><td class="r num">{{.S.Total}}</td><td></td><td class="r num" style="color:var(--pass)">{{index .S.Counts "PASSED"}}</td><td class="r num">{{.S.Bad}}</td><td class="r num">{{.Other}}</td><td class="r num">{{.NotRun}}</td><td></td></tr></tfoot>
+        <tfoot><tr><td>Total</td><td></td><td class="r num">{{.S.Total}}</td><td></td><td class="r num" style="color:var(--pass)">{{index .S.Counts "PASSED"}}</td><td class="r num">{{.S.Bad}}</td><td class="r num">{{.Other}}</td><td class="r num">{{.NotRun}}</td><td class="r num">{{if .NoAnswer}}<span class="crash">{{.NoAnswer}}</span>{{else}}0{{end}}</td><td></td></tr></tfoot>
       </table>
     </div>
+    {{if .NoAnswer}}<div class="crashnote" style="margin-top:12px"><b>{{.NoAnswer}}</b> {{if eq .NoAnswer 1}}request{{else}}requests{{end}} got no answer: the connection closed (EOF) or was reset, which usually means the API crashed on the request, or the request timed out. The cases are marked <span class="crash">no answer</span>.</div>{{end}}
     </details>
   </section>
   {{end}}
@@ -277,7 +295,7 @@ footer{margin-top:40px;color:var(--muted);font-size:12.5px;text-align:center}
         <div class="donutbox">
           {{.Donut}}
           <div class="legend">
-            {{range .Statuses}}<div class="s-{{status .Status}}"><span class="dot"></span><span class="ell">{{words .Status}}</span><span class="n num">{{.Count}} · {{.Pct}} %</span></div>{{end}}
+            {{range .Statuses}}<div class="s-{{status .Status}}"><span class="dot"></span><span class="ell">{{statustext .Status}}</span><span class="n num">{{.Count}} · {{.Pct}} %</span></div>{{end}}
           </div>
         </div>
       </div>
@@ -313,7 +331,7 @@ footer{margin-top:40px;color:var(--muted);font-size:12.5px;text-align:center}
     <div class="card scroll">
       <table class="fixed" style="min-width:820px">
         <colgroup><col style="width:22%"><col style="width:70px"><col><col style="width:60px"><col style="width:60px"><col style="width:70px"><col style="width:70px"><col style="width:90px"><col style="width:90px"></colgroup>
-        <thead><tr><th>Tag</th><th class="r">Cases</th><th>Status</th><th class="r">✓</th><th class="r">✕</th><th class="r">tol./dev.</th><th class="r">not run</th><th class="r">Avg</th><th class="r">Total</th></tr></thead>
+        <thead><tr><th>Tag</th><th class="r">Cases</th><th>Status</th><th class="r">Passed</th><th class="r">Failed</th><th class="r">Tol. / dev.</th><th class="r">Not run</th><th class="r">Avg</th><th class="r">Total</th></tr></thead>
         <tbody>
         {{range .Groups}}<tr>
           <td class="ell" title="{{.Name}}"><b>{{.Name}}</b></td>
@@ -343,7 +361,7 @@ footer{margin-top:40px;color:var(--muted);font-size:12.5px;text-align:center}
         {{range $i, $s := .Slowest}}<tr>
           <td class="r muted num">{{inc $i}}</td>
           <td><span class="two"><span class="mono ell" style="display:block" title="{{$s.Method}} {{$s.Target}}"><span class="method">{{$s.Method}}</span>{{$s.Target}}</span><span class="sub ell" title="{{label $s.Case}}">{{label $s.Case}}</span></span></td>
-          <td><span class="pill s-{{status $s.Status}}">{{$s.Status}}</span></td>
+          <td><span class="pill s-{{status $s.Status}}">{{statustext $s.Status}}</span></td>
           <td class="r mono">{{$s.Code}}</td>
           <td><div class="track thick"><span style="width: {{$s.Pct}}%"></span></div></td>
           <td class="r num"><b>{{ms $s.Duration}}</b></td>
@@ -367,8 +385,8 @@ footer{margin-top:40px;color:var(--muted);font-size:12.5px;text-align:center}
         </div>
         <div class="matrixwrap">
           <table class="matrix">
-            <thead><tr><th>expected ↓ · got →</th>{{range .S.Errors.Actual}}<th class="mono">{{.}}</th>{{end}}</tr></thead>
-            <tbody>{{range .Matrix}}<tr><td class="mono"><b>{{.Expected}}</b></td>{{range .Cells}}{{if .Count}}<td class="cell {{.Class}} num" style="--a: {{.Alpha}}">{{.Count}}</td>{{else}}<td class="cell empty">·</td>{{end}}{{end}}</tr>{{end}}</tbody>
+            <thead><tr><th>Expected \ received</th>{{range .S.Errors.Actual}}<th class="mono">{{.}}</th>{{end}}</tr></thead>
+            <tbody>{{range .Matrix}}<tr><td class="mono"><b>{{.Expected}}</b></td>{{range .Cells}}{{if .Count}}<td class="cell {{.Class}} num" style="--a: {{.Alpha}}">{{.Count}}</td>{{else}}<td class="cell empty">–</td>{{end}}{{end}}</tr>{{end}}</tbody>
           </table>
         </div>
       </div>
@@ -381,8 +399,8 @@ footer{margin-top:40px;color:var(--muted);font-size:12.5px;text-align:center}
             <td><span class="two"><span class="ell" style="display:block" title="{{label .}}">{{label .}}</span>{{with kind .Kind}}<span class="sub">{{.}}</span>{{end}}</span></td>
             <td class="mono ell" title="{{.Method}} {{.Target}}"><span class="method">{{.Method}}</span>{{.Target}}</td>
             <td class="r mono">{{.Expected}}</td>
-            <td class="r mono"><b>{{if .Code}}{{.Code}}{{else}}–{{end}}</b></td>
-            <td><span class="pill s-{{status .Status}}">{{.Status}}</span>{{if .Tolerated}}<div class="muted" style="font-size:11.5px">would be {{.Tolerated}}</div>{{end}}</td>
+            <td class="r mono"><b>{{if .Code}}{{.Code}}{{else if .NoAnswer}}<span class="crash">no answer</span>{{else}}–{{end}}</b></td>
+            <td><span class="pill s-{{status .Status}}">{{statustext .Status}}</span>{{if .Tolerated}}<div class="muted" style="font-size:11.5px">would be {{statustext .Tolerated}}</div>{{end}}</td>
             <td class="muted ell" title="{{excerpt .}}">{{excerpt .}}</td>
           </tr>{{end}}
           </tbody>
@@ -400,7 +418,7 @@ footer{margin-top:40px;color:var(--muted);font-size:12.5px;text-align:center}
         <input id="q" type="search" placeholder="Search case, path, status, message …" aria-label="search">
         <button class="iconbtn" type="button" id="rowsopen" title="Show the details of every shown case">Open rows</button>
         <button class="iconbtn" type="button" id="rowsclose" title="Hide every case detail">Close rows</button>
-        {{range .Filters}}<button class="chip s-{{status .Status}}" type="button" aria-pressed="true" data-status="{{.Status}}"><span class="dot"></span>{{words .Status}} {{.Count}}</button>{{end}}
+        {{range .Filters}}<button class="chip s-{{status .Status}}" type="button" aria-pressed="true" data-status="{{.Status}}"><span class="dot"></span>{{statustext .Status}} <span class="muted num">{{.Count}}</span></button>{{end}}
       </div>
       <div class="scroll">
       <table class="fixed" id="casetable" style="min-width:900px">
@@ -412,11 +430,12 @@ footer{margin-top:40px;color:var(--muted);font-size:12.5px;text-align:center}
           <td class="muted num">{{if .Details}}<span class="caret">▸</span>{{else}}<span class="caret"></span>{{end}}{{if .Number}}{{.Number}}{{else}}{{.ID}}{{end}}</td>
           <td class="ell" title="{{.Name}}">{{.Name}}{{with kind .Kind}}<span class="tag">{{.}}</span>{{end}}{{if .Precondition}}<span class="tag">precondition</span>{{end}}</td>
           <td class="mono ell" title="{{.Method}} {{.Target}}">{{if .Method}}<span class="method">{{.Method}}</span>{{.Target}}{{else}}<span class="muted">–</span>{{end}}</td>
-          <td><span class="pill s-{{status .Status}}">{{.Status}}</span></td>
-          <td class="r mono">{{.Received}}</td>
+          <td><span class="pill s-{{status .Status}}">{{statustext .Status}}</span></td>
+          <td class="r mono">{{if .NoAnswer}}<span class="crash" title="no answer: the API crashed or timed out">no answer</span>{{else}}{{.Received}}{{end}}</td>
           <td class="r"><div class="timecell num">{{ms .Duration}}{{if .Duration}}<div class="track"><span style="width: {{.BarPct}}%"></span></div>{{end}}</div></td>
         </tr>
         {{if .Details}}<tr class="detail" id="d{{.ID}}" hidden><td colspan="6">
+          {{if .NoAnswer}}<p class="crashnote"><b>No answer.</b> The request was sent; the connection closed or was reset, or it timed out. A closed connection usually means the API crashed on this request: check its log.</p>{{end}}
           {{if .Message}}<p class="msg">{{.Message}}</p>{{end}}
           <dl class="kv">
             <dt>Case</dt><dd>{{.Name}}</dd>
@@ -485,7 +504,7 @@ footer{margin-top:40px;color:var(--muted);font-size:12.5px;text-align:center}
   </section>
   {{end}}
 
-  <footer>Generated by apitest {{.R.Version}} with {{.R.GoVersion}}</footer>
+  <footer><span>Generated by apitest {{.R.Version}} with {{.R.GoVersion}}</span><span>Run started {{.Started}} · duration {{.Duration}}</span></footer>
 </main>
 
 <script>

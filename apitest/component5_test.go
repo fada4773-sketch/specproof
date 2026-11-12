@@ -176,7 +176,7 @@ func TestDisableWarnings(t *testing.T) {
 	if !strings.Contains(out.ft.output(), warning) || !strings.Contains(out.report, warning) {
 		t.Error("warning not printed and reported by default")
 	}
-	if !strings.Contains(out.report, "🔎 Spec findings (") {
+	if !strings.Contains(out.report, "Spec findings (") {
 		t.Error("spec findings missing by default")
 	}
 }
@@ -184,13 +184,13 @@ func TestDisableWarnings(t *testing.T) {
 func TestReportPassedDetails(t *testing.T) {
 	cfg := bookstoreConfig(t, testserver.Faults{})
 	out := runFake(t, cfg)
-	if strings.Contains(out.report, "### ✅") {
+	if strings.Contains(out.report, " — PASSED\n") {
 		t.Error("passed cases have details by default")
 	}
 
 	cfg.ReportPassedDetails = true
 	out = runFake(t, cfg)
-	section := "### ✅ " + executionOrder[0] + " — PASSED"
+	section := "### " + executionOrder[0] + " — PASSED"
 	i := strings.Index(out.report, section)
 	if i < 0 {
 		t.Fatalf("report has no detail section %q", section)

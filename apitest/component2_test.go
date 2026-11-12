@@ -275,12 +275,12 @@ func normalize(report string) string {
 	dashboard := false
 	for _, line := range strings.Split(report, "\n") {
 		switch {
-		case strings.HasPrefix(line, "## 📈 Dashboard"):
+		case strings.HasPrefix(line, "## Key figures"):
 			dashboard = true
 		case strings.HasPrefix(line, "## ") || strings.HasPrefix(line, "<details"):
 			dashboard = false
 		}
-		if dashboard || strings.HasPrefix(line, "| `/") || strings.Contains(line, "⏱") ||
+		if dashboard || strings.HasPrefix(line, "| `/") || strings.HasPrefix(line, "**Result:") ||
 			strings.HasPrefix(strings.TrimSpace(line), "Date: ") { // response header, differs when a second passes
 			continue
 		}
@@ -442,7 +442,7 @@ func TestDeviationsEndToEnd(t *testing.T) {
 	for _, want := range []string{
 		"| 1 | `Author/createAuthor/valid-author` | 201 → 200 |",
 		"| 2 | `Book/updateBook/default` | DATA_MISMATCH at /title |",
-		"⚠️ expires soon",
+		"| expires soon |",
 		"| 3 | `Shelf/*/default` | 404 → 500 | never used |  | 2027-01-31 | 0 | unused, can be removed |",
 		"deviation 2 (Book/updateBook/default) expires on 2026-10-05",
 	} {
@@ -463,7 +463,7 @@ func TestDeviationsEndToEnd(t *testing.T) {
 	if !out.res.Failed || !strings.Contains(out.ft.output(), "deviation 2 (Book/updateBook/default) expired on 2026-10-05") {
 		t.Errorf("expired entry must fail the strict run:\n%s", out.ft.output())
 	}
-	if !strings.Contains(out.report, "❗ expired") {
+	if !strings.Contains(out.report, "| expired |") {
 		t.Error("report must mark the expired entry")
 	}
 

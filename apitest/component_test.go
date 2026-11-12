@@ -208,7 +208,7 @@ func TestTPL2_01_BaselineAllPassed(t *testing.T) {
 		t.Fatal(err)
 	}
 	report := string(b)
-	if strings.Contains(report, "❌ Errors") || !strings.Contains(report, "✅ **Passed**") {
+	if strings.Contains(report, "Failed cases (") || !strings.Contains(report, "**Result: Passed**") {
 		t.Errorf("report of a clean run must not contain an error section:\n%s", report)
 	}
 	if res.Summary.Operations != 18 || res.Summary.OperationsCovered != 18 {
