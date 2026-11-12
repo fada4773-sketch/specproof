@@ -189,8 +189,21 @@ func TestUnorderedArrays(t *testing.T) {
 	if d := Values(exp, act, Options{Mode: ModeSubset, Unordered: true}); len(d) != 0 {
 		t.Errorf("unordered: got %v", d)
 	}
-	if d := Values(exp, decode(t, `[{"n":"a"},{"n":"a"}]`), Options{Mode: ModeSubset, Unordered: true}); len(d) != 1 || d[0].Pointer != "/1" {
-		t.Errorf("each actual element may only be used once: %v", d)
+	if d := Values(exp, decode(t, `[{"n":"a"},{"n":"a"}]`), Options{Mode: ModeSubset, Unordered: true}); len(d) != 1 || d[0].Pointer != "/1/n" || d[0].Actual != `"a"` {
+		t.Errorf("each actual element may only be used once, the rest compared with the closest: %v", d)
+	}
+	// a small element fits several: the first fit must not take the only
+	// element a later one fits
+	nested := decode(t, `{"docks":[{"code":"A"},{"code":"A","berth":{"level":2}}]}`)
+	answer := decode(t, `{"docks":[{"code":"A","berth":{"level":2}},{"code":"A","berth":{"level":3}}]}`)
+	if d := Values(nested, answer, Options{Mode: ModeSubset, Unordered: true}); len(d) != 0 {
+		t.Errorf("a matching exists in another pairing: got %+v", d)
+	}
+	// without a match the difference is named down to the field
+	answer = decode(t, `{"docks":[{"code":"A","berth":{"level":3}},{"code":"A","berth":{"level":4}}]}`)
+	d := Values(nested, answer, Options{Mode: ModeSubset, Unordered: true})
+	if !reflect.DeepEqual(pointers(d), []string{"/docks/1/berth/level"}) || !strings.Contains(d[0].Note, "closest is element 1") {
+		t.Errorf("field of the closest element: got %+v", d)
 	}
 	s := &openapi3.Schema{Type: &openapi3.Types{"array"}, Extensions: map[string]any{"x-apitest-compare-unordered": true}}
 	if d := Values(decode(t, `["a","b"]`), decode(t, `["b","a"]`), Options{Mode: ModeSubset, Schema: s}); len(d) != 0 {

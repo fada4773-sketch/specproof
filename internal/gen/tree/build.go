@@ -197,6 +197,7 @@ func Build(s *spec.Spec, t *Tree, d *Data) (*Built, error) {
 	b.lostSources()
 	b.starvedWheres()
 	b.starvedRequires()
+	b.crossEquals()
 	b.ignoreDerived()
 	if len(b.problems) > 0 {
 		// the changes the fetch asks for (a where that left a node
@@ -400,6 +401,36 @@ func (b *builder) alignEmbedded(e *OrderEntry, field string, body map[string]any
 				eachSet(m, f, func(any) any { return "{{" + name + "}}" })
 			}
 		}
+	}
+}
+
+// crossEquals drops a check equals whose read answers another resource
+// than the step it checks against sent: the paths of the one body say
+// nothing about the other answer. Where the model knows one of the two
+// operations only, the check stays.
+func (b *builder) crossEquals() {
+	for _, st := range b.steps {
+		if st.Equals == "" {
+			continue
+		}
+		sent := b.stepByID(st.Equals)
+		if sent == nil {
+			continue
+		}
+		sop, rop := lookupOp(b.s, sent.Call), lookupOp(b.s, st.Call)
+		if sop == nil || rop == nil {
+			continue
+		}
+		from, to := resourceOf(b.m, sop), resourceOf(b.m, rop)
+		if from == nil || to == nil || from == to {
+			continue
+		}
+		b.noteAt(LevelWarn, st.ID, "no check equals "+st.Equals,
+			fmt.Sprintf("%s (%s) answers %s, %s (%s) sent %s: the answer is not compared with that body", st.Call, st.ID, to.Name, sent.Call, st.Equals, from.Name))
+		if why, _, cut := strings.Cut(st.Why, ", it holds what "); cut {
+			st.Why = why
+		}
+		st.Equals = ""
 	}
 }
 

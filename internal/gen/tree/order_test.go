@@ -576,3 +576,24 @@ func TestSameRecordOnce(t *testing.T) {
 		t.Errorf("notes: %+v", b.out.Notes)
 	}
 }
+
+// TestCrossEquals: a check equals stays only where the read answers the
+// resource the step it checks against sent; else it is dropped with a note.
+func TestCrossEquals(t *testing.T) {
+	s := loadStarport(t)
+	b := &builder{s: s, m: modelOf(s), out: &Built{}, steps: []*scenario.Step{
+		{ID: "pilots1.create", Call: "POST /pilots", Body: map[string]any{"name": "Ada"}, HasBody: true},
+		{ID: "pilots1.read", Call: "GET /pilots/{pilotId}", Equals: "pilots1.create", Why: "reads pilots1, it holds what pilots1.create sent"},
+		{ID: "ships1.read", Call: "GET /ships/{shipId}", Equals: "pilots1.create", Why: "reads ships1, it holds what pilots1.create sent"},
+	}}
+	b.crossEquals()
+	if b.steps[1].Equals != "pilots1.create" {
+		t.Errorf("same resource: the check stays, got %+v", b.steps[1])
+	}
+	if st := b.steps[2]; st.Equals != "" || st.Why != "reads ships1" {
+		t.Errorf("other resource: the check is dropped, got %+v", st)
+	}
+	if len(b.out.Notes) != 1 || b.out.Notes[0].Step != "ships1.read" || b.out.Notes[0].What != "no check equals pilots1.create" {
+		t.Errorf("notes: %+v", b.out.Notes)
+	}
+}

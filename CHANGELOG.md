@@ -469,6 +469,16 @@ contain breaking changes, which are listed here.
 
 ### Fixed
 
+- Arrays compared in any order (`x-apitest-compare-unordered`, the
+  `equals` checks of scenarios) reported a missing element although every
+  element had a match: in subset mode a small element took the first
+  element it fitted, which a later element needed (nested records of a
+  read, `tree run -update`). Each element now gets its match whenever one
+  exists. An element without one is reported with the differences to the
+  closest element left over, down to the field
+  (`/docks/1/berth/level`), instead of the whole element as missing.
+- `apitest-gen tree`: a `check.equals` whose read answers another
+  resource than the step it compares with is left out, with a note.
 - `apitest-gen tree -fix`: it stopped after three changes that differed
   only in a number (`off` for `node2` … `node20`), and two fixes of one
   round could add nodes of the same name and leave an invalid file. A

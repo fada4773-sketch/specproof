@@ -184,30 +184,85 @@ func (c *comparer) foldEqual(exp, act any) bool {
 }
 
 // compareUnordered matches every expected element with a different actual
-// element that has no differences (FR-CMP-07).
+// element that has no differences (FR-CMP-07). It finds such a matching
+// whenever one exists: in subset mode a small expected element fits several
+// actual ones, and taking the first that fits can steal the only one a later
+// element fits. An element without a match is reported with the differences
+// to the closest actual element left over, down to the field.
 func (c *comparer) compareUnordered(ptr string, exp, act []any, items *openapi3.Schema) {
-	used := make([]bool, len(act))
+	fits := make([][]bool, len(exp))
+	var open []int
 	for i, e := range exp {
-		child := ptr + "/" + strconv.Itoa(i)
-		if c.ignored(child, "") {
+		if c.ignored(ptr+"/"+strconv.Itoa(i), "") {
 			continue
 		}
-		found := false
+		open = append(open, i)
+		fits[i] = make([]bool, len(act))
 		for j, a := range act {
-			if used[j] {
-				continue
-			}
-			sub := comparer{opt: c.opt}
-			sub.compare(child, e, a, items, true)
-			if len(sub.diffs) == 0 {
-				used[j], found = true, true
-				break
-			}
-		}
-		if !found {
-			c.diffs = append(c.diffs, Diff{Pointer: child, Expected: Render(e), Actual: Missing, Note: "no matching element in any order"})
+			fits[i][j] = len(c.sub(ptr+"/"+strconv.Itoa(i), e, a, items)) == 0
 		}
 	}
+	// owner[j] is the expected element actual element j is matched with
+	owner := make([]int, len(act))
+	for j := range owner {
+		owner[j] = -1
+	}
+	var augment func(i int, seen []bool) bool
+	augment = func(i int, seen []bool) bool {
+		for j, ok := range fits[i] {
+			if !ok || seen[j] {
+				continue
+			}
+			seen[j] = true
+			if owner[j] < 0 || augment(owner[j], seen) {
+				owner[j] = i
+				return true
+			}
+		}
+		return false
+	}
+	matched := make([]bool, len(exp))
+	for _, i := range open {
+		matched[i] = augment(i, make([]bool, len(act)))
+	}
+	for _, i := range open {
+		if matched[i] {
+			continue
+		}
+		child := ptr + "/" + strconv.Itoa(i)
+		var best []Diff
+		at := -1
+		for j, a := range act {
+			if owner[j] >= 0 {
+				continue
+			}
+			if d := c.sub(child, exp[i], a, items); at < 0 || len(d) < len(best) {
+				best, at = d, j
+			}
+		}
+		if at < 0 {
+			c.diffs = append(c.diffs, Diff{Pointer: child, Expected: Render(exp[i]), Actual: Missing, Note: "no matching element in any order"})
+			continue
+		}
+		// the closest element is used up: the next element without a
+		// match is compared with another one
+		owner[at] = i
+		for _, d := range best {
+			note := fmt.Sprintf("no matching element in any order; closest is element %d of the answer", at)
+			if d.Note != "" {
+				note = d.Note + "; " + note
+			}
+			d.Note = note
+			c.diffs = append(c.diffs, d)
+		}
+	}
+}
+
+// sub compares one expected with one actual element on its own.
+func (c *comparer) sub(ptr string, exp, act any, s *openapi3.Schema) []Diff {
+	sc := comparer{opt: c.opt}
+	sc.compare(ptr, exp, act, s, true)
+	return sc.diffs
 }
 
 // unordered reports x-apitest-compare-unordered on an array schema.

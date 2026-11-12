@@ -1049,7 +1049,9 @@ the records in an empty instance:
 - **Reads.** Per list node one list per record above it, that must hold
   the records the scenario created (and the seed records, when the list is
   read with values of the stage alone); per other node one read per record,
-  that must hold what its create sent (`check.equals`).
+  that must hold what its create sent (`check.equals`). When the read
+  answers another resource than the step it would compare with sent, the
+  check is left out and a note says so.
 - **Changes.** Per node the update and the patch of its first created
   record, each followed by a read that must hold what was sent; the
   variants by other keys too (`gardens1.update-by-code`), each with a
