@@ -720,7 +720,7 @@ apitest-gen regression pre  -spec api/openapi.yaml -sample regression-sample.yam
 apitest-gen regression post -spec api/openapi.yaml -base-url https://dev.example.com/api -token-env DEV_TOKEN -out out
 ```
 
-`ScenarioConfig` holds the whole `Config` of `Run`. `Errors` generates the error steps when the test runs, so the test file stays small: after the steps before the first DELETE come conflicts, unknown keys, requests without or with a manipulated token and invalid input (`InvalidStatus` says which statuses invalid input may get, default every 4xx), then the DELETEs. See [docs/scenario.md](docs/scenario.md) for the files, the formats, every flag and a pipeline.
+What each file of `apitest-gen tree` does, when the spec is written, and what to do when the API changes: [docs/tree-maintenance.md](docs/tree-maintenance.md). `ScenarioConfig` holds the whole `Config` of `Run`. `Errors` generates the error steps when the test runs, so the test file stays small: after the steps before the first DELETE come conflicts, unknown keys, requests without or with a manipulated token and invalid input (`InvalidStatus` says which statuses invalid input may get, default every 4xx), then the DELETEs. See [docs/scenario.md](docs/scenario.md) for the files, the formats, every flag and a pipeline.
 
 ## Example project: Swagger Petstore
 

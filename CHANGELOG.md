@@ -8,6 +8,10 @@ contain breaking changes, which are listed here.
 
 ### Features
 
+- [docs/tree-maintenance.md](docs/tree-maintenance.md): the files of
+  `apitest-gen tree`, which command writes the spec, a walkthrough for a
+  changed API and how the examples stay current.
+
 - Reports: a scope section in the Markdown and HTML report counts the cases
   per expected status (201, 401, 404, `4xx` …) with their kinds and how
   they ended. The HTML report has every section collapsible, *Expand all* /

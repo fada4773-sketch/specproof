@@ -46,6 +46,9 @@ apitest starts nothing: every command works against the instance under
 
 ## Files
 
+What each file does, when the spec changes and what to do when the API
+changes, as a walkthrough: [tree-maintenance.md](tree-maintenance.md).
+
 Files with `_gen` in the name are written by a tool on every run and never
 edited by hand; you review them as a git diff. Files without `_gen` are
 yours; a tool may propose a first version, then it keeps what you wrote.
