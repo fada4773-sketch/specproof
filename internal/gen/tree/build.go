@@ -3063,8 +3063,9 @@ func (b *builder) push(st *scenario.Step) {
 }
 
 // updates adds per node the update and the patch of its first created
-// record, each followed by a read that must show the change; the variants
-// by other keys (update-by-name) too, each with a change of its own.
+// record (of each created record with records: all), each followed by a
+// read that must show the change; the variants by other keys
+// (update-by-name) too, each with a change of its own.
 func (b *builder) updates() {
 	var nodes []*Node
 	b.t.Walk(func(n *Node) {
@@ -3086,20 +3087,31 @@ func (b *builder) updates() {
 				continue
 			}
 			// a record of the node the scenario created, or a view of one
-			// (the write block at GET /gardens/{gardenId} below the gardens)
-			var r *Record
+			// (the write block at GET /gardens/{gardenId} below the gardens);
+			// records: all takes each of them, a record once
+			var rs []*Record
+			seen := map[*Record]bool{}
 			for _, c := range b.d.Of(n) {
-				if b.created[b.entity(c)] {
-					r = c
-					break
+				if e := b.entity(c); b.created[e] && !seen[e] {
+					seen[e] = true
+					rs = append(rs, c)
+					if !w.All {
+						break
+					}
 				}
 			}
-			if recs := b.d.Of(n); r == nil && w.OnSeed && len(recs) > 0 {
-				// onSeed: the first record, which the instance holds
-				r = recs[0]
-				b.note("", n.Name+": "+kind+" runs on "+r.ID+" of the seed", "onSeed: the instance holds the record; the scenario changes it")
+			if recs := b.d.Of(n); len(rs) == 0 && w.OnSeed && len(recs) > 0 {
+				// onSeed: the first record (all with records: all), which
+				// the instance holds
+				rs = recs[:1]
+				if w.All {
+					rs = recs
+				}
+				for _, r := range rs {
+					b.note("", n.Name+": "+kind+" runs on "+r.ID+" of the seed", "onSeed: the instance holds the record; the scenario changes it")
+				}
 			}
-			if r == nil {
+			if len(rs) == 0 {
 				why := "no record of " + n.Name + " is created by the scenario; it changes only records it created (onSeed: true changes a record of the seed)"
 				if w.OnSeed {
 					why = "onSeed: the fetch took no record of " + n.Name
@@ -3108,7 +3120,9 @@ func (b *builder) updates() {
 				continue
 			}
 			b.slot = n.Name + "." + kind
-			b.update(r, w, op, kind)
+			for _, r := range rs {
+				b.update(r, w, op, kind)
+			}
 			b.slot = ""
 		}
 	}

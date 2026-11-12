@@ -274,7 +274,10 @@ type Write struct {
 	// OnSeed runs an update, patch or action also on a record of the seed
 	// (the instance holds it) when the scenario creates none of the node.
 	OnSeed bool
-	Off    bool
+	// All runs an update, patch or action on every record of the node the
+	// scenario creates (records: all), not only on the first.
+	All bool
+	Off bool
 	// Gone marks a call the spec no longer has.
 	Gone bool
 	// Comment is written after the call (the operationId); Note explains
@@ -786,7 +789,7 @@ func (p *parser) where(v *yaml.Node, name string) (all, anyOf []Clause) {
 	return all, anyOf
 }
 
-var writeKeys = []string{"call", "path", "query", "header", "body", "change", "leave", "expect", "save", "onSeed", "off"}
+var writeKeys = []string{"call", "path", "query", "header", "body", "change", "leave", "expect", "save", "onSeed", "records", "off"}
 
 // writeForm reports whether v reads as a write: a request, an operationId
 // or a mapping with a call. An action named like a key of a write (save,
@@ -897,6 +900,17 @@ func (p *parser) writes(v *yaml.Node, name string) map[string]*Write {
 				w.OnSeed = p.boolean(wv, where+".onSeed")
 				if base := KindBase(k.Value); w.OnSeed && (base == WriteCreate || base == WriteDelete) {
 					p.errf(wv, "%s.onSeed: only an update, a patch or an action runs on a record of the seed", where)
+				}
+			case "records":
+				switch wv.Value {
+				case "all":
+					w.All = true
+				case "first":
+				default:
+					p.errf(wv, "%s.records: first (default) or all", where)
+				}
+				if base := KindBase(k.Value); base == WriteCreate || base == WriteDelete {
+					p.errf(wv, "%s.records: only an update, a patch or an action runs on all records (a delete takes each record already)", where)
 				}
 			case "off":
 				w.Off = p.boolean(wv, where+".off")

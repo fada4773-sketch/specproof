@@ -8,6 +8,9 @@ contain breaking changes, which are listed here.
 
 ### Features
 
+- `records: all` at an update, patch or action in `tree.yaml`: the write
+  runs on every record the test creates (`ships1.update`, `ships2.update`,
+  …), not only on the first.
 - `tolerate` in `tree.yaml` (and in the test file, `ScenarioConfig.Tolerate`):
   `SCHEMA_VIOLATION`, `DATA_MISMATCH` and `EXAMPLE_MISMATCH` no longer fail a
   step; it ends `TOLERATED`, saves its values, so the steps after it run

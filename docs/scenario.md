@@ -456,7 +456,22 @@ name. A prefer no fetched record holds is noted.
 | `save` | values of the answer under a name, as in a node: `/pointer` or `header <Name>`. A `$name` of the tree with that name reads the saved value in the scenario (see below) |
 | `leave` | fields of the body built from the record that this write does not send (`leave: [moonCodes]`): a create before the records the field names, whose update sends it later (`-fix` writes it for two creates that name each other) |
 | `onSeed` | `true`: an update, patch or action also runs on a record of the seed (a node without create: the instance holds the record), on the first record of the fetch |
+| `records` | update, patch and actions: `first` (default) runs the write on the first record the test creates, `all` on each of them (`ships1.update`, `ships2.update`, …), each followed by its read; with `onSeed` on each record of the fetch |
 | `off` | not used |
+
+**A write on every record.** The test creates three ships, and each
+should be updated, not only the first:
+
+```yaml
+ships:
+  call: GET /docks/{dockId}/ships
+  pick: 3
+  write:
+    create: POST /docks/{dockId}/ships
+    update:
+      call: PUT /ships/{shipId}
+      records: all          # ships1.update, ships2.update, ships3.update
+```
 
 **A value of a write, read later.** A value the instance gives only when it
 changes something (the receipt number an update answers with) is saved by that
@@ -1076,7 +1091,7 @@ the records in an empty instance:
   answers another resource than the step it would compare with sent, the
   check is left out and a note says so.
 - **Changes.** Per node the update and the patch of its first created
-  record, each followed by a read that must hold what was sent; the
+  record (of each created record with `records: all` at the write), each followed by a read that must hold what was sent; the
   variants by other keys too (`gardens1.update-by-code`), each with a
   change of its own. Unique fields of the create are marked again, so a
   run with `-unique` sends the same new values. A write block at the read

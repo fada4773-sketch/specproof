@@ -364,7 +364,7 @@ func writeYAML(w *Write, n *Node) *yaml.Node {
 		from = ""
 	}
 	if !w.Off && len(w.Query) == 0 && len(w.Header) == 0 && !w.HasBody && from == "" && w.Change == nil && w.Expect == 0 &&
-		len(w.Save) == 0 && !w.OnSeed {
+		len(w.Save) == 0 && !w.OnSeed && !w.All {
 		if s, ok := shortText(w.Call, path); ok {
 			v := scalar(s)
 			v.LineComment = comment(w.Comment, w.Note)
@@ -410,6 +410,9 @@ func writeYAML(w *Write, n *Node) *yaml.Node {
 	}
 	if w.OnSeed {
 		add("onSeed", scalar("true"))
+	}
+	if w.All {
+		add("records", scalar("all"))
 	}
 	if w.Off {
 		off := scalar("true")

@@ -121,26 +121,28 @@ func TestParseProblems(t *testing.T) {
 		"tree: {a: {path: {}}}":                 "call is missing",
 		"tree: {a: {call: GET /a, color: red}}": `unknown key "color"`,
 		"tree: {a: {call: GET /a, pick: zero}}": "a number, all",
-		"tree: {a: {call: GET /a, pick: {x: 1}}}":                        "a number, all",
-		"tree: {a: {call: GET /a, items: content}}":                      "JSON pointer",
-		"tree: {a: {call: GET /a, key: [id]}}":                           "no JSON pointer",
-		"tree: {a: {call: GET /a, save: {x: id}}}":                       "JSON pointer (/id)",
-		"tree: {a: {call: GET /a, read: maybe}}":                         "true or false",
-		"tree: {a: {call: GET /a, candidates: 0}}":                       "positive number",
-		"tree: {a: {call: GET /a, page: {max: 2}}}":                      "page.param is missing",
-		"tree: {a: {call: GET /a, page: {param: p, in: header}}}":        "query or body",
-		"tree: {a: {call: GET /a, write: {remove: none}}}":               `only create can be none`,
-		"tree: {a: {call: GET /a, write: {create: none, onSeed: true}}}": "onSeed belongs to one write, not to write; move it below the write (a.write.update.onSeed)",
-		"tree: {a: {call: GET /a, write: {create: {expect: 1}}}}":        "HTTP status",
-		"tree: {a: {call: GET /a, write: {create: {path: {}}}}}":         "call is missing",
-		"tree: {a: GET /a x}":                                            "is no name=value",
-		"tree: {a: get a/b}":                                             "METHOD /path",
-		"tree: {a: GET /a, b: {call: GET /b, each: {a: GET /c}}}":        "used twice",
-		"tree: {'a b': GET /a}":                                          "letters, digits",
-		"tree: {a: {call: GET /a, where: [1]}}":                          "mapping of fields",
-		"ignore: x":                                                      "list of operations",
-		"tolerate: x":                                                    "list of results",
-		"tolerate: [FAILED]":                                             "one of SCHEMA_VIOLATION, DATA_MISMATCH, EXAMPLE_MISMATCH",
+		"tree: {a: {call: GET /a, pick: {x: 1}}}":                                     "a number, all",
+		"tree: {a: {call: GET /a, items: content}}":                                   "JSON pointer",
+		"tree: {a: {call: GET /a, key: [id]}}":                                        "no JSON pointer",
+		"tree: {a: {call: GET /a, save: {x: id}}}":                                    "JSON pointer (/id)",
+		"tree: {a: {call: GET /a, read: maybe}}":                                      "true or false",
+		"tree: {a: {call: GET /a, candidates: 0}}":                                    "positive number",
+		"tree: {a: {call: GET /a, page: {max: 2}}}":                                   "page.param is missing",
+		"tree: {a: {call: GET /a, page: {param: p, in: header}}}":                     "query or body",
+		"tree: {a: {call: GET /a, write: {remove: none}}}":                            `only create can be none`,
+		"tree: {a: {call: GET /a, write: {create: none, onSeed: true}}}":              "onSeed belongs to one write, not to write; move it below the write (a.write.update.onSeed)",
+		"tree: {a: {call: GET /a, write: {create: {expect: 1}}}}":                     "HTTP status",
+		"tree: {a: {call: GET /a, write: {create: {path: {}}}}}":                      "call is missing",
+		"tree: {a: GET /a x}":                                                         "is no name=value",
+		"tree: {a: get a/b}":                                                          "METHOD /path",
+		"tree: {a: GET /a, b: {call: GET /b, each: {a: GET /c}}}":                     "used twice",
+		"tree: {'a b': GET /a}":                                                       "letters, digits",
+		"tree: {a: {call: GET /a, where: [1]}}":                                       "mapping of fields",
+		"ignore: x":                                                                   "list of operations",
+		"tree: {a: {call: GET /a, write: {update: {call: PUT /a, records: some}}}}":   "first (default) or all",
+		"tree: {a: {call: GET /a, write: {delete: {call: DELETE /a, records: all}}}}": "only an update, a patch or an action",
+		"tolerate: x":        "list of results",
+		"tolerate: [FAILED]": "one of SCHEMA_VIOLATION, DATA_MISMATCH, EXAMPLE_MISMATCH",
 	} {
 		_, err := Parse([]byte(text))
 		if err == nil || !strings.Contains(err.Error(), want) {
@@ -1932,5 +1934,53 @@ tree:
 	back, err := scenario.Parse(out)
 	if err != nil || !slices.Equal(back.Tolerate, tr.Tolerate) {
 		t.Fatalf("tolerate in the test file: %v %v\n%s", err, back, out)
+	}
+}
+
+func TestBuildUpdateOnAllRecords(t *testing.T) {
+	s := loadStarport(t)
+	build := func(records string) []string {
+		t.Helper()
+		tr := parse(t, `
+order:
+  - docks
+tree:
+  docks:
+    call: GET /planets/{code}/docks
+    path: {code: mars}
+    write:
+      create: POST /planets/{code}/docks code=mars
+      update:
+        call: PUT /docks/{dockId}
+        path: {dockId: .id}
+`+records+`
+`)
+		d := &Data{}
+		for i, name := range []string{"North", "South", "East"} {
+			d.Records = append(d.Records, &Record{ID: fmt.Sprintf("docks%d", i+1), Node: tr.Node("docks"), Request: "GET /x",
+				Value: map[string]any{"id": 5 + i, "name": name, "capacity": 4}})
+		}
+		b, err := Build(s, tr, d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var ids []string
+		for _, st := range b.Scenario.Steps {
+			if st.Call == "PUT /docks/{dockId}" {
+				ids = append(ids, st.ID)
+			}
+		}
+		return ids
+	}
+	if got := build(""); !slices.Equal(got, []string{"docks1.update"}) {
+		t.Errorf("default: the first record only: %v", got)
+	}
+	if got := build("        records: all"); !slices.Equal(got, []string{"docks1.update", "docks2.update", "docks3.update"}) {
+		t.Errorf("records: all: every created record: %v", got)
+	}
+	// the long form of the write holds the key
+	tr := parse(t, "tree:\n  docks:\n    call: GET /docks\n    write:\n      update:\n        call: PUT /docks/{dockId}\n        records: all\n")
+	if w := tr.Node("docks").Write[WriteUpdate]; w == nil || !w.All {
+		t.Fatalf("records: all not read: %+v", tr.Node("docks").Write)
 	}
 }
